@@ -8,8 +8,10 @@
 //! |---|---|
 //! | [`shogiesa-core`](https://crates.io/crates/shogiesa-core) | Shared domain types (`PositionRecord`, `Score`, `Sfen`, …) |
 //! | [`shogiesa-csa`](https://crates.io/crates/shogiesa-csa)   | CSA game record ingestion → SFEN extraction |
+//! | [`shogiesa-kif`](https://crates.io/crates/shogiesa-kif)   | KIF game record ingestion → SFEN extraction |
 //! | [`shogiesa-usi`](https://crates.io/crates/shogiesa-usi)   | USI engine communication for position labeling |
-//! | [`shogiesa-cli`](https://crates.io/crates/shogiesa-cli)   | CLI binary (`shogiesa extract / label / report / validate`) |
+//! | [`shogiesa-pack`](https://crates.io/crates/shogiesa-pack) | Binary pack format for position records |
+//! | [`shogiesa-cli`](https://crates.io/crates/shogiesa-cli)   | CLI binary (`shogiesa extract / label / filter / …`) |
 //!
 //! # Install the CLI
 //!
@@ -19,4 +21,6 @@
 
 pub use shogiesa_core as core;
 pub use shogiesa_csa as csa;
+pub use shogiesa_kif as kif;
 pub use shogiesa_usi as usi;
+pub use shogiesa_pack as pack;

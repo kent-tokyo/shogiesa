@@ -222,7 +222,7 @@ dependencies = [
 
 [[package]]
 name = "fake-usi-engine"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "fastrand"
@@ -547,17 +547,18 @@ dependencies = [
 
 [[package]]
 name = "shogiesa"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "shogiesa-core",
  "shogiesa-csa",
  "shogiesa-kif",
+ "shogiesa-pack",
  "shogiesa-usi",
 ]
 
 [[package]]
 name = "shogiesa-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -577,7 +578,7 @@ dependencies = [
 
 [[package]]
 name = "shogiesa-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "thiserror",
@@ -585,7 +586,7 @@ dependencies = [
 
 [[package]]
 name = "shogiesa-csa"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "csa",
  "serde_json",
@@ -596,7 +597,7 @@ dependencies = [
 
 [[package]]
 name = "shogiesa-kif"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde_json",
  "shogiesa-core",
@@ -606,14 +607,14 @@ dependencies = [
 
 [[package]]
 name = "shogiesa-pack"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "shogiesa-core",
 ]
 
 [[package]]
 name = "shogiesa-usi"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "assert_cmd",
  "shogiesa-core",

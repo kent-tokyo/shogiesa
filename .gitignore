@@ -1,3 +1,14 @@
 /target/
 .claude/
 tasks/
+
+# generated datasets (extract/label/filter output)
+*.jsonl
+
+# macOS
+.DS_Store
+
+# editor
+.vscode/
+.idea/
+*.swp

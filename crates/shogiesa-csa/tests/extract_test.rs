@@ -95,3 +95,26 @@ fn jsonl_roundtrip() {
         assert_eq!(back.schema_version, 1);
     }
 }
+
+#[test]
+fn side_to_move_tag_matches_sfen() {
+    // After +7776FU (Black moves), SFEN says 'w' and tag should say "white"
+    let csa = "V2.2\nPI\n+\n+7776FU\n-3334FU\n%TORYO\n";
+    let config = ExtractConfig {
+        min_ply: 1,
+        max_ply: Some(2),
+        every_n: 1,
+        dedup: false,
+    };
+    let mut seen = HashSet::new();
+    let records = extract_from_str(csa, "test", &config, &mut seen).unwrap();
+    assert_eq!(records.len(), 2);
+
+    // ply 1: Black just moved → White to move
+    assert!(records[0].sfen.contains(" w "), "ply1 sfen should have 'w'");
+    assert_eq!(records[0].tags.side_to_move, "white");
+
+    // ply 2: White just moved → Black to move
+    assert!(records[1].sfen.contains(" b "), "ply2 sfen should have 'b'");
+    assert_eq!(records[1].tags.side_to_move, "black");
+}

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
@@ -24,6 +24,8 @@ enum Commands {
     Extract(ExtractArgs),
     /// Report statistics about a positions dataset
     Report(ReportArgs),
+    /// Validate data integrity of a positions dataset
+    Validate(ReportArgs),
 }
 
 #[derive(clap::Args)]
@@ -65,6 +67,7 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Extract(args) => cmd_extract(args),
         Commands::Report(args) => cmd_report(args),
+        Commands::Validate(args) => cmd_validate(args),
     }
 }
 
@@ -139,13 +142,20 @@ fn collect_csa_paths(input: &PathBuf) -> Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-fn cmd_report(args: ReportArgs) -> Result<()> {
-    let content =
-        fs::read_to_string(&args.input).with_context(|| format!("cannot read {:?}", args.input))?;
+/// Extract the side-to-move character ('b' or 'w') from a SFEN string.
+fn sfen_side(sfen: &str) -> Option<&str> {
+    sfen.split_ascii_whitespace().nth(1)
+}
 
-    let records: Vec<PositionRecord> = content
-        .lines()
-        .filter(|l| !l.trim().is_empty())
+fn load_records(path: &PathBuf) -> Result<(Vec<PositionRecord>, usize)> {
+    let content = fs::read_to_string(path).with_context(|| format!("cannot read {:?}", path))?;
+    let non_empty: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+    let broken = non_empty
+        .iter()
+        .filter(|l| serde_json::from_str::<PositionRecord>(l).is_err())
+        .count();
+    let records: Vec<PositionRecord> = non_empty
+        .iter()
         .enumerate()
         .filter_map(|(i, line)| {
             serde_json::from_str::<PositionRecord>(line)
@@ -153,6 +163,11 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
                 .ok()
         })
         .collect();
+    Ok((records, broken))
+}
+
+fn cmd_report(args: ReportArgs) -> Result<()> {
+    let (records, broken) = load_records(&args.input)?;
 
     if records.is_empty() {
         println!("no valid records in {:?}", args.input);
@@ -160,35 +175,58 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
     }
 
     let n = records.len();
-
-    // Phase distribution
-    let mut phases = std::collections::BTreeMap::<&str, usize>::new();
-    let mut sides = std::collections::BTreeMap::<&str, usize>::new();
+    let mut phases = BTreeMap::<&str, usize>::new();
+    let mut sides = BTreeMap::<&str, usize>::new();
+    let mut schema_versions = BTreeMap::<u32, usize>::new();
     let mut ply_sum = 0u64;
     let mut ply_min = u32::MAX;
     let mut ply_max = 0u32;
+    let mut sfen_counts: HashMap<&str, usize> = HashMap::new();
+    let mut tag_mismatches = 0usize;
 
     for rec in &records {
         *phases.entry(rec.tags.phase.as_str()).or_default() += 1;
         *sides.entry(rec.tags.side_to_move.as_str()).or_default() += 1;
+        *schema_versions.entry(rec.schema_version).or_default() += 1;
         let ply = rec.source.ply;
         ply_sum += ply as u64;
         ply_min = ply_min.min(ply);
         ply_max = ply_max.max(ply);
+        *sfen_counts.entry(rec.sfen.as_str()).or_default() += 1;
+        // Check side_to_move tag vs SFEN
+        if let Some(sf_side) = sfen_side(&rec.sfen) {
+            let expected = match sf_side {
+                "b" => "black",
+                "w" => "white",
+                _ => "",
+            };
+            if !expected.is_empty() && rec.tags.side_to_move != expected {
+                tag_mismatches += 1;
+            }
+        }
     }
 
-    // Source file counts
-    let mut sources = std::collections::BTreeMap::<&str, usize>::new();
+    let duplicate_sfens: usize = sfen_counts
+        .values()
+        .filter(|&&c| c > 1)
+        .map(|&c| c - 1)
+        .sum();
+    let mut sources = BTreeMap::<&str, usize>::new();
     for rec in &records {
         *sources.entry(rec.source.path.as_str()).or_default() += 1;
     }
 
     println!("=== shogiesa report ===");
-    println!("positions : {n}");
+    println!("positions      : {n}");
+    println!("broken lines   : {broken}");
     println!(
-        "ply range : {ply_min}–{ply_max} (avg {:.1})",
+        "ply range      : {ply_min}–{ply_max} (avg {:.1})",
         ply_sum as f64 / n as f64
     );
+    println!("duplicate SFENs: {duplicate_sfens}");
+    println!("tag mismatches : {tag_mismatches}  (side_to_move vs SFEN)");
+    println!();
+    println!("schema versions: {schema_versions:?}");
     println!();
     println!("phase distribution:");
     for (phase, count) in &phases {
@@ -214,5 +252,73 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
         println!("  … and {} more", sources.len() - 10);
     }
 
+    Ok(())
+}
+
+fn cmd_validate(args: ReportArgs) -> Result<()> {
+    let content =
+        fs::read_to_string(&args.input).with_context(|| format!("cannot read {:?}", args.input))?;
+
+    let total_lines = content.lines().filter(|l| !l.trim().is_empty()).count();
+    let mut valid_json = 0usize;
+    let mut valid_records = 0usize;
+    let mut tag_mismatches = 0usize;
+    let mut schema_versions = BTreeMap::<u32, usize>::new();
+    let mut seen_sfens: HashSet<String> = HashSet::new();
+    let mut duplicate_sfens = 0usize;
+
+    for line in content.lines().filter(|l| !l.trim().is_empty()) {
+        let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        valid_json += 1;
+
+        let Ok(rec) = serde_json::from_value::<PositionRecord>(val) else {
+            continue;
+        };
+        valid_records += 1;
+
+        *schema_versions.entry(rec.schema_version).or_default() += 1;
+
+        if !seen_sfens.insert(rec.sfen.clone()) {
+            duplicate_sfens += 1;
+        }
+
+        if let Some(sf_side) = sfen_side(&rec.sfen) {
+            let expected = match sf_side {
+                "b" => "black",
+                "w" => "white",
+                _ => "",
+            };
+            if !expected.is_empty() && rec.tags.side_to_move != expected {
+                tag_mismatches += 1;
+            }
+        }
+    }
+
+    let broken = total_lines - valid_json;
+
+    println!("=== shogiesa validate ===");
+    println!("total lines    : {total_lines}");
+    println!("valid JSON     : {valid_json}");
+    println!("valid records  : {valid_records}");
+    println!("broken lines   : {broken}");
+    println!("duplicate SFENs: {duplicate_sfens}");
+    println!("tag mismatches : {tag_mismatches}  (side_to_move vs SFEN)");
+    println!("schema versions: {schema_versions:?}");
+
+    if tag_mismatches > 0 || broken > 0 {
+        println!();
+        if tag_mismatches > 0 {
+            println!("WARN: {tag_mismatches} side_to_move tag mismatches found");
+        }
+        if broken > 0 {
+            println!("WARN: {broken} broken lines found");
+        }
+        std::process::exit(1);
+    } else {
+        println!();
+        println!("OK");
+    }
     Ok(())
 }

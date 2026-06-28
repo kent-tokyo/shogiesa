@@ -79,10 +79,9 @@ pub fn extract_from_str(
                 continue;
             }
 
-            let side = if board.side == csa::Color::White {
-                "black"
-            } else {
-                "white"
+            let side = match board.side {
+                csa::Color::Black => "black",
+                csa::Color::White => "white",
             };
             // ponytail: in_check and has_capture need move-gen; always false for now
             let tags = PositionTags {

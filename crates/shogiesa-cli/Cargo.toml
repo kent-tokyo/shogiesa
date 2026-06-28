@@ -1,16 +1,22 @@
 [package]
 name = "shogiesa-cli"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "CLI for shogiesa — Shogi training-data feed for NNUE engines"
+keywords = ["shogi", "nnue", "sfen", "training-data", "usi"]
+categories = ["command-line-utilities", "game-engines"]
 
 [[bin]]
 name = "shogiesa"
 path = "src/main.rs"
 
 [dependencies]
-shogiesa-core = { path = "../shogiesa-core" }
-shogiesa-csa = { path = "../shogiesa-csa" }
-shogiesa-usi = { path = "../shogiesa-usi" }
+shogiesa-core = { path = "../shogiesa-core", version = "0.1" }
+shogiesa-csa = { path = "../shogiesa-csa", version = "0.1" }
+shogiesa-usi = { path = "../shogiesa-usi", version = "0.1" }
 clap = { version = "4", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"

@@ -1,10 +1,16 @@
 [package]
 name = "shogiesa-csa"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "CSA game record ingestion for shogiesa — extract Shogi positions as SFEN"
+keywords = ["shogi", "csa", "sfen", "training-data"]
+categories = ["game-engines", "parser-implementations"]
 
 [dependencies]
-shogiesa-core = { path = "../shogiesa-core" }
+shogiesa-core = { path = "../shogiesa-core", version = "0.1" }
 csa = "1"
 thiserror = "1"
 tracing = "0.1"

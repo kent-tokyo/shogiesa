@@ -1,10 +1,16 @@
 [package]
 name = "shogiesa-usi"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "USI engine communication for shogiesa — label Shogi positions with engine evaluations"
+keywords = ["shogi", "usi", "nnue", "training-data"]
+categories = ["game-engines"]
 
 [dependencies]
-shogiesa-core = { path = "../shogiesa-core" }
+shogiesa-core = { path = "../shogiesa-core", version = "0.1" }
 thiserror = "1"
 tracing = "0.1"
 

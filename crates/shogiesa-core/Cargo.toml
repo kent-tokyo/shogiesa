@@ -1,7 +1,13 @@
 [package]
 name = "shogiesa-core"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Shared domain types for shogiesa — Shogi training-data feed for NNUE engines"
+keywords = ["shogi", "nnue", "sfen", "training-data", "chess"]
+categories = ["game-engines", "data-structures"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

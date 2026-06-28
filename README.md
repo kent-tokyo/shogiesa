@@ -2,7 +2,7 @@
 
 **将棋の餌。** Shogi training-data feed for NNUE engines.
 
-shogiesa は [Sekirei](https://github.com/kent-tokyo/sekirei) に食わせる高品質な教師局面を作るためのデータ生成ツールです。
+shogiesa は将棋エンジンに食わせる高品質な教師局面を作るためのデータ生成ツールです。
 
 ## What it is
 

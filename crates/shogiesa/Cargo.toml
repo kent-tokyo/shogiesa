@@ -1,0 +1,15 @@
+[package]
+name = "shogiesa"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Shogi training-data feed for NNUE engines — meta crate"
+keywords = ["shogi", "nnue", "sfen", "training-data", "usi"]
+categories = ["command-line-utilities", "game-engines"]
+
+[dependencies]
+shogiesa-core = { path = "../shogiesa-core", version = "0.1" }
+shogiesa-csa  = { path = "../shogiesa-csa",  version = "0.1" }
+shogiesa-usi  = { path = "../shogiesa-usi",  version = "0.1" }

@@ -22,5 +22,5 @@
 pub use shogiesa_core as core;
 pub use shogiesa_csa as csa;
 pub use shogiesa_kif as kif;
-pub use shogiesa_usi as usi;
 pub use shogiesa_pack as pack;
+pub use shogiesa_usi as usi;

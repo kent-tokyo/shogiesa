@@ -39,8 +39,8 @@
 use std::io::{self, Read, Write};
 
 use shogiesa_core::{
-    GamePhase, Observation, PositionRecord, PositionTags, Score, SideToMove, SourceInfo,
-    StabilityInfo, SCHEMA_VERSION,
+    GamePhase, Observation, PositionRecord, PositionTags, SCHEMA_VERSION, Score, SideToMove,
+    SourceInfo, StabilityInfo,
 };
 
 pub const MAGIC: &[u8; 8] = b"SHOGIESA";
@@ -48,11 +48,21 @@ pub const FORMAT_VERSION: u16 = 1;
 
 // ── write helpers ─────────────────────────────────────────────────────────────
 
-fn wu8(w: &mut impl Write, v: u8) -> io::Result<()> { w.write_all(&[v]) }
-fn wu16(w: &mut impl Write, v: u16) -> io::Result<()> { w.write_all(&v.to_le_bytes()) }
-fn wu32(w: &mut impl Write, v: u32) -> io::Result<()> { w.write_all(&v.to_le_bytes()) }
-fn wu64(w: &mut impl Write, v: u64) -> io::Result<()> { w.write_all(&v.to_le_bytes()) }
-fn wi32(w: &mut impl Write, v: i32) -> io::Result<()> { w.write_all(&v.to_le_bytes()) }
+fn wu8(w: &mut impl Write, v: u8) -> io::Result<()> {
+    w.write_all(&[v])
+}
+fn wu16(w: &mut impl Write, v: u16) -> io::Result<()> {
+    w.write_all(&v.to_le_bytes())
+}
+fn wu32(w: &mut impl Write, v: u32) -> io::Result<()> {
+    w.write_all(&v.to_le_bytes())
+}
+fn wu64(w: &mut impl Write, v: u64) -> io::Result<()> {
+    w.write_all(&v.to_le_bytes())
+}
+fn wi32(w: &mut impl Write, v: i32) -> io::Result<()> {
+    w.write_all(&v.to_le_bytes())
+}
 
 fn ws8(w: &mut impl Write, s: &str) -> io::Result<()> {
     let b = s.as_bytes();
@@ -68,29 +78,41 @@ fn ws16(w: &mut impl Write, s: &str) -> io::Result<()> {
 // ── read helpers ──────────────────────────────────────────────────────────────
 
 fn ru8(r: &mut impl Read) -> io::Result<u8> {
-    let mut b = [0u8; 1]; r.read_exact(&mut b)?; Ok(b[0])
+    let mut b = [0u8; 1];
+    r.read_exact(&mut b)?;
+    Ok(b[0])
 }
 fn ru16(r: &mut impl Read) -> io::Result<u16> {
-    let mut b = [0u8; 2]; r.read_exact(&mut b)?; Ok(u16::from_le_bytes(b))
+    let mut b = [0u8; 2];
+    r.read_exact(&mut b)?;
+    Ok(u16::from_le_bytes(b))
 }
 fn ru32(r: &mut impl Read) -> io::Result<u32> {
-    let mut b = [0u8; 4]; r.read_exact(&mut b)?; Ok(u32::from_le_bytes(b))
+    let mut b = [0u8; 4];
+    r.read_exact(&mut b)?;
+    Ok(u32::from_le_bytes(b))
 }
 fn ru64(r: &mut impl Read) -> io::Result<u64> {
-    let mut b = [0u8; 8]; r.read_exact(&mut b)?; Ok(u64::from_le_bytes(b))
+    let mut b = [0u8; 8];
+    r.read_exact(&mut b)?;
+    Ok(u64::from_le_bytes(b))
 }
 fn ri32(r: &mut impl Read) -> io::Result<i32> {
-    let mut b = [0u8; 4]; r.read_exact(&mut b)?; Ok(i32::from_le_bytes(b))
+    let mut b = [0u8; 4];
+    r.read_exact(&mut b)?;
+    Ok(i32::from_le_bytes(b))
 }
 
 fn rs8(r: &mut impl Read) -> io::Result<String> {
     let len = ru8(r)? as usize;
-    let mut b = vec![0u8; len]; r.read_exact(&mut b)?;
+    let mut b = vec![0u8; len];
+    r.read_exact(&mut b)?;
     String::from_utf8(b).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 fn rs16(r: &mut impl Read) -> io::Result<String> {
     let len = ru16(r)? as usize;
-    let mut b = vec![0u8; len]; r.read_exact(&mut b)?;
+    let mut b = vec![0u8; len];
+    r.read_exact(&mut b)?;
     String::from_utf8(b).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
@@ -131,15 +153,21 @@ pub fn encode_record(rec: &PositionRecord, w: &mut impl Write) -> io::Result<()>
     ws16(w, &rec.source.path)?;
     wu32(w, rec.source.ply)?;
 
-    wu8(w, match rec.tags.phase {
-        GamePhase::Opening    => 0,
-        GamePhase::Middlegame => 1,
-        GamePhase::Endgame    => 2,
-    })?;
-    wu8(w, match rec.tags.side_to_move {
-        SideToMove::Black => 0,
-        SideToMove::White => 1,
-    })?;
+    wu8(
+        w,
+        match rec.tags.phase {
+            GamePhase::Opening => 0,
+            GamePhase::Middlegame => 1,
+            GamePhase::Endgame => 2,
+        },
+    )?;
+    wu8(
+        w,
+        match rec.tags.side_to_move {
+            SideToMove::Black => 0,
+            SideToMove::White => 1,
+        },
+    )?;
     wu8(w, rec.tags.in_check as u8)?;
     wu8(w, rec.tags.has_capture as u8)?;
 
@@ -148,8 +176,11 @@ pub fn encode_record(rec: &PositionRecord, w: &mut impl Write) -> io::Result<()>
         Some(s) => {
             wu8(w, 1)?;
             match s.score_swing_cp {
-                None    => wu8(w, 0)?,
-                Some(v) => { wu8(w, 1)?; wi32(w, v)?; }
+                None => wu8(w, 0)?,
+                Some(v) => {
+                    wu8(w, 1)?;
+                    wi32(w, v)?;
+                }
             }
             wu8(w, s.bestmove_agreement as u8)?;
         }
@@ -159,29 +190,46 @@ pub fn encode_record(rec: &PositionRecord, w: &mut impl Write) -> io::Result<()>
     for obs in &rec.observations {
         ws8(w, &obs.engine)?;
         match &obs.engine_version {
-            None    => wu8(w, 0)?,
-            Some(v) => { wu8(w, 1)?; ws8(w, v)?; }
+            None => wu8(w, 0)?,
+            Some(v) => {
+                wu8(w, 1)?;
+                ws8(w, v)?;
+            }
         }
         wu32(w, obs.depth)?;
         match obs.score {
-            Score::Cp   { value } => { wu8(w, 0)?; wi32(w, value)?; }
-            Score::Mate { moves } => { wu8(w, 1)?; wi32(w, moves)?; }
+            Score::Cp { value } => {
+                wu8(w, 0)?;
+                wi32(w, value)?;
+            }
+            Score::Mate { moves } => {
+                wu8(w, 1)?;
+                wi32(w, moves)?;
+            }
         }
         ws8(w, &obs.bestmove)?;
         match obs.nodes {
-            None    => wu8(w, 0)?,
-            Some(v) => { wu8(w, 1)?; wu64(w, v)?; }
+            None => wu8(w, 0)?,
+            Some(v) => {
+                wu8(w, 1)?;
+                wu64(w, v)?;
+            }
         }
         match obs.time_ms {
-            None    => wu8(w, 0)?,
-            Some(v) => { wu8(w, 1)?; wu64(w, v)?; }
+            None => wu8(w, 0)?,
+            Some(v) => {
+                wu8(w, 1)?;
+                wu64(w, v)?;
+            }
         }
         match &obs.pv {
             None => wu8(w, 0)?,
             Some(pv) => {
                 wu8(w, 1)?;
                 wu16(w, pv.len() as u16)?;
-                for mv in pv { ws8(w, mv)?; }
+                for mv in pv {
+                    ws8(w, mv)?;
+                }
             }
         }
     }
@@ -196,7 +244,7 @@ pub fn decode_record(r: &mut impl Read) -> io::Result<PositionRecord> {
     let source = SourceInfo {
         kind: rs8(r)?,
         path: rs16(r)?,
-        ply:  ru32(r)?,
+        ply: ru32(r)?,
     };
 
     let phase = match ru8(r)? {
@@ -210,55 +258,78 @@ pub fn decode_record(r: &mut impl Read) -> io::Result<PositionRecord> {
         1 => SideToMove::White,
         _ => return Err(bad("bad side")),
     };
-    let in_check    = ru8(r)? != 0;
+    let in_check = ru8(r)? != 0;
     let has_capture = ru8(r)? != 0;
-    let tags = PositionTags { phase, side_to_move, in_check, has_capture };
+    let tags = PositionTags {
+        phase,
+        side_to_move,
+        in_check,
+        has_capture,
+    };
 
     let stability = if ru8(r)? == 0 {
         None
     } else {
         let score_swing_cp = if ru8(r)? == 0 { None } else { Some(ri32(r)?) };
         let bestmove_agreement = ru8(r)? != 0;
-        Some(StabilityInfo { score_swing_cp, bestmove_agreement })
+        Some(StabilityInfo {
+            score_swing_cp,
+            bestmove_agreement,
+        })
     };
 
     let obs_count = ru16(r)? as usize;
     let mut observations = Vec::with_capacity(obs_count);
     for _ in 0..obs_count {
-        let engine         = rs8(r)?;
+        let engine = rs8(r)?;
         let engine_version = if ru8(r)? == 0 { None } else { Some(rs8(r)?) };
-        let depth          = ru32(r)?;
+        let depth = ru32(r)?;
         let score = match ru8(r)? {
-            0 => Score::Cp   { value: ri32(r)? },
+            0 => Score::Cp { value: ri32(r)? },
             1 => Score::Mate { moves: ri32(r)? },
             _ => return Err(bad("bad score kind")),
         };
         let bestmove = rs8(r)?;
-        let nodes    = if ru8(r)? == 0 { None } else { Some(ru64(r)?) };
-        let time_ms  = if ru8(r)? == 0 { None } else { Some(ru64(r)?) };
+        let nodes = if ru8(r)? == 0 { None } else { Some(ru64(r)?) };
+        let time_ms = if ru8(r)? == 0 { None } else { Some(ru64(r)?) };
         let pv = if ru8(r)? == 0 {
             None
         } else {
             let n = ru16(r)? as usize;
             let mut moves = Vec::with_capacity(n);
-            for _ in 0..n { moves.push(rs8(r)?); }
+            for _ in 0..n {
+                moves.push(rs8(r)?);
+            }
             Some(moves)
         };
         observations.push(Observation {
-            engine, engine_version, depth, score, bestmove, nodes, time_ms, pv,
+            engine,
+            engine_version,
+            depth,
+            score,
+            bestmove,
+            nodes,
+            time_ms,
+            pv,
         });
     }
 
     Ok(PositionRecord {
         schema_version: SCHEMA_VERSION,
-        sfen, source, tags, observations, stability,
+        sfen,
+        source,
+        tags,
+        observations,
+        stability,
     })
 }
 
 /// Encode all records with a header (batch convenience).
 pub fn encode(records: &[PositionRecord], w: &mut impl Write) -> io::Result<()> {
     write_header(w)?;
-    for rec in records { encode_record(rec, w)?; }
+    for rec in records {
+        encode_record(rec, w)?;
+    }
     Ok(())
 }
 
@@ -344,9 +415,15 @@ mod tests {
         assert!(matches!(got.observations[0].score, Score::Cp { value: 42 }));
         assert_eq!(got.observations[0].engine_version, Some("1.0".to_string()));
         assert_eq!(got.observations[0].nodes, Some(12345));
-        assert_eq!(got.observations[0].pv, Some(vec!["7g7f".to_string(), "3c3d".to_string()]));
+        assert_eq!(
+            got.observations[0].pv,
+            Some(vec!["7g7f".to_string(), "3c3d".to_string()])
+        );
         assert_eq!(got.observations[1].engine_version, None);
-        assert!(matches!(got.observations[1].score, Score::Mate { moves: 3 }));
+        assert!(matches!(
+            got.observations[1].score,
+            Score::Mate { moves: 3 }
+        ));
         let stab = got.stability.as_ref().unwrap();
         assert_eq!(stab.score_swing_cp, Some(100));
         assert!(!stab.bestmove_agreement);

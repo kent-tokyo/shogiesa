@@ -84,30 +84,50 @@ fn unknown_handicap_errors() {
     let mut seen = HashSet::new();
     let result = extract_from_str(kif, "h.kif", &ExtractConfig::default(), &mut seen);
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("unsupported handicap"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported handicap")
+    );
 }
 
 #[test]
 fn handicap_rook_drop_initial_sfen() {
     // 飛車落ち: White's rook removed; White moves first
-    let config = ExtractConfig { min_ply: 1, max_ply: Some(1), every_n: 1, dedup: false };
+    let config = ExtractConfig {
+        min_ply: 1,
+        max_ply: Some(1),
+        every_n: 1,
+        dedup: false,
+    };
     let mut seen = HashSet::new();
-    let records =
-        extract_from_path(&fixture("sample_handicap.kif"), &config, &mut seen).unwrap();
+    let records = extract_from_path(&fixture("sample_handicap.kif"), &config, &mut seen).unwrap();
     assert_eq!(records.len(), 1);
     // SFEN after White's 3d pawn move: rook at 8b is absent, White moved first
     let sfen = &records[0].sfen;
     // No rook on rank b (White's rank 2)
     let board_part = sfen.split_whitespace().next().unwrap();
     let rank_b = board_part.split('/').nth(1).unwrap();
-    assert!(!rank_b.contains('r'), "White's rook should be absent in 飛車落ち: {rank_b}");
+    assert!(
+        !rank_b.contains('r'),
+        "White's rook should be absent in 飛車落ち: {rank_b}"
+    );
 }
 
 #[test]
 fn handicap_types_all_parse() {
     let handicaps = [
-        "平手", "香落ち", "右香落ち", "角落ち", "飛車落ち",
-        "二枚落ち", "四枚落ち", "六枚落ち", "八枚落ち", "十枚落ち",
+        "平手",
+        "香落ち",
+        "右香落ち",
+        "角落ち",
+        "飛車落ち",
+        "二枚落ち",
+        "四枚落ち",
+        "六枚落ち",
+        "八枚落ち",
+        "十枚落ち",
     ];
     for h in handicaps {
         let kif = format!("手合割：{h}\n手数----指手\n   1 投了\n");

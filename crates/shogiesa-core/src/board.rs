@@ -152,13 +152,20 @@ fn initial_grid() -> Grid {
 
 fn piece_idx(pt: PieceType) -> usize {
     match pt {
-        PieceType::Pawn      => 0, PieceType::Lance     => 1,
-        PieceType::Knight    => 2, PieceType::Silver    => 3,
-        PieceType::Gold      => 4, PieceType::Bishop    => 5,
-        PieceType::Rook      => 6, PieceType::King      => 7,
-        PieceType::ProPawn   => 8, PieceType::ProLance  => 9,
-        PieceType::ProKnight => 10, PieceType::ProSilver => 11,
-        PieceType::Horse     => 12, PieceType::Dragon   => 13,
+        PieceType::Pawn => 0,
+        PieceType::Lance => 1,
+        PieceType::Knight => 2,
+        PieceType::Silver => 3,
+        PieceType::Gold => 4,
+        PieceType::Bishop => 5,
+        PieceType::Rook => 6,
+        PieceType::King => 7,
+        PieceType::ProPawn => 8,
+        PieceType::ProLance => 9,
+        PieceType::ProKnight => 10,
+        PieceType::ProSilver => 11,
+        PieceType::Horse => 12,
+        PieceType::Dragon => 13,
     }
 }
 
@@ -166,15 +173,20 @@ const fn make_zobrist() -> [[[u64; 81]; 14]; 2] {
     let mut t = [[[0u64; 81]; 14]; 2];
     let mut seed: u64 = 0xdeadbeefcafebabe;
     let mut c = 0;
-    while c < 2 { let mut p = 0;
-        while p < 14 { let mut s = 0;
+    while c < 2 {
+        let mut p = 0;
+        while p < 14 {
+            let mut s = 0;
             while s < 81 {
-                seed = seed.wrapping_mul(6364136223846793005)
-                           .wrapping_add(1442695040888963407);
+                seed = seed
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 t[c][p][s] = seed;
                 s += 1;
-            } p += 1;
-        } c += 1;
+            }
+            p += 1;
+        }
+        c += 1;
     }
     t
 }
@@ -184,10 +196,20 @@ const ZOBRIST_SIDE: u64 = 0x9e3779b97f4a7c15; // XOR'd in when White to move
 fn sfen_piece(c: char, promoted: bool) -> Option<(usize, usize)> {
     let color = if c.is_uppercase() { 0 } else { 1 };
     let idx = match (c.to_ascii_uppercase(), promoted) {
-        ('P', false) => 0, ('L', false) => 1, ('N', false) => 2, ('S', false) => 3,
-        ('G', false) => 4, ('B', false) => 5, ('R', false) => 6, ('K', false) => 7,
-        ('P', true)  => 8, ('L', true)  => 9, ('N', true)  => 10, ('S', true)  => 11,
-        ('B', true)  => 12, ('R', true) => 13,
+        ('P', false) => 0,
+        ('L', false) => 1,
+        ('N', false) => 2,
+        ('S', false) => 3,
+        ('G', false) => 4,
+        ('B', false) => 5,
+        ('R', false) => 6,
+        ('K', false) => 7,
+        ('P', true) => 8,
+        ('L', true) => 9,
+        ('N', true) => 10,
+        ('S', true) => 11,
+        ('B', true) => 12,
+        ('R', true) => 13,
         _ => return None,
     };
     Some((color, idx))
@@ -198,7 +220,7 @@ fn sfen_piece(c: char, promoted: bool) -> Option<(usize, usize)> {
 pub fn zobrist_from_sfen(sfen: &str) -> Option<u64> {
     let mut parts = sfen.split_whitespace();
     let board_str = parts.next()?;
-    let side_str  = parts.next()?;
+    let side_str = parts.next()?;
 
     let mut h: u64 = if side_str == "w" { ZOBRIST_SIDE } else { 0 };
     let mut sq = 0usize; // 0..81 (ri*9 + fi)
@@ -206,10 +228,15 @@ pub fn zobrist_from_sfen(sfen: &str) -> Option<u64> {
     let mut i = 0;
     while i < chars.len() {
         let ch = chars[i];
-        if ch == '/' { i += 1; continue; }
+        if ch == '/' {
+            i += 1;
+            continue;
+        }
         if ch == '+' {
             i += 1;
-            if i >= chars.len() { return None; }
+            if i >= chars.len() {
+                return None;
+            }
             let (color, pidx) = sfen_piece(chars[i], true)?;
             h ^= ZOBRIST[color][pidx][sq];
             sq += 1;
@@ -227,20 +254,30 @@ pub fn zobrist_from_sfen(sfen: &str) -> Option<u64> {
 
 /// Can an `opp` piece of type `pt` (whose forward ri-direction is `opp_fwd`) attack along
 /// direction `(pdr, pdf)` for `dist` steps? Called once per ray after the blocking scan.
-fn attacks_along(pt: PieceType, opp_fwd: i32, pdr: i32, _pdf: i32, dist: u32, is_diag: bool) -> bool {
+fn attacks_along(
+    pt: PieceType,
+    opp_fwd: i32,
+    pdr: i32,
+    _pdf: i32,
+    dist: u32,
+    is_diag: bool,
+) -> bool {
     match pt {
-        PieceType::Rook   => !is_diag,
+        PieceType::Rook => !is_diag,
         PieceType::Bishop => is_diag,
-        PieceType::Dragon => !is_diag || dist == 1,           // Rook + king-range
-        PieceType::Horse  => is_diag  || dist == 1,           // Bishop + king-range
-        PieceType::Lance  => !is_diag && pdr == opp_fwd,      // forward column, any dist
-        PieceType::Pawn   => !is_diag && pdr == opp_fwd && dist == 1,
-        PieceType::King   => dist == 1,
+        PieceType::Dragon => !is_diag || dist == 1, // Rook + king-range
+        PieceType::Horse => is_diag || dist == 1,   // Bishop + king-range
+        PieceType::Lance => !is_diag && pdr == opp_fwd, // forward column, any dist
+        PieceType::Pawn => !is_diag && pdr == opp_fwd && dist == 1,
+        PieceType::King => dist == 1,
         // Silver: forward + all diagonals
         PieceType::Silver => dist == 1 && (is_diag || pdr == opp_fwd),
         // Gold-like: all orthogonals + forward diagonals
-        PieceType::Gold | PieceType::ProPawn | PieceType::ProLance
-        | PieceType::ProKnight | PieceType::ProSilver => dist == 1 && (!is_diag || pdr == opp_fwd),
+        PieceType::Gold
+        | PieceType::ProPawn
+        | PieceType::ProLance
+        | PieceType::ProKnight
+        | PieceType::ProSilver => dist == 1 && (!is_diag || pdr == opp_fwd),
         PieceType::Knight => false, // handled outside ray loops
     }
 }
@@ -351,7 +388,11 @@ impl Board {
     /// Returns true if a normal move to (to_file, to_rank) by mover_color captures an opponent piece.
     /// Compute Zobrist hash of the current position (board pieces + side to move).
     pub fn zobrist_hash(&self) -> u64 {
-        let mut h: u64 = if self.side == SideToMove::White { ZOBRIST_SIDE } else { 0 };
+        let mut h: u64 = if self.side == SideToMove::White {
+            ZOBRIST_SIDE
+        } else {
+            0
+        };
         for ri in 0..9usize {
             for fi in 0..9usize {
                 if let Some((color, pt)) = self.grid[ri][fi] {
@@ -397,8 +438,14 @@ impl Board {
 
         // Ray scan in all 8 directions; first piece in each ray blocks further pieces.
         for &(dr, df) in &[
-            (-1i32, 0i32), (1, 0), (0, -1), (0, 1),
-            (-1, -1), (-1, 1), (1, -1), (1, 1),
+            (-1i32, 0i32),
+            (1, 0),
+            (0, -1),
+            (0, 1),
+            (-1, -1),
+            (-1, 1),
+            (1, -1),
+            (1, 1),
         ] {
             let is_diag = dr != 0 && df != 0;
             let (mut r, mut f) = (kr as i32 + dr, kf as i32 + df);
@@ -421,7 +468,8 @@ impl Board {
         let knight_r = kr as i32 - 2 * opp_fwd;
         for &kdf in &[-1i32, 1] {
             let knight_f = kf as i32 + kdf;
-            if (0..9i32).contains(&knight_r) && (0..9i32).contains(&knight_f)
+            if (0..9i32).contains(&knight_r)
+                && (0..9i32).contains(&knight_f)
                 && self.grid[knight_r as usize][knight_f as usize] == Some((opp, PieceType::Knight))
             {
                 return true;
@@ -471,7 +519,12 @@ mod tests {
     }
 
     fn empty_board(side: SideToMove) -> Board {
-        Board { grid: [[None; 9]; 9], hand: [[0; 7]; 2], side, move_count: 1 }
+        Board {
+            grid: [[None; 9]; 9],
+            hand: [[0; 7]; 2],
+            side,
+            move_count: 1,
+        }
     }
 
     #[test]

@@ -579,7 +579,10 @@ fn stability_skips_unlabeled() {
 
     let content = std::fs::read_to_string(out.path()).unwrap();
     let v: serde_json::Value = serde_json::from_str(content.lines().next().unwrap()).unwrap();
-    assert!(v["stability"].is_null(), "no observations → stability absent");
+    assert!(
+        v["stability"].is_null(),
+        "no observations → stability absent"
+    );
 }
 
 // --- mine ---
@@ -600,19 +603,19 @@ fn game_pos(ply: u32, score_cp: i32) -> serde_json::Value {
 fn mine_detects_blunder_and_window() {
     // ply1=+50, ply2=+300 → swing=250 > threshold 150
     // window=1 → ply1, ply2, ply3 all included
-    let f = make_labeled_jsonl(&[
-        game_pos(1, 50),
-        game_pos(2, 300),
-        game_pos(3, 310),
-    ]);
+    let f = make_labeled_jsonl(&[game_pos(1, 50), game_pos(2, 300), game_pos(3, 310)]);
     let out = NamedTempFile::new().unwrap();
     shogiesa()
         .args([
             "mine",
-            "--input", f.path().to_str().unwrap(),
-            "--out", out.path().to_str().unwrap(),
-            "--blunder-threshold", "150",
-            "--blunder-window", "1",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--blunder-threshold",
+            "150",
+            "--blunder-window",
+            "1",
         ])
         .assert()
         .success();
@@ -627,9 +630,12 @@ fn mine_no_blunder_empty_output() {
     shogiesa()
         .args([
             "mine",
-            "--input", f.path().to_str().unwrap(),
-            "--out", out.path().to_str().unwrap(),
-            "--blunder-threshold", "150",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--blunder-threshold",
+            "150",
         ])
         .assert()
         .success();
@@ -645,10 +651,14 @@ fn mine_losing_threshold() {
     shogiesa()
         .args([
             "mine",
-            "--input", f.path().to_str().unwrap(),
-            "--out", out.path().to_str().unwrap(),
-            "--blunder-threshold", "9999",
-            "--losing-threshold", "500",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--blunder-threshold",
+            "9999",
+            "--losing-threshold",
+            "500",
         ])
         .assert()
         .success();
@@ -662,20 +672,23 @@ fn mine_losing_threshold() {
 fn balance_by_phase_defaults_to_min_bucket() {
     // 2 opening, 3 middlegame, 1 endgame → min=1 → 1 per phase = 3 total
     let f = make_labeled_jsonl(&[
-        position("opening",    serde_json::json!([obs("7g7f", 50, 4)])),
-        position("opening",    serde_json::json!([obs("7g7f", 60, 4)])),
+        position("opening", serde_json::json!([obs("7g7f", 50, 4)])),
+        position("opening", serde_json::json!([obs("7g7f", 60, 4)])),
         position("middlegame", serde_json::json!([obs("7g7f", 100, 4)])),
         position("middlegame", serde_json::json!([obs("7g7f", 110, 4)])),
         position("middlegame", serde_json::json!([obs("7g7f", 120, 4)])),
-        position("endgame",    serde_json::json!([obs("7g7f", 200, 4)])),
+        position("endgame", serde_json::json!([obs("7g7f", 200, 4)])),
     ]);
     let out = NamedTempFile::new().unwrap();
     shogiesa()
         .args([
             "balance",
-            "--input", f.path().to_str().unwrap(),
-            "--out", out.path().to_str().unwrap(),
-            "--by", "phase",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--by",
+            "phase",
         ])
         .assert()
         .success();
@@ -687,21 +700,25 @@ fn balance_by_phase_defaults_to_min_bucket() {
 fn balance_target_override() {
     // --target 2: opening→2, middlegame→2, endgame→1(capped) = 5 total
     let f = make_labeled_jsonl(&[
-        position("opening",    serde_json::json!([obs("7g7f", 50, 4)])),
-        position("opening",    serde_json::json!([obs("7g7f", 60, 4)])),
+        position("opening", serde_json::json!([obs("7g7f", 50, 4)])),
+        position("opening", serde_json::json!([obs("7g7f", 60, 4)])),
         position("middlegame", serde_json::json!([obs("7g7f", 100, 4)])),
         position("middlegame", serde_json::json!([obs("7g7f", 110, 4)])),
         position("middlegame", serde_json::json!([obs("7g7f", 120, 4)])),
-        position("endgame",    serde_json::json!([obs("7g7f", 200, 4)])),
+        position("endgame", serde_json::json!([obs("7g7f", 200, 4)])),
     ]);
     let out = NamedTempFile::new().unwrap();
     shogiesa()
         .args([
             "balance",
-            "--input", f.path().to_str().unwrap(),
-            "--out", out.path().to_str().unwrap(),
-            "--by", "phase",
-            "--target", "2",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--by",
+            "phase",
+            "--target",
+            "2",
         ])
         .assert()
         .success();
@@ -734,8 +751,14 @@ fn split_by_source_creates_one_file_per_game() {
 
     let out_dir = tempfile::tempdir().unwrap();
     shogiesa()
-        .args(["split", "--input", f.path().to_str().unwrap(),
-               "--by-source", "--out-dir", out_dir.path().to_str().unwrap()])
+        .args([
+            "split",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--by-source",
+            "--out-dir",
+            out_dir.path().to_str().unwrap(),
+        ])
         .assert()
         .success();
 
@@ -748,16 +771,23 @@ fn split_by_source_creates_one_file_per_game() {
 #[test]
 fn sample_returns_exact_count() {
     let f = make_labeled_jsonl(&[
-        position("opening",    serde_json::json!([obs("7g7f", 50, 4)])),
+        position("opening", serde_json::json!([obs("7g7f", 50, 4)])),
         position("middlegame", serde_json::json!([obs("7g7f", 100, 4)])),
         position("middlegame", serde_json::json!([obs("7g7f", 110, 4)])),
-        position("endgame",    serde_json::json!([obs("7g7f", 200, 4)])),
-        position("endgame",    serde_json::json!([obs("7g7f", 210, 4)])),
+        position("endgame", serde_json::json!([obs("7g7f", 200, 4)])),
+        position("endgame", serde_json::json!([obs("7g7f", 210, 4)])),
     ]);
     let out = NamedTempFile::new().unwrap();
     shogiesa()
-        .args(["sample", "--input", f.path().to_str().unwrap(),
-               "--out", out.path().to_str().unwrap(), "--count", "3"])
+        .args([
+            "sample",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--count",
+            "3",
+        ])
         .assert()
         .success();
     let content = std::fs::read_to_string(out.path()).unwrap();
@@ -767,17 +797,26 @@ fn sample_returns_exact_count() {
 #[test]
 fn sample_deterministic_with_seed() {
     let f = make_labeled_jsonl(&[
-        position("opening",    serde_json::json!([obs("7g7f", 50, 4)])),
+        position("opening", serde_json::json!([obs("7g7f", 50, 4)])),
         position("middlegame", serde_json::json!([obs("7g7f", 100, 4)])),
         position("middlegame", serde_json::json!([obs("7g7f", 110, 4)])),
-        position("endgame",    serde_json::json!([obs("7g7f", 200, 4)])),
+        position("endgame", serde_json::json!([obs("7g7f", 200, 4)])),
     ]);
     let out1 = NamedTempFile::new().unwrap();
     let out2 = NamedTempFile::new().unwrap();
     for out in [&out1, &out2] {
         shogiesa()
-            .args(["sample", "--input", f.path().to_str().unwrap(),
-                   "--out", out.path().to_str().unwrap(), "--count", "2", "--seed", "42"])
+            .args([
+                "sample",
+                "--input",
+                f.path().to_str().unwrap(),
+                "--out",
+                out.path().to_str().unwrap(),
+                "--count",
+                "2",
+                "--seed",
+                "42",
+            ])
             .assert()
             .success();
     }
@@ -796,10 +835,14 @@ fn extract_dedup_zobrist_removes_duplicates() {
     // but --dedup-zobrist removes them. We use --dedup-zobrist on a single file as a smoke test.
     let out = NamedTempFile::new().unwrap();
     shogiesa()
-        .args(["extract",
-               "--input", fixture("sample.csa").to_str().unwrap(),
-               "--out", out.path().to_str().unwrap(),
-               "--dedup-zobrist"])
+        .args([
+            "extract",
+            "--input",
+            fixture("sample.csa").to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--dedup-zobrist",
+        ])
         .assert()
         .success();
     let content = std::fs::read_to_string(out.path()).unwrap();

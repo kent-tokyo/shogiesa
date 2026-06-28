@@ -10,7 +10,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use std::hash::{Hash, Hasher};
 
-use shogiesa_core::{sfen::Sfen, zobrist_from_sfen, GamePhase, Observation, PositionRecord, Score, SideToMove};
+use shogiesa_core::{
+    GamePhase, Observation, PositionRecord, Score, SideToMove, sfen::Sfen, zobrist_from_sfen,
+};
 use shogiesa_pack as pack;
 use shogiesa_usi::UsiEngine;
 use tracing::info;
@@ -290,7 +292,10 @@ fn cmd_extract(args: ExtractArgs) -> Result<()> {
     let use_zobrist = args.dedup_zobrist;
     // For Zobrist dedup, disable SFEN dedup in the extractor and handle it here.
     let extract_config = if use_zobrist {
-        shogiesa_core::ExtractConfig { dedup: false, ..config }
+        shogiesa_core::ExtractConfig {
+            dedup: false,
+            ..config
+        }
     } else {
         config
     };
@@ -303,13 +308,12 @@ fn cmd_extract(args: ExtractArgs) -> Result<()> {
     for path in &paths {
         total_games += 1;
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        let result =
-            match ext {
-                "kif" | "ki2" => shogiesa_kif::extract_from_path(path, &extract_config, &mut seen)
-                    .map_err(|e| e.to_string()),
-                _ => shogiesa_csa::extract_from_path(path, &extract_config, &mut seen)
-                    .map_err(|e| e.to_string()),
-            };
+        let result = match ext {
+            "kif" | "ki2" => shogiesa_kif::extract_from_path(path, &extract_config, &mut seen)
+                .map_err(|e| e.to_string()),
+            _ => shogiesa_csa::extract_from_path(path, &extract_config, &mut seen)
+                .map_err(|e| e.to_string()),
+        };
         match result {
             Ok(records) => {
                 for rec in &records {
@@ -329,7 +333,12 @@ fn cmd_extract(args: ExtractArgs) -> Result<()> {
                 skipped += 1;
             }
         }
-        info!(games = total_games, positions = total_positions, "processed {}", path.display());
+        info!(
+            games = total_games,
+            positions = total_positions,
+            "processed {}",
+            path.display()
+        );
     }
 
     writer.flush()?;
@@ -389,8 +398,8 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
         .collect();
 
     // Parse and validate all input records (streaming for large files)
-    let content = fs::read_to_string(&args.input)
-        .with_context(|| format!("cannot open {:?}", args.input))?;
+    let content =
+        fs::read_to_string(&args.input).with_context(|| format!("cannot open {:?}", args.input))?;
     let mut records: Vec<PositionRecord> = Vec::new();
     let mut skipped = 0usize;
     for (i, line) in content.lines().enumerate() {
@@ -414,8 +423,13 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
     info!(total, jobs, "labeling started");
 
     // Verify the engine launches before committing to parallel work
-    let probe = UsiEngine::launch(&engine_path, engine_name.clone(), timeout_ms, &engine_options)
-        .with_context(|| format!("failed to launch engine {engine_path:?}"))?;
+    let probe = UsiEngine::launch(
+        &engine_path,
+        engine_name.clone(),
+        timeout_ms,
+        &engine_options,
+    )
+    .with_context(|| format!("failed to launch engine {engine_path:?}"))?;
     let engine_display_name = probe.engine_name.clone();
     drop(probe); // cleanly quits via Drop
 
@@ -535,16 +549,28 @@ fn cmd_split(args: SplitArgs) -> Result<()> {
 
     for (i, line) in reader.lines().enumerate() {
         let line = line?;
-        if line.trim().is_empty() { continue; }
+        if line.trim().is_empty() {
+            continue;
+        }
         let rec: PositionRecord = match serde_json::from_str(&line) {
             Ok(r) => r,
-            Err(e) => { tracing::warn!(line = i + 1, "JSON parse error: {e}"); continue; }
+            Err(e) => {
+                tracing::warn!(line = i + 1, "JSON parse error: {e}");
+                continue;
+            }
         };
 
         let key = rec.source.path.clone();
         let w = writers.entry(key.clone()).or_insert_with(|| {
-            let safe: String = key.chars()
-                .map(|c| if c.is_alphanumeric() || c == '.' || c == '-' { c } else { '_' })
+            let safe: String = key
+                .chars()
+                .map(|c| {
+                    if c.is_alphanumeric() || c == '.' || c == '-' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
                 .collect();
             let out_path = args.out_dir.join(format!("{safe}.jsonl"));
             let f = File::create(&out_path).expect("cannot create output file");
@@ -555,7 +581,11 @@ fn cmd_split(args: SplitArgs) -> Result<()> {
         total += 1;
     }
 
-    eprintln!("done: {total} positions split into {} files → {:?}", writers.len(), args.out_dir);
+    eprintln!(
+        "done: {total} positions split into {} files → {:?}",
+        writers.len(),
+        args.out_dir
+    );
     Ok(())
 }
 
@@ -589,7 +619,10 @@ fn cmd_sample(args: SampleArgs) -> Result<()> {
         }
     }
     writer.flush()?;
-    eprintln!("done: {kept}/{total} sampled (seed={seed}) → {:?}", args.out);
+    eprintln!(
+        "done: {kept}/{total} sampled (seed={seed}) → {:?}",
+        args.out
+    );
     Ok(())
 }
 
@@ -667,7 +700,10 @@ fn cmd_mine(args: MineArgs) -> Result<()> {
         }
     }
     writer.flush()?;
-    eprintln!("done: {mined}/{total} hard positions mined → {:?}", args.out);
+    eprintln!(
+        "done: {mined}/{total} hard positions mined → {:?}",
+        args.out
+    );
     Ok(())
 }
 
@@ -676,8 +712,8 @@ fn cmd_balance(args: BalanceArgs) -> Result<()> {
         anyhow::bail!("--by requires at least one of: phase, side, eval-bucket");
     }
     let by_phase = args.by.iter().any(|s| s == "phase");
-    let by_side  = args.by.iter().any(|s| s == "side");
-    let by_eval  = args.by.iter().any(|s| s == "eval-bucket");
+    let by_side = args.by.iter().any(|s| s == "side");
+    let by_eval = args.by.iter().any(|s| s == "eval-bucket");
 
     let (records, _) = load_records(&args.input)?;
     let total = records.len();
@@ -686,8 +722,12 @@ fn cmd_balance(args: BalanceArgs) -> Result<()> {
     let mut buckets: HashMap<String, Vec<usize>> = HashMap::new();
     for (i, rec) in records.iter().enumerate() {
         let mut key = String::new();
-        if by_phase { key.push_str(&format!("{}:", rec.tags.phase)); }
-        if by_side  { key.push_str(&format!("{}:", rec.tags.side_to_move)); }
+        if by_phase {
+            key.push_str(&format!("{}:", rec.tags.phase));
+        }
+        if by_side {
+            key.push_str(&format!("{}:", rec.tags.side_to_move));
+        }
         if by_eval {
             let bucket_str = rec
                 .observations
@@ -695,7 +735,7 @@ fn cmd_balance(args: BalanceArgs) -> Result<()> {
                 .max_by_key(|o| o.depth)
                 .map(|o| match o.score {
                     Score::Cp { value } => format!("{}:", (value.div_euclid(200)) * 200),
-                    Score::Mate { .. }  => "mate:".to_string(),
+                    Score::Mate { .. } => "mate:".to_string(),
                 })
                 .unwrap_or_else(|| "_none_:".to_string());
             key.push_str(&bucket_str);
@@ -704,7 +744,7 @@ fn cmd_balance(args: BalanceArgs) -> Result<()> {
     }
 
     let min_size = buckets.values().map(|v| v.len()).min().unwrap_or(0);
-    let target   = args.target.unwrap_or(min_size);
+    let target = args.target.unwrap_or(min_size);
 
     // Select `target` entries from each bucket sorted by SFEN (deterministic)
     let mut keep = HashSet::<usize>::new();
@@ -730,7 +770,8 @@ fn cmd_balance(args: BalanceArgs) -> Result<()> {
     writer.flush()?;
     eprintln!(
         "done: {kept}/{total} selected (target {target}/bucket, {} buckets) → {:?}",
-        buckets.len(), args.out
+        buckets.len(),
+        args.out
     );
     Ok(())
 }

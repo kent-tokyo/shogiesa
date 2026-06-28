@@ -4,30 +4,12 @@ use std::io::BufRead;
 use std::path::Path;
 
 use csa::{Action, GameRecord};
-use shogiesa_core::{PositionRecord, PositionTags, SideToMove, SourceInfo, phase_from_ply};
+pub use shogiesa_core::ExtractConfig;
+use shogiesa_core::{PositionRecord, PositionTags, SourceInfo, phase_from_ply};
 use thiserror::Error;
 use tracing::warn;
 
-use crate::board::{Board, BoardError};
-
-#[derive(Debug, Clone)]
-pub struct ExtractConfig {
-    pub min_ply: u32,
-    pub max_ply: Option<u32>,
-    pub every_n: u32,
-    pub dedup: bool,
-}
-
-impl Default for ExtractConfig {
-    fn default() -> Self {
-        Self {
-            min_ply: 1,
-            max_ply: None,
-            every_n: 1,
-            dedup: false,
-        }
-    }
-}
+use crate::board::{apply_csa_action, board_from_csa_position};
 
 #[derive(Debug, Error)]
 pub enum ExtractError {
@@ -37,8 +19,8 @@ pub enum ExtractError {
     Csa(String),
 }
 
-impl From<BoardError> for ExtractError {
-    fn from(e: BoardError) -> Self {
+impl From<shogiesa_core::BoardError> for ExtractError {
+    fn from(e: shogiesa_core::BoardError) -> Self {
         ExtractError::Csa(e.to_string())
     }
 }
@@ -52,13 +34,13 @@ pub fn extract_from_str(
     let record: GameRecord =
         csa::parse_csa(content).map_err(|e| ExtractError::Csa(format!("{e:?}")))?;
 
-    let mut board = Board::from_csa_position(&record.start_pos);
+    let mut board = board_from_csa_position(&record.start_pos);
     let mut out = Vec::new();
     let mut ply: u32 = 0;
 
     for mr in &record.moves {
         if matches!(mr.action, Action::Move(..)) {
-            if let Err(e) = board.apply(mr.action) {
+            if let Err(e) = apply_csa_action(&mut board, mr.action) {
                 warn!(path = source_path, ply, "board error: {e}");
                 break;
             }
@@ -79,10 +61,7 @@ pub fn extract_from_str(
                 continue;
             }
 
-            let side = match board.side {
-                csa::Color::Black => SideToMove::Black,
-                csa::Color::White => SideToMove::White,
-            };
+            let side = board.side;
             // ponytail: in_check and has_capture need move-gen; always false for now
             let tags = PositionTags {
                 phase: phase_from_ply(ply),

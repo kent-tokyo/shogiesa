@@ -142,16 +142,16 @@ fn main() -> Result<()> {
 }
 
 fn cmd_extract(args: ExtractArgs) -> Result<()> {
-    let config = shogiesa_csa::ExtractConfig {
+    let config = shogiesa_core::ExtractConfig {
         min_ply: args.min_ply,
         max_ply: args.max_ply,
         every_n: args.every_n_plies,
         dedup: args.dedup,
     };
 
-    let paths = collect_csa_paths(&args.input)?;
+    let paths = collect_game_paths(&args.input)?;
     if paths.is_empty() {
-        anyhow::bail!("no .csa files found in {:?}", args.input);
+        anyhow::bail!("no .csa or .kif files found in {:?}", args.input);
     }
 
     let out_file =
@@ -165,7 +165,15 @@ fn cmd_extract(args: ExtractArgs) -> Result<()> {
 
     for path in &paths {
         total_games += 1;
-        match shogiesa_csa::extract_from_path(path, &config, &mut seen) {
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let result =
+            match ext {
+                "kif" | "ki2" => shogiesa_kif::extract_from_path(path, &config, &mut seen)
+                    .map_err(|e| e.to_string()),
+                _ => shogiesa_csa::extract_from_path(path, &config, &mut seen)
+                    .map_err(|e| e.to_string()),
+            };
+        match result {
             Ok(records) => {
                 for rec in &records {
                     serde_json::to_writer(&mut writer, rec)?;
@@ -405,7 +413,7 @@ fn cmd_filter(args: FilterArgs) -> Result<()> {
     Ok(())
 }
 
-fn collect_csa_paths(input: &PathBuf) -> Result<Vec<PathBuf>> {
+fn collect_game_paths(input: &PathBuf) -> Result<Vec<PathBuf>> {
     if input.is_file() {
         return Ok(vec![input.clone()]);
     }
@@ -415,7 +423,10 @@ fn collect_csa_paths(input: &PathBuf) -> Result<Vec<PathBuf>> {
     {
         let entry = entry?;
         let p = entry.path();
-        if p.extension().and_then(|e| e.to_str()) == Some("csa") {
+        if matches!(
+            p.extension().and_then(|e| e.to_str()),
+            Some("csa" | "kif" | "ki2")
+        ) {
             paths.push(p);
         }
     }

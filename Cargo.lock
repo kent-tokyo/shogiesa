@@ -500,6 +500,7 @@ version = "0.2.0"
 dependencies = [
  "shogiesa-core",
  "shogiesa-csa",
+ "shogiesa-kif",
  "shogiesa-usi",
 ]
 
@@ -514,6 +515,7 @@ dependencies = [
  "serde_json",
  "shogiesa-core",
  "shogiesa-csa",
+ "shogiesa-kif",
  "shogiesa-usi",
  "tempfile",
  "tracing",
@@ -533,6 +535,16 @@ name = "shogiesa-csa"
 version = "0.2.0"
 dependencies = [
  "csa",
+ "serde_json",
+ "shogiesa-core",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
+name = "shogiesa-kif"
+version = "0.2.0"
+dependencies = [
  "serde_json",
  "shogiesa-core",
  "thiserror",

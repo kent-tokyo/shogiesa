@@ -12,4 +12,5 @@ categories = ["command-line-utilities", "game-engines"]
 [dependencies]
 shogiesa-core = { path = "../shogiesa-core", version = "0.2" }
 shogiesa-csa  = { path = "../shogiesa-csa",  version = "0.2" }
+shogiesa-kif  = { path = "../shogiesa-kif",  version = "0.2" }
 shogiesa-usi  = { path = "../shogiesa-usi",  version = "0.2" }

@@ -101,4 +101,27 @@ pub fn phase_from_ply(ply: u32) -> GamePhase {
     }
 }
 
+pub mod board;
+pub use board::{Board, BoardError, PieceType};
+
 pub mod sfen;
+
+/// Shared configuration for position extraction (used by shogiesa-csa and shogiesa-kif).
+#[derive(Debug, Clone)]
+pub struct ExtractConfig {
+    pub min_ply: u32,
+    pub max_ply: Option<u32>,
+    pub every_n: u32,
+    pub dedup: bool,
+}
+
+impl Default for ExtractConfig {
+    fn default() -> Self {
+        Self {
+            min_ply: 1,
+            max_ply: None,
+            every_n: 1,
+            dedup: false,
+        }
+    }
+}

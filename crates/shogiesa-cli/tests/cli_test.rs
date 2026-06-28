@@ -302,3 +302,264 @@ fn label_appends_to_existing_observations() {
     // Should have 2 observations total (4 from first pass + 6 from second)
     assert_eq!(v["observations"].as_array().unwrap().len(), 2);
 }
+
+// --- filter ---
+
+/// Build a labeled JSONL string with custom observations inline.
+fn make_labeled_jsonl(records: &[serde_json::Value]) -> NamedTempFile {
+    let mut f = NamedTempFile::new().unwrap();
+    for rec in records {
+        writeln!(f, "{rec}").unwrap();
+    }
+    f.flush().unwrap();
+    f
+}
+
+fn obs(bestmove: &str, score_cp: i32, depth: u32) -> serde_json::Value {
+    serde_json::json!({
+        "engine": "test",
+        "engine_version": null,
+        "depth": depth,
+        "score": { "kind": "cp", "value": score_cp },
+        "bestmove": bestmove,
+        "nodes": null,
+        "time_ms": null,
+        "pv": null
+    })
+}
+
+fn obs_mate(bestmove: &str, moves: i32, depth: u32) -> serde_json::Value {
+    serde_json::json!({
+        "engine": "test",
+        "engine_version": null,
+        "depth": depth,
+        "score": { "kind": "mate", "moves": moves },
+        "bestmove": bestmove,
+        "nodes": null,
+        "time_ms": null,
+        "pv": null
+    })
+}
+
+fn position(phase: &str, observations: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "sfen": "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+        "source": { "kind": "csa", "path": "test.csa", "ply": 1 },
+        "tags": { "phase": phase, "side_to_move": "black", "in_check": false, "has_capture": false },
+        "observations": observations
+    })
+}
+
+#[test]
+fn filter_no_observations_excluded() {
+    let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 0);
+}
+
+#[test]
+fn filter_bestmove_agreement_passes() {
+    let f = make_labeled_jsonl(&[position(
+        "middlegame",
+        serde_json::json!([obs("7g7f", 50, 4), obs("7g7f", 55, 6),]),
+    )]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--require-bestmove-agreement",
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 1);
+}
+
+#[test]
+fn filter_bestmove_disagreement_excluded() {
+    let f = make_labeled_jsonl(&[position(
+        "middlegame",
+        serde_json::json!([
+            obs("7g7f", 50, 4),
+            obs("2b3c", 55, 6), // different bestmove
+        ]),
+    )]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--require-bestmove-agreement",
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 0);
+}
+
+#[test]
+fn filter_score_swing_excluded() {
+    let f = make_labeled_jsonl(&[position(
+        "middlegame",
+        serde_json::json!([
+            obs("7g7f", 50, 4),
+            obs("7g7f", 300, 6), // swing = 250 cp
+        ]),
+    )]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--max-score-swing-cp",
+            "150",
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 0);
+}
+
+#[test]
+fn filter_exclude_mate() {
+    let f = make_labeled_jsonl(&[
+        position("middlegame", serde_json::json!([obs("7g7f", 50, 4)])),
+        position("middlegame", serde_json::json!([obs_mate("7g7f", 3, 4)])),
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--exclude-mate",
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 1);
+}
+
+#[test]
+fn filter_eval_range() {
+    let f = make_labeled_jsonl(&[
+        position("middlegame", serde_json::json!([obs("7g7f", 1500, 4)])), // too high (>1200)
+        position("middlegame", serde_json::json!([obs("7g7f", 100, 4)])),  // OK
+        position("middlegame", serde_json::json!([obs("7g7f", -1500, 4)])), // too low (<-1200)
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--eval-min=-1200",
+            "--eval-max=1200",
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 1);
+}
+
+#[test]
+fn filter_phase() {
+    let f = make_labeled_jsonl(&[
+        position("opening", serde_json::json!([obs("7g7f", 50, 4)])),
+        position("middlegame", serde_json::json!([obs("7g7f", 50, 4)])),
+        position("endgame", serde_json::json!([obs("7g7f", 50, 4)])),
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--phase",
+            "middlegame,endgame",
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 2);
+}
+
+#[test]
+fn filter_end_to_end_with_label() {
+    // extract → label (fake engine) → filter with bestmove agreement → all pass
+    let pos = NamedTempFile::new().unwrap();
+    let obs_file = NamedTempFile::new().unwrap();
+    let filtered = NamedTempFile::new().unwrap();
+
+    shogiesa()
+        .args([
+            "extract",
+            "--input",
+            fixture("sample.csa").to_str().unwrap(),
+            "--out",
+            pos.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            pos.path().to_str().unwrap(),
+            "--engine",
+            cargo_bin("fake-usi-engine").to_str().unwrap(),
+            "--depths",
+            "4,6",
+            "--out",
+            obs_file.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            obs_file.path().to_str().unwrap(),
+            "--out",
+            filtered.path().to_str().unwrap(),
+            "--require-bestmove-agreement",
+            "--eval-min=-1200",
+            "--eval-max=1200",
+        ])
+        .assert()
+        .success();
+
+    // fake engine always returns bestmove 7g7f, cp 100 → all 5 positions should pass
+    let content = std::fs::read_to_string(filtered.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 5);
+}

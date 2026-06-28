@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use shogiesa_core::{Observation, PositionRecord, sfen::Sfen};
+use shogiesa_core::{GamePhase, Observation, PositionRecord, Score, sfen::Sfen};
 use shogiesa_usi::UsiEngine;
 use tracing::info;
 
@@ -25,6 +25,8 @@ enum Commands {
     Extract(ExtractArgs),
     /// Label positions with engine evaluations
     Label(LabelArgs),
+    /// Filter labeled positions by stability criteria
+    Filter(FilterArgs),
     /// Report statistics about a positions dataset
     Report(ReportArgs),
     /// Validate data integrity of a positions dataset
@@ -92,6 +94,37 @@ struct LabelArgs {
     out: PathBuf,
 }
 
+#[derive(clap::Args)]
+struct FilterArgs {
+    /// Input labeled positions JSONL
+    #[arg(short, long)]
+    input: PathBuf,
+    /// Output JSONL file
+    #[arg(short, long)]
+    out: PathBuf,
+    /// Require all observations to agree on bestmove
+    #[arg(long)]
+    require_bestmove_agreement: bool,
+    /// Exclude positions where any observation has a mate score
+    #[arg(long)]
+    exclude_mate: bool,
+    /// Maximum allowed cp swing across observations (abs(max_cp - min_cp))
+    #[arg(long)]
+    max_score_swing_cp: Option<i32>,
+    /// Minimum cp score — positions with lower eval are excluded (e.g. --eval-min=-1200)
+    #[arg(long, allow_hyphen_values = true)]
+    eval_min: Option<i32>,
+    /// Maximum cp score — positions with higher eval are excluded (e.g. --eval-max=1200)
+    #[arg(long, allow_hyphen_values = true)]
+    eval_max: Option<i32>,
+    /// Minimum number of observations required (default: 1)
+    #[arg(long, default_value = "1")]
+    min_observations: u32,
+    /// Filter by game phase: comma-separated (opening,middlegame,endgame)
+    #[arg(long)]
+    phase: Option<String>,
+}
+
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -102,6 +135,7 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Extract(args) => cmd_extract(args),
         Commands::Label(args) => cmd_label(args),
+        Commands::Filter(args) => cmd_filter(args),
         Commands::Report(args) => cmd_report(args),
         Commands::Validate(args) => cmd_validate(args),
     }
@@ -242,6 +276,130 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
     engine.quit();
     eprintln!(
         "done: {total} positions, {labeled} labeled, {skipped} skipped → {:?}",
+        args.out
+    );
+    Ok(())
+}
+
+fn cp_value(s: &Score) -> Option<i32> {
+    match s {
+        Score::Cp { value } => Some(*value),
+        Score::Mate { .. } => None,
+    }
+}
+
+fn passes_filter(
+    rec: &PositionRecord,
+    args: &FilterArgs,
+    allowed_phases: &Option<Vec<GamePhase>>,
+) -> bool {
+    let obs = &rec.observations;
+
+    if (obs.len() as u32) < args.min_observations {
+        return false;
+    }
+
+    if allowed_phases
+        .as_ref()
+        .is_some_and(|p| !p.contains(&rec.tags.phase))
+    {
+        return false;
+    }
+
+    if args.exclude_mate && obs.iter().any(|o| matches!(o.score, Score::Mate { .. })) {
+        return false;
+    }
+
+    let cp_scores: Vec<i32> = obs.iter().filter_map(|o| cp_value(&o.score)).collect();
+
+    if args
+        .eval_min
+        .is_some_and(|min| cp_scores.iter().any(|&v| v < min))
+    {
+        return false;
+    }
+    if args
+        .eval_max
+        .is_some_and(|max| cp_scores.iter().any(|&v| v > max))
+    {
+        return false;
+    }
+
+    if let Some(max_swing) = args.max_score_swing_cp
+        && cp_scores.len() >= 2
+        && {
+            let lo = *cp_scores.iter().min().unwrap();
+            let hi = *cp_scores.iter().max().unwrap();
+            hi - lo > max_swing
+        }
+    {
+        return false;
+    }
+
+    if args.require_bestmove_agreement && obs.len() >= 2 {
+        let first = &obs[0].bestmove;
+        if obs.iter().any(|o| &o.bestmove != first) {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn cmd_filter(args: FilterArgs) -> Result<()> {
+    let allowed_phases: Option<Vec<GamePhase>> = args.phase.as_deref().map(|s| {
+        s.split(',')
+            .filter_map(|p| match p.trim() {
+                "opening" => Some(GamePhase::Opening),
+                "middlegame" => Some(GamePhase::Middlegame),
+                "endgame" => Some(GamePhase::Endgame),
+                other => {
+                    tracing::warn!("unknown phase {other:?}, ignoring");
+                    None
+                }
+            })
+            .collect()
+    });
+
+    let reader = BufReader::new(
+        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
+    );
+    let out_file =
+        File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
+    let mut writer = BufWriter::new(out_file);
+
+    let mut total = 0usize;
+    let mut passed = 0usize;
+    let mut skipped = 0usize;
+
+    for (i, line) in reader.lines().enumerate() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        total += 1;
+
+        let rec: PositionRecord = match serde_json::from_str(&line) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(line = i + 1, "JSON parse error: {e}");
+                skipped += 1;
+                continue;
+            }
+        };
+
+        if passes_filter(&rec, &args, &allowed_phases) {
+            serde_json::to_writer(&mut writer, &rec)?;
+            writer.write_all(b"\n")?;
+            passed += 1;
+        } else {
+            skipped += 1;
+        }
+    }
+
+    writer.flush()?;
+    eprintln!(
+        "done: {total} read, {passed} passed, {skipped} filtered → {:?}",
         args.out
     );
     Ok(())

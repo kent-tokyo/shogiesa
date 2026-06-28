@@ -460,6 +460,10 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
     let mut sfen_counts: HashMap<&str, usize> = HashMap::new();
     let mut tag_mismatches = 0usize;
     let mut invalid_sfens = 0usize;
+    let mut labeled = 0usize;
+    let mut depth_disagree = 0usize;
+    // eval buckets: key = floor(cp / 200) * 200; special keys: i32::MIN = unlabeled, i32::MAX = mate
+    let mut eval_buckets: BTreeMap<i32, usize> = BTreeMap::new();
 
     for rec in &records {
         *phases.entry(format!("{}", rec.tags.phase)).or_default() += 1;
@@ -480,6 +484,29 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
                 }
             }
             Err(_) => invalid_sfens += 1,
+        }
+
+        // observation stats
+        if rec.observations.is_empty() {
+            *eval_buckets.entry(i32::MIN).or_default() += 1; // unlabeled sentinel
+        } else {
+            labeled += 1;
+            // depth disagreement
+            let first = &rec.observations[0].bestmove;
+            if rec.observations.iter().any(|o| &o.bestmove != first) {
+                depth_disagree += 1;
+            }
+            // eval bucket from deepest observation
+            if let Some(deepest) = rec.observations.iter().max_by_key(|o| o.depth) {
+                let key = match deepest.score {
+                    Score::Cp { value } => {
+                        // bucket width 200cp; clamp display at ±1400
+                        (value.div_euclid(200)) * 200
+                    }
+                    Score::Mate { .. } => i32::MAX, // mate sentinel
+                };
+                *eval_buckets.entry(key).or_default() += 1;
+            }
         }
     }
 
@@ -567,6 +594,42 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
         "OK"
     };
     println!("  duplicate rate : {duplicate_rate:.1}%  {dup_warn}");
+
+    // --- observation stats (only shown when any record has been labeled) ---
+    let unlabeled = n - labeled;
+    println!();
+    println!("observations:");
+    println!(
+        "  labeled        : {labeled:>6}  ({:.1}%)",
+        labeled as f64 / n as f64 * 100.0
+    );
+    println!(
+        "  unlabeled      : {unlabeled:>6}  ({:.1}%)",
+        unlabeled as f64 / n as f64 * 100.0
+    );
+    if labeled > 0 {
+        println!(
+            "  depth disagree : {depth_disagree:>6}  ({:.1}% of labeled)",
+            depth_disagree as f64 / labeled as f64 * 100.0
+        );
+    }
+
+    if !eval_buckets.is_empty() {
+        let bar_max = eval_buckets.values().copied().max().unwrap_or(1);
+        println!();
+        println!("eval distribution (200cp buckets, deepest observation):");
+        for (&key, &count) in &eval_buckets {
+            let label = if key == i32::MIN {
+                "  unlabeled  ".to_string()
+            } else if key == i32::MAX {
+                "  mate       ".to_string()
+            } else {
+                format!("  {:+5}..{:+5}", key, key + 199)
+            };
+            let bar = "█".repeat(count * 20 / bar_max.max(1));
+            println!("{label}: {count:>5}  {bar}");
+        }
+    }
 
     Ok(())
 }

@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "crates/shogiesa-core",
+    "crates/shogiesa-csa",
+    "crates/shogiesa-cli",
+]
+resolver = "2"

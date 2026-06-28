@@ -63,13 +63,22 @@ pub struct PositionTags {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum Score {
+    Cp { value: i32 },
+    Mate { moves: i32 },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Observation {
     pub engine: String,
     pub engine_version: Option<String>,
     pub depth: u32,
-    pub score_cp: i32,
+    pub score: Score,
     pub bestmove: String,
     pub nodes: Option<u64>,
+    pub time_ms: Option<u64>,
+    pub pv: Option<Vec<String>>,
 }
 
 impl PositionRecord {

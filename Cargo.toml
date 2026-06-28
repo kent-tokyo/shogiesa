@@ -2,6 +2,8 @@
 members = [
     "crates/shogiesa-core",
     "crates/shogiesa-csa",
+    "crates/shogiesa-usi",
     "crates/shogiesa-cli",
+    "crates/fake-usi-engine",
 ]
 resolver = "2"

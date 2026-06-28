@@ -1,0 +1,256 @@
+use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::path::Path;
+use std::process::{Child, ChildStdin, Command as StdCommand, Stdio};
+use std::sync::mpsc::{self, Receiver};
+use std::thread;
+use std::time::Duration;
+
+use shogiesa_core::Score;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum UsiError {
+    #[error("IO: {0}")]
+    Io(#[from] io::Error),
+    #[error("engine did not respond in time")]
+    Timeout,
+    #[error("unexpected engine response")]
+    InvalidResponse,
+    #[error("bestmove received without info")]
+    NoBestmove,
+}
+
+#[derive(Debug, Clone)]
+pub struct AnalysisResult {
+    pub depth: u32,
+    pub score: Score,
+    pub bestmove: String,
+    pub nodes: Option<u64>,
+    pub time_ms: Option<u64>,
+    pub pv: Option<Vec<String>>,
+}
+
+struct InfoLine {
+    depth: Option<u32>,
+    score: Option<Score>,
+    nodes: Option<u64>,
+    time_ms: Option<u64>,
+    pv: Option<Vec<String>>,
+}
+
+fn parse_info(line: &str) -> Option<InfoLine> {
+    let tokens: Vec<&str> = line.split_whitespace().collect();
+    if tokens.first().copied() != Some("info") {
+        return None;
+    }
+    let mut info = InfoLine {
+        depth: None,
+        score: None,
+        nodes: None,
+        time_ms: None,
+        pv: None,
+    };
+    let mut i = 1;
+    while i < tokens.len() {
+        match tokens[i] {
+            "depth" => {
+                info.depth = tokens.get(i + 1).and_then(|s| s.parse().ok());
+                i += 2;
+            }
+            "score" => match tokens.get(i + 1).copied() {
+                Some("cp") => {
+                    info.score = tokens
+                        .get(i + 2)
+                        .and_then(|s| s.parse::<i32>().ok())
+                        .map(|v| Score::Cp { value: v });
+                    i += 3;
+                }
+                Some("mate") => {
+                    info.score = tokens
+                        .get(i + 2)
+                        .and_then(|s| s.parse::<i32>().ok())
+                        .map(|m| Score::Mate { moves: m });
+                    i += 3;
+                }
+                _ => {
+                    i += 1;
+                }
+            },
+            "nodes" => {
+                info.nodes = tokens.get(i + 1).and_then(|s| s.parse().ok());
+                i += 2;
+            }
+            "time" => {
+                info.time_ms = tokens.get(i + 1).and_then(|s| s.parse().ok());
+                i += 2;
+            }
+            "pv" => {
+                info.pv = Some(tokens[i + 1..].iter().map(|s| s.to_string()).collect());
+                break;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+    Some(info)
+}
+
+pub struct UsiEngine {
+    child: Child,
+    stdin: BufWriter<ChildStdin>,
+    rx: Receiver<io::Result<String>>,
+    pub engine_name: String,
+    pub engine_version: Option<String>,
+}
+
+impl UsiEngine {
+    /// Launch an engine from a path with optional extra arguments.
+    pub fn launch(path: &Path, name: String, timeout_ms: u64) -> Result<Self, UsiError> {
+        Self::launch_command(StdCommand::new(path), name, timeout_ms)
+    }
+
+    /// Launch from a pre-built `Command` (useful for passing flags in tests).
+    pub fn launch_command(
+        mut cmd: StdCommand,
+        name: String,
+        timeout_ms: u64,
+    ) -> Result<Self, UsiError> {
+        let mut child = cmd
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()?;
+
+        let stdin = BufWriter::new(child.stdin.take().expect("stdin piped"));
+        let stdout = BufReader::new(child.stdout.take().expect("stdout piped"));
+
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            for line in stdout.lines() {
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+
+        let mut engine = UsiEngine {
+            child,
+            stdin,
+            rx,
+            engine_name: name,
+            engine_version: None,
+        };
+        engine.handshake(timeout_ms)?;
+        Ok(engine)
+    }
+
+    fn write_line(&mut self, cmd: &str) -> Result<(), UsiError> {
+        writeln!(self.stdin, "{cmd}")?;
+        self.stdin.flush()?;
+        Ok(())
+    }
+
+    fn recv(&self, timeout_ms: u64) -> Result<String, UsiError> {
+        self.rx
+            .recv_timeout(Duration::from_millis(timeout_ms))
+            .map_err(|_| UsiError::Timeout)?
+            .map_err(UsiError::Io)
+    }
+
+    fn handshake(&mut self, timeout_ms: u64) -> Result<(), UsiError> {
+        self.write_line("usi")?;
+        loop {
+            let line = self.recv(timeout_ms)?;
+            if line.starts_with("id name ") && self.engine_name.is_empty() {
+                self.engine_name = line.strip_prefix("id name ").unwrap_or("").to_string();
+            } else if line.starts_with("id version ") {
+                self.engine_version =
+                    Some(line.strip_prefix("id version ").unwrap_or("").to_string());
+            } else if line == "usiok" {
+                break;
+            }
+        }
+        self.write_line("isready")?;
+        loop {
+            let line = self.recv(timeout_ms)?;
+            if line == "readyok" {
+                break;
+            }
+        }
+        self.write_line("usinewgame")?;
+        Ok(())
+    }
+
+    pub fn analyse(
+        &mut self,
+        sfen: &str,
+        depth: u32,
+        timeout_ms: u64,
+    ) -> Result<AnalysisResult, UsiError> {
+        self.write_line(&format!("position sfen {sfen}"))?;
+        self.write_line(&format!("go depth {depth}"))?;
+
+        let mut last_info: Option<InfoLine> = None;
+        loop {
+            let line = self.recv(timeout_ms)?;
+            if line.starts_with("bestmove ") {
+                let bestmove = line
+                    .strip_prefix("bestmove ")
+                    .and_then(|s| s.split_whitespace().next())
+                    .ok_or(UsiError::InvalidResponse)?
+                    .to_string();
+                let info = last_info.ok_or(UsiError::NoBestmove)?;
+                return Ok(AnalysisResult {
+                    depth,
+                    score: info.score.ok_or(UsiError::InvalidResponse)?,
+                    bestmove,
+                    nodes: info.nodes,
+                    time_ms: info.time_ms,
+                    pv: info.pv,
+                });
+            } else if line.starts_with("info ")
+                && let Some(info) = parse_info(&line)
+            {
+                last_info = Some(info);
+            }
+        }
+    }
+
+    pub fn quit(mut self) {
+        let _ = self.write_line("quit");
+        let _ = self.child.wait();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_info_cp() {
+        let info =
+            parse_info("info depth 8 score cp 43 nodes 12345 time 100 pv 7g7f 8h7g").unwrap();
+        assert_eq!(info.depth, Some(8));
+        assert!(matches!(info.score, Some(Score::Cp { value: 43 })));
+        assert_eq!(info.nodes, Some(12345));
+        assert_eq!(info.time_ms, Some(100));
+        assert_eq!(
+            info.pv
+                .as_ref()
+                .map(|v| v.iter().map(String::as_str).collect::<Vec<_>>()),
+            Some(vec!["7g7f", "8h7g"])
+        );
+    }
+
+    #[test]
+    fn parse_info_mate() {
+        let info = parse_info("info depth 10 score mate 3 nodes 500 time 20").unwrap();
+        assert!(matches!(info.score, Some(Score::Mate { moves: 3 })));
+    }
+
+    #[test]
+    fn parse_info_rejects_non_info() {
+        assert!(parse_info("bestmove 7g7f").is_none());
+    }
+}

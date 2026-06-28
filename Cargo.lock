@@ -190,6 +190,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "fake-usi-engine"
+version = "0.1.0"
+
+[[package]]
 name = "fastrand"
 version = "2.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -501,6 +505,7 @@ dependencies = [
  "serde_json",
  "shogiesa-core",
  "shogiesa-csa",
+ "shogiesa-usi",
  "tempfile",
  "tracing",
  "tracing-subscriber",
@@ -520,6 +525,16 @@ version = "0.1.0"
 dependencies = [
  "csa",
  "serde_json",
+ "shogiesa-core",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
+name = "shogiesa-usi"
+version = "0.1.0"
+dependencies = [
+ "assert_cmd",
  "shogiesa-core",
  "thiserror",
  "tracing",

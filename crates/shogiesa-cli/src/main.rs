@@ -1,11 +1,12 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use shogiesa_core::{PositionRecord, sfen::Sfen};
+use shogiesa_core::{Observation, PositionRecord, sfen::Sfen};
+use shogiesa_usi::UsiEngine;
 use tracing::info;
 
 #[derive(Parser)]
@@ -22,6 +23,8 @@ struct Cli {
 enum Commands {
     /// Extract positions from CSA game records
     Extract(ExtractArgs),
+    /// Label positions with engine evaluations
+    Label(LabelArgs),
     /// Report statistics about a positions dataset
     Report(ReportArgs),
     /// Validate data integrity of a positions dataset
@@ -67,6 +70,28 @@ struct ValidateArgs {
     strict: bool,
 }
 
+#[derive(clap::Args)]
+struct LabelArgs {
+    /// Input positions JSONL
+    #[arg(short, long)]
+    input: PathBuf,
+    /// USI engine binary
+    #[arg(long)]
+    engine: PathBuf,
+    /// Engine name (defaults to USI id name)
+    #[arg(long)]
+    engine_name: Option<String>,
+    /// Comma-separated search depths, e.g. "4,6,8"
+    #[arg(long)]
+    depths: String,
+    /// Per-depth timeout in milliseconds
+    #[arg(long, default_value = "10000")]
+    timeout_ms: u64,
+    /// Output JSONL file
+    #[arg(short, long)]
+    out: PathBuf,
+}
+
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -76,6 +101,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Extract(args) => cmd_extract(args),
+        Commands::Label(args) => cmd_label(args),
         Commands::Report(args) => cmd_report(args),
         Commands::Validate(args) => cmd_validate(args),
     }
@@ -130,6 +156,93 @@ fn cmd_extract(args: ExtractArgs) -> Result<()> {
     eprintln!(
         "done: {} games, {} positions extracted, {} skipped → {:?}",
         total_games, total_positions, skipped, args.out
+    );
+    Ok(())
+}
+
+fn cmd_label(args: LabelArgs) -> Result<()> {
+    let depths: Vec<u32> = args
+        .depths
+        .split(',')
+        .filter_map(|s| s.trim().parse().ok())
+        .collect();
+    if depths.is_empty() {
+        anyhow::bail!("--depths must contain at least one valid integer, e.g. '4,6,8'");
+    }
+
+    let name = args.engine_name.unwrap_or_default();
+    let mut engine = UsiEngine::launch(&args.engine, name, args.timeout_ms)
+        .with_context(|| format!("failed to launch engine {:?}", args.engine))?;
+
+    info!(
+        engine = engine.engine_name,
+        depths = ?depths,
+        "labeling started"
+    );
+
+    let reader = BufReader::new(
+        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
+    );
+    let out_file =
+        File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
+    let mut writer = BufWriter::new(out_file);
+
+    let mut total = 0usize;
+    let mut labeled = 0usize;
+    let mut skipped = 0usize;
+
+    for (i, line) in reader.lines().enumerate() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        total += 1;
+
+        let mut rec: PositionRecord = match serde_json::from_str(&line) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(line = i + 1, "JSON parse error: {e}");
+                skipped += 1;
+                continue;
+            }
+        };
+
+        if Sfen::parse(&rec.sfen).is_err() {
+            tracing::warn!(line = i + 1, sfen = rec.sfen, "invalid SFEN, skipping");
+            skipped += 1;
+            continue;
+        }
+
+        for &depth in &depths {
+            match engine.analyse(&rec.sfen, depth, args.timeout_ms) {
+                Ok(result) => {
+                    rec.observations.push(Observation {
+                        engine: engine.engine_name.clone(),
+                        engine_version: engine.engine_version.clone(),
+                        depth: result.depth,
+                        score: result.score,
+                        bestmove: result.bestmove,
+                        nodes: result.nodes,
+                        time_ms: result.time_ms,
+                        pv: result.pv,
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!(line = i + 1, depth, "analysis error: {e}");
+                }
+            }
+        }
+
+        serde_json::to_writer(&mut writer, &rec)?;
+        writer.write_all(b"\n")?;
+        labeled += 1;
+    }
+
+    writer.flush()?;
+    engine.quit();
+    eprintln!(
+        "done: {total} positions, {labeled} labeled, {skipped} skipped → {:?}",
+        args.out
     );
     Ok(())
 }

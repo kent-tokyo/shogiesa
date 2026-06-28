@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use shogiesa_core::PositionRecord;
+use shogiesa_core::{PositionRecord, sfen::Sfen};
 use tracing::info;
 
 #[derive(Parser)]
@@ -25,7 +25,7 @@ enum Commands {
     /// Report statistics about a positions dataset
     Report(ReportArgs),
     /// Validate data integrity of a positions dataset
-    Validate(ReportArgs),
+    Validate(ValidateArgs),
 }
 
 #[derive(clap::Args)]
@@ -55,6 +55,16 @@ struct ReportArgs {
     /// Input JSONL file
     #[arg(short, long)]
     input: PathBuf,
+}
+
+#[derive(clap::Args)]
+struct ValidateArgs {
+    /// Input JSONL file
+    #[arg(short, long)]
+    input: PathBuf,
+    /// Exit 1 on any warning (for CI)
+    #[arg(long)]
+    strict: bool,
 }
 
 fn main() -> Result<()> {
@@ -142,11 +152,6 @@ fn collect_csa_paths(input: &PathBuf) -> Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-/// Extract the side-to-move character ('b' or 'w') from a SFEN string.
-fn sfen_side(sfen: &str) -> Option<&str> {
-    sfen.split_ascii_whitespace().nth(1)
-}
-
 fn load_records(path: &PathBuf) -> Result<(Vec<PositionRecord>, usize)> {
     let content = fs::read_to_string(path).with_context(|| format!("cannot read {:?}", path))?;
     let non_empty: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
@@ -175,34 +180,35 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
     }
 
     let n = records.len();
-    let mut phases = BTreeMap::<&str, usize>::new();
-    let mut sides = BTreeMap::<&str, usize>::new();
+    let mut phases = BTreeMap::<String, usize>::new();
+    let mut sides = BTreeMap::<String, usize>::new();
     let mut schema_versions = BTreeMap::<u32, usize>::new();
     let mut ply_sum = 0u64;
     let mut ply_min = u32::MAX;
     let mut ply_max = 0u32;
     let mut sfen_counts: HashMap<&str, usize> = HashMap::new();
     let mut tag_mismatches = 0usize;
+    let mut invalid_sfens = 0usize;
 
     for rec in &records {
-        *phases.entry(rec.tags.phase.as_str()).or_default() += 1;
-        *sides.entry(rec.tags.side_to_move.as_str()).or_default() += 1;
+        *phases.entry(format!("{}", rec.tags.phase)).or_default() += 1;
+        *sides
+            .entry(format!("{}", rec.tags.side_to_move))
+            .or_default() += 1;
         *schema_versions.entry(rec.schema_version).or_default() += 1;
         let ply = rec.source.ply;
         ply_sum += ply as u64;
         ply_min = ply_min.min(ply);
         ply_max = ply_max.max(ply);
         *sfen_counts.entry(rec.sfen.as_str()).or_default() += 1;
-        // Check side_to_move tag vs SFEN
-        if let Some(sf_side) = sfen_side(&rec.sfen) {
-            let expected = match sf_side {
-                "b" => "black",
-                "w" => "white",
-                _ => "",
-            };
-            if !expected.is_empty() && rec.tags.side_to_move != expected {
-                tag_mismatches += 1;
+
+        match Sfen::parse(&rec.sfen) {
+            Ok(sfen) => {
+                if sfen.side_to_move() != rec.tags.side_to_move {
+                    tag_mismatches += 1;
+                }
             }
+            Err(_) => invalid_sfens += 1,
         }
     }
 
@@ -211,10 +217,16 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
         .filter(|&&c| c > 1)
         .map(|&c| c - 1)
         .sum();
+    let duplicate_rate = duplicate_sfens as f64 / n as f64 * 100.0;
+
     let mut sources = BTreeMap::<&str, usize>::new();
     for rec in &records {
         *sources.entry(rec.source.path.as_str()).or_default() += 1;
     }
+    let top_source_pct = sources.values().max().copied().unwrap_or(0) as f64 / n as f64 * 100.0;
+    let opening_pct = phases.get("opening").copied().unwrap_or(0) as f64 / n as f64 * 100.0;
+    let black_count = sides.get("black").copied().unwrap_or(0);
+    let white_count = sides.get("white").copied().unwrap_or(0);
 
     println!("=== shogiesa report ===");
     println!("positions      : {n}");
@@ -223,6 +235,7 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
         "ply range      : {ply_min}–{ply_max} (avg {:.1})",
         ply_sum as f64 / n as f64
     );
+    println!("invalid SFENs  : {invalid_sfens}");
     println!("duplicate SFENs: {duplicate_sfens}");
     println!("tag mismatches : {tag_mismatches}  (side_to_move vs SFEN)");
     println!();
@@ -251,11 +264,43 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
     if sources.len() > 10 {
         println!("  … and {} more", sources.len() - 10);
     }
+    println!();
+    println!("source dominance:");
+    let top_warn = if top_source_pct > 50.0 {
+        "WARN: too concentrated"
+    } else {
+        "OK"
+    };
+    println!("  top source     : {top_source_pct:.1}%  {top_warn}");
+    println!();
+    println!("balance warnings:");
+    let opening_warn = if opening_pct > 50.0 {
+        "WARN: too high"
+    } else {
+        "OK"
+    };
+    println!("  opening ratio  : {opening_pct:.1}%  {opening_warn}");
+    let (b_pct, w_pct) = (
+        black_count as f64 / n as f64 * 100.0,
+        white_count as f64 / n as f64 * 100.0,
+    );
+    let side_warn = if b_pct > 65.0 || w_pct > 65.0 {
+        "WARN"
+    } else {
+        "OK"
+    };
+    println!("  side imbalance : {b_pct:.1}% / {w_pct:.1}%  {side_warn}");
+    let dup_warn = if duplicate_rate > 5.0 {
+        "WARN: too high"
+    } else {
+        "OK"
+    };
+    println!("  duplicate rate : {duplicate_rate:.1}%  {dup_warn}");
 
     Ok(())
 }
 
-fn cmd_validate(args: ReportArgs) -> Result<()> {
+fn cmd_validate(args: ValidateArgs) -> Result<()> {
     let content =
         fs::read_to_string(&args.input).with_context(|| format!("cannot read {:?}", args.input))?;
 
@@ -263,6 +308,7 @@ fn cmd_validate(args: ReportArgs) -> Result<()> {
     let mut valid_json = 0usize;
     let mut valid_records = 0usize;
     let mut tag_mismatches = 0usize;
+    let mut invalid_sfens = 0usize;
     let mut schema_versions = BTreeMap::<u32, usize>::new();
     let mut seen_sfens: HashSet<String> = HashSet::new();
     let mut duplicate_sfens = 0usize;
@@ -284,38 +330,43 @@ fn cmd_validate(args: ReportArgs) -> Result<()> {
             duplicate_sfens += 1;
         }
 
-        if let Some(sf_side) = sfen_side(&rec.sfen) {
-            let expected = match sf_side {
-                "b" => "black",
-                "w" => "white",
-                _ => "",
-            };
-            if !expected.is_empty() && rec.tags.side_to_move != expected {
-                tag_mismatches += 1;
+        match Sfen::parse(&rec.sfen) {
+            Ok(sfen) => {
+                if sfen.side_to_move() != rec.tags.side_to_move {
+                    tag_mismatches += 1;
+                }
             }
+            Err(_) => invalid_sfens += 1,
         }
     }
 
     let broken = total_lines - valid_json;
+    let has_problems = tag_mismatches > 0 || broken > 0 || invalid_sfens > 0;
 
     println!("=== shogiesa validate ===");
     println!("total lines    : {total_lines}");
     println!("valid JSON     : {valid_json}");
     println!("valid records  : {valid_records}");
     println!("broken lines   : {broken}");
+    println!("invalid SFENs  : {invalid_sfens}");
     println!("duplicate SFENs: {duplicate_sfens}");
     println!("tag mismatches : {tag_mismatches}  (side_to_move vs SFEN)");
     println!("schema versions: {schema_versions:?}");
 
-    if tag_mismatches > 0 || broken > 0 {
+    if has_problems {
         println!();
-        if tag_mismatches > 0 {
-            println!("WARN: {tag_mismatches} side_to_move tag mismatches found");
-        }
         if broken > 0 {
-            println!("WARN: {broken} broken lines found");
+            println!("WARN: {broken} broken lines");
         }
-        std::process::exit(1);
+        if invalid_sfens > 0 {
+            println!("WARN: {invalid_sfens} invalid SFENs");
+        }
+        if tag_mismatches > 0 {
+            println!("WARN: {tag_mismatches} side_to_move tag mismatches");
+        }
+        if args.strict {
+            std::process::exit(1);
+        }
     } else {
         println!();
         println!("OK");

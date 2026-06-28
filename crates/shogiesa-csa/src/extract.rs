@@ -4,7 +4,7 @@ use std::io::BufRead;
 use std::path::Path;
 
 use csa::{Action, GameRecord};
-use shogiesa_core::{PositionRecord, PositionTags, SourceInfo, phase_from_ply};
+use shogiesa_core::{PositionRecord, PositionTags, SideToMove, SourceInfo, phase_from_ply};
 use thiserror::Error;
 use tracing::warn;
 
@@ -80,13 +80,13 @@ pub fn extract_from_str(
             }
 
             let side = match board.side {
-                csa::Color::Black => "black",
-                csa::Color::White => "white",
+                csa::Color::Black => SideToMove::Black,
+                csa::Color::White => SideToMove::White,
             };
             // ponytail: in_check and has_capture need move-gen; always false for now
             let tags = PositionTags {
-                phase: phase_from_ply(ply).to_string(),
-                side_to_move: side.to_string(),
+                phase: phase_from_ply(ply),
+                side_to_move: side,
                 in_check: false,
                 has_capture: false,
             };

@@ -1,6 +1,42 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 pub const SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SideToMove {
+    Black,
+    White,
+}
+
+impl fmt::Display for SideToMove {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SideToMove::Black => write!(f, "black"),
+            SideToMove::White => write!(f, "white"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GamePhase {
+    Opening,
+    Middlegame,
+    Endgame,
+}
+
+impl fmt::Display for GamePhase {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GamePhase::Opening => write!(f, "opening"),
+            GamePhase::Middlegame => write!(f, "middlegame"),
+            GamePhase::Endgame => write!(f, "endgame"),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PositionRecord {
@@ -20,8 +56,8 @@ pub struct SourceInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PositionTags {
-    pub phase: String,
-    pub side_to_move: String,
+    pub phase: GamePhase,
+    pub side_to_move: SideToMove,
     pub in_check: bool,
     pub has_capture: bool,
 }
@@ -48,10 +84,12 @@ impl PositionRecord {
     }
 }
 
-pub fn phase_from_ply(ply: u32) -> &'static str {
+pub fn phase_from_ply(ply: u32) -> GamePhase {
     match ply {
-        0..=20 => "opening",
-        21..=100 => "middlegame",
-        _ => "endgame",
+        0..=20 => GamePhase::Opening,
+        21..=100 => GamePhase::Middlegame,
+        _ => GamePhase::Endgame,
     }
 }
+
+pub mod sfen;

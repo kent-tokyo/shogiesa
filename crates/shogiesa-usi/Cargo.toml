@@ -10,7 +10,7 @@ keywords = ["shogi", "usi", "nnue", "training-data"]
 categories = ["game-engines"]
 
 [dependencies]
-shogiesa-core = { path = "../shogiesa-core", version = "0.1" }
+shogiesa-core = { path = "../shogiesa-core", version = "0.2" }
 thiserror = "1"
 tracing = "0.1"
 

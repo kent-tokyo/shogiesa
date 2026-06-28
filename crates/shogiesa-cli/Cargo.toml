@@ -14,9 +14,9 @@ name = "shogiesa"
 path = "src/main.rs"
 
 [dependencies]
-shogiesa-core = { path = "../shogiesa-core", version = "0.1" }
-shogiesa-csa = { path = "../shogiesa-csa", version = "0.1" }
-shogiesa-usi = { path = "../shogiesa-usi", version = "0.1" }
+shogiesa-core = { path = "../shogiesa-core", version = "0.2" }
+shogiesa-csa = { path = "../shogiesa-csa", version = "0.2" }
+shogiesa-usi = { path = "../shogiesa-usi", version = "0.2" }
 clap = { version = "4", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"

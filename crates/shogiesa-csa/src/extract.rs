@@ -9,7 +9,7 @@ use shogiesa_core::{PositionRecord, PositionTags, SourceInfo, phase_from_ply};
 use thiserror::Error;
 use tracing::warn;
 
-use crate::board::{apply_csa_action, board_from_csa_position};
+use crate::board::{apply_csa_action, board_from_csa_position, from_csa_color};
 
 #[derive(Debug, Error)]
 pub enum ExtractError {
@@ -39,7 +39,10 @@ pub fn extract_from_str(
     let mut ply: u32 = 0;
 
     for mr in &record.moves {
-        if matches!(mr.action, Action::Move(..)) {
+        if let Action::Move(csa_color, from, to, _) = mr.action {
+            let mover = from_csa_color(csa_color);
+            let has_capture = from.file != 0 && board.is_capture(to.file, to.rank, mover);
+
             if let Err(e) = apply_csa_action(&mut board, mr.action) {
                 warn!(path = source_path, ply, "board error: {e}");
                 break;
@@ -61,13 +64,12 @@ pub fn extract_from_str(
                 continue;
             }
 
-            let side = board.side;
-            // ponytail: in_check and has_capture need move-gen; always false for now
+            let in_check = board.is_in_check();
             let tags = PositionTags {
                 phase: phase_from_ply(ply),
-                side_to_move: side,
-                in_check: false,
-                has_capture: false,
+                side_to_move: board.side,
+                in_check,
+                has_capture,
             };
             let source = SourceInfo {
                 kind: "csa".to_string(),

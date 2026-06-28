@@ -161,6 +161,36 @@ fn parse_kif_move(token: &str) -> Option<KifMove> {
     })
 }
 
+/// Build the initial Board for a KIF handicap type.
+///
+/// Handicaps remove specific White pieces from the standard starting position.
+/// White always moves first in handicap games.
+///
+/// grid[rank_idx][file_idx]: rank_idx = rank-1, file_idx = 9-file
+/// White pieces on rank 1 (ri=0): fi=0=L fi=1=N fi=2=S fi=3=G fi=4=K fi=5=G fi=6=S fi=7=N fi=8=L
+/// White flying pieces on rank 2 (ri=1): fi=1=R fi=7=B
+fn handicap_board(name: &str) -> Option<Board> {
+    // squares to clear (ri, fi) — always White's pieces
+    let removals: &[(usize, usize)] = match name.trim() {
+        "平手" => return Some(Board::initial(SideToMove::Black)),
+        "香落ち" => &[(0, 8)],                               // file1 lance
+        "右香落ち" => &[(0, 0)],                             // file9 lance
+        "角落ち" => &[(1, 7)],                               // bishop
+        "飛車落ち" | "飛落ち" => &[(1, 1)],                  // rook
+        "二枚落ち" => &[(1, 1), (1, 7)],                     // rook + bishop
+        "四枚落ち" => &[(1, 1), (1, 7), (0, 0), (0, 8)],    // + both lances
+        "六枚落ち" => &[(1, 1), (1, 7), (0, 0), (0, 8), (0, 1), (0, 7)], // + both knights
+        "八枚落ち" => &[(1, 1), (1, 7), (0, 0), (0, 8), (0, 1), (0, 7), (0, 2), (0, 6)], // + both silvers
+        "十枚落ち" => &[(1, 1), (1, 7), (0, 0), (0, 8), (0, 1), (0, 7), (0, 2), (0, 6), (0, 3), (0, 5)], // + both golds
+        _ => return None,
+    };
+    let mut board = Board::initial(SideToMove::White); // handicap: White moves first
+    for &(ri, fi) in removals {
+        board.grid[ri][fi] = None;
+    }
+    Some(board)
+}
+
 pub fn extract_from_str(
     content: &str,
     source_path: &str,
@@ -180,15 +210,16 @@ pub fn extract_from_str(
             continue;
         }
 
-        // Handicap check
+        // Handicap: set initial board and side-to-move
         if line.starts_with("手合割") {
-            let handicap = line
-                .trim_start_matches("手合割")
-                .trim_start_matches(['：', ':']);
-            if !handicap.trim().starts_with("平手") {
-                return Err(KifError::Parse(format!(
-                    "unsupported handicap: {handicap:?} (only 平手 is supported)"
-                )));
+            let handicap = line.trim_start_matches("手合割").trim_start_matches(['：', ':']);
+            match handicap_board(handicap.trim()) {
+                Some(b) => board = b,
+                None => {
+                    return Err(KifError::Parse(format!(
+                        "unsupported handicap: {handicap:?}"
+                    )))
+                }
             }
             continue;
         }
@@ -235,6 +266,9 @@ pub fn extract_from_str(
         };
 
         let color = board.side;
+        let has_capture = !kif_move.is_drop
+            && board.is_capture(kif_move.dest_file, kif_move.dest_rank, color);
+
         let result = if kif_move.is_drop {
             board.apply_drop(
                 color,
@@ -275,11 +309,12 @@ pub fn extract_from_str(
             continue;
         }
 
+        let in_check = board.is_in_check();
         let tags = PositionTags {
             phase: phase_from_ply(ply),
             side_to_move: board.side,
-            in_check: false,
-            has_capture: false,
+            in_check,
+            has_capture,
         };
         let source = SourceInfo {
             kind: "kif".to_string(),

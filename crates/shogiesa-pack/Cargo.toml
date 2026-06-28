@@ -1,0 +1,13 @@
+[package]
+name = "shogiesa-pack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Binary pack format for shogiesa position records"
+keywords = ["shogi", "nnue", "binary", "training-data"]
+categories = ["encoding", "game-engines"]
+
+[dependencies]
+shogiesa-core = { path = "../shogiesa-core", version = "0.2" }

@@ -102,12 +102,18 @@ pub struct UsiEngine {
     rx: Receiver<io::Result<String>>,
     pub engine_name: String,
     pub engine_version: Option<String>,
+    quit_called: bool,
 }
 
 impl UsiEngine {
-    /// Launch an engine from a path with optional extra arguments.
-    pub fn launch(path: &Path, name: String, timeout_ms: u64) -> Result<Self, UsiError> {
-        Self::launch_command(StdCommand::new(path), name, timeout_ms)
+    /// Launch an engine from a path.
+    pub fn launch(
+        path: &Path,
+        name: String,
+        timeout_ms: u64,
+        options: &[(String, String)],
+    ) -> Result<Self, UsiError> {
+        Self::launch_command(StdCommand::new(path), name, timeout_ms, options)
     }
 
     /// Launch from a pre-built `Command` (useful for passing flags in tests).
@@ -115,6 +121,7 @@ impl UsiEngine {
         mut cmd: StdCommand,
         name: String,
         timeout_ms: u64,
+        options: &[(String, String)],
     ) -> Result<Self, UsiError> {
         let mut child = cmd
             .stdin(Stdio::piped())
@@ -140,8 +147,9 @@ impl UsiEngine {
             rx,
             engine_name: name,
             engine_version: None,
+            quit_called: false,
         };
-        engine.handshake(timeout_ms)?;
+        engine.handshake(timeout_ms, options)?;
         Ok(engine)
     }
 
@@ -158,7 +166,7 @@ impl UsiEngine {
             .map_err(UsiError::Io)
     }
 
-    fn handshake(&mut self, timeout_ms: u64) -> Result<(), UsiError> {
+    fn handshake(&mut self, timeout_ms: u64, options: &[(String, String)]) -> Result<(), UsiError> {
         self.write_line("usi")?;
         loop {
             let line = self.recv(timeout_ms)?;
@@ -170,6 +178,9 @@ impl UsiEngine {
             } else if line == "usiok" {
                 break;
             }
+        }
+        for (k, v) in options {
+            self.write_line(&format!("setoption name {k} value {v}"))?;
         }
         self.write_line("isready")?;
         loop {
@@ -217,9 +228,19 @@ impl UsiEngine {
         }
     }
 
-    pub fn quit(mut self) {
-        let _ = self.write_line("quit");
-        let _ = self.child.wait();
+    pub fn quit(&mut self) {
+        if !self.quit_called {
+            self.quit_called = true;
+            let _ = self.write_line("quit");
+            let _ = self.child.kill(); // no-op if already exited; guards against hanging engines
+            let _ = self.child.wait();
+        }
+    }
+}
+
+impl Drop for UsiEngine {
+    fn drop(&mut self) {
+        self.quit();
     }
 }
 

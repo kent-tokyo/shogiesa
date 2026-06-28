@@ -4,6 +4,7 @@ members = [
     "crates/shogiesa-csa",
     "crates/shogiesa-usi",
     "crates/shogiesa-kif",
+    "crates/shogiesa-pack",
     "crates/shogiesa",
     "crates/shogiesa-cli",
     "crates/fake-usi-engine",

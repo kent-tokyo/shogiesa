@@ -512,6 +512,301 @@ fn filter_phase() {
     assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 2);
 }
 
+// --- stability ---
+
+#[test]
+fn stability_populates_swing_and_agreement() {
+    let f = make_labeled_jsonl(&[position(
+        "middlegame",
+        serde_json::json!([obs("7g7f", 50, 4), obs("7g7f", 300, 6)]),
+    )]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "stability",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    let v: serde_json::Value = serde_json::from_str(content.lines().next().unwrap()).unwrap();
+    assert_eq!(v["stability"]["score_swing_cp"], 250);
+    assert_eq!(v["stability"]["bestmove_agreement"], true);
+}
+
+#[test]
+fn stability_detects_disagreement() {
+    let f = make_labeled_jsonl(&[position(
+        "middlegame",
+        serde_json::json!([obs("7g7f", 50, 4), obs("2b3c", 50, 6)]),
+    )]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "stability",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    let v: serde_json::Value = serde_json::from_str(content.lines().next().unwrap()).unwrap();
+    assert_eq!(v["stability"]["score_swing_cp"], 0);
+    assert_eq!(v["stability"]["bestmove_agreement"], false);
+}
+
+#[test]
+fn stability_skips_unlabeled() {
+    let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "stability",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    let v: serde_json::Value = serde_json::from_str(content.lines().next().unwrap()).unwrap();
+    assert!(v["stability"].is_null(), "no observations → stability absent");
+}
+
+// --- mine ---
+
+fn game_pos(ply: u32, score_cp: i32) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "sfen": "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+        "source": { "kind": "csa", "path": "game.csa", "ply": ply },
+        "tags": { "phase": "opening", "side_to_move": "black", "in_check": false, "has_capture": false },
+        "observations": [{ "engine": "e", "engine_version": null, "depth": 8,
+            "score": { "kind": "cp", "value": score_cp },
+            "bestmove": "7g7f", "nodes": null, "time_ms": null, "pv": null }]
+    })
+}
+
+#[test]
+fn mine_detects_blunder_and_window() {
+    // ply1=+50, ply2=+300 → swing=250 > threshold 150
+    // window=1 → ply1, ply2, ply3 all included
+    let f = make_labeled_jsonl(&[
+        game_pos(1, 50),
+        game_pos(2, 300),
+        game_pos(3, 310),
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "mine",
+            "--input", f.path().to_str().unwrap(),
+            "--out", out.path().to_str().unwrap(),
+            "--blunder-threshold", "150",
+            "--blunder-window", "1",
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 3);
+}
+
+#[test]
+fn mine_no_blunder_empty_output() {
+    let f = make_labeled_jsonl(&[game_pos(1, 50), game_pos(2, 60)]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "mine",
+            "--input", f.path().to_str().unwrap(),
+            "--out", out.path().to_str().unwrap(),
+            "--blunder-threshold", "150",
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 0);
+}
+
+#[test]
+fn mine_losing_threshold() {
+    // ply2 eval=-600 for black → included with --losing-threshold=500
+    let f = make_labeled_jsonl(&[game_pos(1, 100), game_pos(2, -600), game_pos(3, -580)]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "mine",
+            "--input", f.path().to_str().unwrap(),
+            "--out", out.path().to_str().unwrap(),
+            "--blunder-threshold", "9999",
+            "--losing-threshold", "500",
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 2);
+}
+
+// --- balance ---
+
+#[test]
+fn balance_by_phase_defaults_to_min_bucket() {
+    // 2 opening, 3 middlegame, 1 endgame → min=1 → 1 per phase = 3 total
+    let f = make_labeled_jsonl(&[
+        position("opening",    serde_json::json!([obs("7g7f", 50, 4)])),
+        position("opening",    serde_json::json!([obs("7g7f", 60, 4)])),
+        position("middlegame", serde_json::json!([obs("7g7f", 100, 4)])),
+        position("middlegame", serde_json::json!([obs("7g7f", 110, 4)])),
+        position("middlegame", serde_json::json!([obs("7g7f", 120, 4)])),
+        position("endgame",    serde_json::json!([obs("7g7f", 200, 4)])),
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "balance",
+            "--input", f.path().to_str().unwrap(),
+            "--out", out.path().to_str().unwrap(),
+            "--by", "phase",
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 3);
+}
+
+#[test]
+fn balance_target_override() {
+    // --target 2: opening→2, middlegame→2, endgame→1(capped) = 5 total
+    let f = make_labeled_jsonl(&[
+        position("opening",    serde_json::json!([obs("7g7f", 50, 4)])),
+        position("opening",    serde_json::json!([obs("7g7f", 60, 4)])),
+        position("middlegame", serde_json::json!([obs("7g7f", 100, 4)])),
+        position("middlegame", serde_json::json!([obs("7g7f", 110, 4)])),
+        position("middlegame", serde_json::json!([obs("7g7f", 120, 4)])),
+        position("endgame",    serde_json::json!([obs("7g7f", 200, 4)])),
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "balance",
+            "--input", f.path().to_str().unwrap(),
+            "--out", out.path().to_str().unwrap(),
+            "--by", "phase",
+            "--target", "2",
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 5);
+}
+
+// --- split ---
+
+#[test]
+fn split_by_source_creates_one_file_per_game() {
+    use std::io::Write;
+    // Two records from different sources
+    let rec_a = serde_json::json!({
+        "schema_version": 1, "sfen": "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+        "source": { "kind": "csa", "path": "game_a.csa", "ply": 1 },
+        "tags": { "phase": "opening", "side_to_move": "black", "in_check": false, "has_capture": false },
+        "observations": []
+    });
+    let rec_b = serde_json::json!({
+        "schema_version": 1, "sfen": "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+        "source": { "kind": "csa", "path": "game_b.csa", "ply": 1 },
+        "tags": { "phase": "opening", "side_to_move": "black", "in_check": false, "has_capture": false },
+        "observations": []
+    });
+    let mut f = NamedTempFile::new().unwrap();
+    writeln!(f, "{rec_a}").unwrap();
+    writeln!(f, "{rec_b}").unwrap();
+    f.flush().unwrap();
+
+    let out_dir = tempfile::tempdir().unwrap();
+    shogiesa()
+        .args(["split", "--input", f.path().to_str().unwrap(),
+               "--by-source", "--out-dir", out_dir.path().to_str().unwrap()])
+        .assert()
+        .success();
+
+    let files: Vec<_> = std::fs::read_dir(out_dir.path()).unwrap().collect();
+    assert_eq!(files.len(), 2, "one file per source game");
+}
+
+// --- sample ---
+
+#[test]
+fn sample_returns_exact_count() {
+    let f = make_labeled_jsonl(&[
+        position("opening",    serde_json::json!([obs("7g7f", 50, 4)])),
+        position("middlegame", serde_json::json!([obs("7g7f", 100, 4)])),
+        position("middlegame", serde_json::json!([obs("7g7f", 110, 4)])),
+        position("endgame",    serde_json::json!([obs("7g7f", 200, 4)])),
+        position("endgame",    serde_json::json!([obs("7g7f", 210, 4)])),
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args(["sample", "--input", f.path().to_str().unwrap(),
+               "--out", out.path().to_str().unwrap(), "--count", "3"])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 3);
+}
+
+#[test]
+fn sample_deterministic_with_seed() {
+    let f = make_labeled_jsonl(&[
+        position("opening",    serde_json::json!([obs("7g7f", 50, 4)])),
+        position("middlegame", serde_json::json!([obs("7g7f", 100, 4)])),
+        position("middlegame", serde_json::json!([obs("7g7f", 110, 4)])),
+        position("endgame",    serde_json::json!([obs("7g7f", 200, 4)])),
+    ]);
+    let out1 = NamedTempFile::new().unwrap();
+    let out2 = NamedTempFile::new().unwrap();
+    for out in [&out1, &out2] {
+        shogiesa()
+            .args(["sample", "--input", f.path().to_str().unwrap(),
+                   "--out", out.path().to_str().unwrap(), "--count", "2", "--seed", "42"])
+            .assert()
+            .success();
+    }
+    assert_eq!(
+        std::fs::read_to_string(out1.path()).unwrap(),
+        std::fs::read_to_string(out2.path()).unwrap(),
+        "same seed → same output"
+    );
+}
+
+// --- dedup-zobrist ---
+
+#[test]
+fn extract_dedup_zobrist_removes_duplicates() {
+    // Extract from the same file twice (concat of two identical paths) would double-count,
+    // but --dedup-zobrist removes them. We use --dedup-zobrist on a single file as a smoke test.
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args(["extract",
+               "--input", fixture("sample.csa").to_str().unwrap(),
+               "--out", out.path().to_str().unwrap(),
+               "--dedup-zobrist"])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    // sample.csa has 5 distinct positions; all should be kept
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 5);
+}
+
 #[test]
 fn filter_end_to_end_with_label() {
     // extract → label (fake engine) → filter with bestmove agreement → all pass

@@ -8,12 +8,12 @@ const STARTPOS: &str = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSN
 const TIMEOUT: u64 = 5000;
 
 fn fake_engine() -> UsiEngine {
-    UsiEngine::launch(&cargo_bin("fake-usi-engine"), String::new(), TIMEOUT).unwrap()
+    UsiEngine::launch(&cargo_bin("fake-usi-engine"), String::new(), TIMEOUT, &[]).unwrap()
 }
 
 #[test]
 fn handshake_succeeds() {
-    let engine = fake_engine();
+    let mut engine = fake_engine();
     assert_eq!(engine.engine_name, "FakeUsiEngine");
     engine.quit();
 }
@@ -52,7 +52,7 @@ fn timeout_returns_error() {
     // fake-usi-engine --hang sleeps forever on "go" commands
     let mut cmd = Command::new(cargo_bin("fake-usi-engine"));
     cmd.arg("--hang");
-    let mut engine = UsiEngine::launch_command(cmd, String::new(), TIMEOUT).unwrap();
+    let mut engine = UsiEngine::launch_command(cmd, String::new(), TIMEOUT, &[]).unwrap();
     let result = engine.analyse(STARTPOS, 4, 300); // short timeout
     assert!(matches!(result, Err(UsiError::Timeout)));
     // engine.quit() would hang too; just drop (child gets killed on Drop of Child)

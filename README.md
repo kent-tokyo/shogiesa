@@ -71,10 +71,19 @@ shogiesa label \
   --out observations.jsonl
 ```
 
-Appends observations to existing records — safe to run multiple times with different depths.
-`--multipv 2` sends `setoption name MultiPV value 2` and records how far the bestmove beats
-the runner-up (`policy_margin_cp`) — a low margin means the label is a weak teaching signal
-even when a bestmove exists.
+By default, appends observations to existing records — safe to run multiple times with
+different depths, but re-running the same depth adds a duplicate. `--multipv 2` sends
+`setoption name MultiPV value 2` and records how far the bestmove beats the runner-up
+(`policy_margin_cp`) — a low margin means the label is a weak teaching signal even when a
+bestmove exists.
+
+`--skip-existing` skips a requested depth if this engine already has an observation reaching at
+least that depth — useful for cheaply resuming a large labeling run. `--replace-existing`
+overwrites an existing observation at the same depth instead of duplicating it, for
+intentionally re-labeling. Both are mutually exclusive, and both key off the depth the engine
+*actually reached*, not the one requested — an engine that stops early (e.g. a forced mate) can
+report a shallower depth than asked for, and these flags account for that rather than silently
+duplicating or failing to skip.
 
 ### `stability` — compute stability scores
 

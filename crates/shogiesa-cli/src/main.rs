@@ -125,9 +125,23 @@ struct LabelArgs {
     /// 2+ populates each observation's policy_margin_cp
     #[arg(long, default_value = "1")]
     multipv: u32,
+    /// Skip depths already covered (to at least this depth) by an observation from this engine
+    #[arg(long, conflicts_with = "replace_existing")]
+    skip_existing: bool,
+    /// Replace an existing observation from this engine at the same (achieved) depth instead
+    /// of appending a duplicate
+    #[arg(long)]
+    replace_existing: bool,
     /// Output JSONL file
     #[arg(short, long)]
     out: PathBuf,
+}
+
+#[derive(Clone, Copy)]
+enum ExistingPolicy {
+    Append,
+    Skip,
+    Replace,
 }
 
 #[derive(clap::Args)]
@@ -389,10 +403,28 @@ fn analyze_record(
     engine: &mut UsiEngine,
     depths: &[u32],
     timeout_ms: u64,
+    existing_policy: ExistingPolicy,
 ) {
     for &depth in depths {
+        // The engine may stop before reaching `depth` (e.g. a forced mate) — check coverage
+        // against what was actually achieved, not the requested depth, before spending a call.
+        if matches!(existing_policy, ExistingPolicy::Skip)
+            && rec
+                .observations
+                .iter()
+                .any(|o| o.engine == engine.engine_name && o.depth >= depth)
+        {
+            continue;
+        }
         match engine.analyse(&rec.sfen, depth, timeout_ms) {
             Ok(result) => {
+                // Dedupe on the achieved depth, not the requested one, for the same reason —
+                // if Skip couldn't skip (under-reach) and re-achieves the same depth, this
+                // replaces the stale entry instead of duplicating it.
+                if !matches!(existing_policy, ExistingPolicy::Append) {
+                    rec.observations
+                        .retain(|o| !(o.engine == engine.engine_name && o.depth == result.depth));
+                }
                 rec.observations.push(Observation {
                     engine: engine.engine_name.clone(),
                     engine_version: engine.engine_version.clone(),
@@ -435,6 +467,13 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
     if args.multipv > 1 {
         engine_options.push(("MultiPV".to_string(), args.multipv.to_string()));
     }
+    let existing_policy = if args.skip_existing {
+        ExistingPolicy::Skip
+    } else if args.replace_existing {
+        ExistingPolicy::Replace
+    } else {
+        ExistingPolicy::Append
+    };
 
     // Parse and validate all input records (streaming for large files)
     let content =
@@ -501,7 +540,7 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
                     *opt = Some(e);
                 }
                 if let Some(engine) = opt.as_mut() {
-                    analyze_record(&mut rec, engine, &depths, timeout_ms);
+                    analyze_record(&mut rec, engine, &depths, timeout_ms, existing_policy);
                 } else {
                     engine_launch_failures.fetch_add(1, Ordering::Relaxed);
                     tracing::warn!(sfen = %rec.sfen, "engine unavailable, position left unlabeled");

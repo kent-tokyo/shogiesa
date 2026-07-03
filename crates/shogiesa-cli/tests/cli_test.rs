@@ -405,6 +405,218 @@ fn label_appends_to_existing_observations() {
     assert_eq!(v["observations"].as_array().unwrap().len(), 2);
 }
 
+#[test]
+fn label_skip_existing_avoids_duplicate() {
+    let pos = NamedTempFile::new().unwrap();
+    let obs1 = NamedTempFile::new().unwrap();
+    let obs2 = NamedTempFile::new().unwrap();
+
+    shogiesa()
+        .args([
+            "extract",
+            "--input",
+            fixture("sample.csa").to_str().unwrap(),
+            "--out",
+            pos.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            pos.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--out",
+            obs1.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    // Re-run with --skip-existing over depths 4 (already covered) and 6 (new)
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            obs1.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4,6",
+            "--skip-existing",
+            "--out",
+            obs2.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let content = std::fs::read_to_string(obs2.path()).unwrap();
+    let first_line = content.lines().next().unwrap();
+    let v: serde_json::Value = serde_json::from_str(first_line).unwrap();
+    let obs = v["observations"].as_array().unwrap();
+    assert_eq!(
+        obs.len(),
+        2,
+        "depth 4 skipped (not duplicated), depth 6 added"
+    );
+    let depths: Vec<u64> = obs.iter().map(|o| o["depth"].as_u64().unwrap()).collect();
+    assert_eq!(depths, vec![4, 6]);
+}
+
+#[test]
+fn label_skip_existing_no_duplicate_on_early_stop_divergence() {
+    let pos = NamedTempFile::new().unwrap();
+    let obs1 = NamedTempFile::new().unwrap();
+    let obs2 = NamedTempFile::new().unwrap();
+
+    shogiesa()
+        .args([
+            "extract",
+            "--input",
+            fixture("sample.csa").to_str().unwrap(),
+            "--out",
+            pos.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    // `--engine-option EarlyStopDepth=5` sends `setoption name EarlyStopDepth value 5` over
+    // stdin, which fake-usi-engine honors the same as its `--early-stop-depth 5` argv flag —
+    // `label` only sends USI protocol messages to the spawned engine, never extra argv.
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            pos.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--engine-option",
+            "EarlyStopDepth=5",
+            "--depths",
+            "8",
+            "--out",
+            obs1.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    // Re-run --skip-existing --depths 8: the prior observation only reached depth 5 (< 8), so
+    // this cannot skip and must re-call the engine — which deterministically re-achieves depth
+    // 5 again. The post-call dedup (keyed on achieved depth) must replace, not duplicate, it.
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            obs1.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--engine-option",
+            "EarlyStopDepth=5",
+            "--depths",
+            "8",
+            "--skip-existing",
+            "--out",
+            obs2.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let content = std::fs::read_to_string(obs2.path()).unwrap();
+    let first_line = content.lines().next().unwrap();
+    let v: serde_json::Value = serde_json::from_str(first_line).unwrap();
+    let obs = v["observations"].as_array().unwrap();
+    assert_eq!(
+        obs.len(),
+        1,
+        "under-reached depth must be replaced, not duplicated, across skip-existing re-runs"
+    );
+    assert_eq!(obs[0]["depth"], 5);
+}
+
+#[test]
+fn label_replace_existing_overwrites() {
+    let pos = NamedTempFile::new().unwrap();
+    let obs1 = NamedTempFile::new().unwrap();
+    let obs2 = NamedTempFile::new().unwrap();
+
+    shogiesa()
+        .args([
+            "extract",
+            "--input",
+            fixture("sample.csa").to_str().unwrap(),
+            "--out",
+            pos.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            pos.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--out",
+            obs1.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    // Re-label the same depth with --replace-existing: without the flag this would produce 2
+    // observations at depth 4 (as label_appends_to_existing_observations demonstrates).
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            obs1.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--replace-existing",
+            "--out",
+            obs2.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let content = std::fs::read_to_string(obs2.path()).unwrap();
+    let first_line = content.lines().next().unwrap();
+    let v: serde_json::Value = serde_json::from_str(first_line).unwrap();
+    let obs = v["observations"].as_array().unwrap();
+    assert_eq!(obs.len(), 1, "replaced, not duplicated");
+    assert_eq!(obs[0]["depth"], 4);
+}
+
+#[test]
+fn label_skip_and_replace_existing_conflict() {
+    let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--skip-existing",
+            "--replace-existing",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .failure();
+}
+
 // --- filter ---
 
 /// Build a labeled JSONL string with custom observations inline.

@@ -11,9 +11,10 @@
 ///   --multipv-bound      : like --multipv-margin, but the runner-up line is tagged
 ///                          "lowerbound" (used to test that bound-tagged runner-ups are ignored)
 ///
-/// Also honors `setoption name MultiPV value N` sent over stdin (as the real `label`
-/// command does): N>=2 has the same effect as `--multipv-margin 310`, for testing the
-/// CLI's `--multipv` flag end-to-end without needing extra argv on the spawned engine.
+/// Also honors, sent over stdin (as the real `label` command does via `--engine-option`,
+/// since `label` never passes extra argv to the spawned engine):
+///   setoption name MultiPV value N        : N>=2 has the same effect as --multipv-margin 310
+///   setoption name EarlyStopDepth value N : same effect as --early-stop-depth N
 use std::io::{self, BufRead, Write};
 use std::thread;
 use std::time::Duration;
@@ -24,7 +25,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let hang = args.iter().any(|a| a == "--hang");
     let spam_info = args.iter().any(|a| a == "--spam-info");
-    let early_stop_depth: Option<u32> = args
+    let mut early_stop_depth: Option<u32> = args
         .iter()
         .position(|a| a == "--early-stop-depth")
         .and_then(|i| args.get(i + 1))
@@ -63,6 +64,9 @@ fn main() {
                 if n >= 2 && multipv_margin.is_none() {
                     multipv_margin = Some(DEFAULT_MULTIPV_MARGIN);
                 }
+            }
+            s if s.starts_with("setoption name EarlyStopDepth value ") => {
+                early_stop_depth = s.rsplit(' ').next().and_then(|v| v.parse().ok());
             }
             s if s.starts_with("position") => {}
             s if s.starts_with("go") => {

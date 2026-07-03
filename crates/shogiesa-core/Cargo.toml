@@ -11,7 +11,7 @@ categories = ["game-engines", "data-structures"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-thiserror = "1"
+thiserror = "2"
 
 [dev-dependencies]
 criterion = "0.8"

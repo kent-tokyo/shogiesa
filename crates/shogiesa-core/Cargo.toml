@@ -12,3 +12,10 @@ categories = ["game-engines", "data-structures"]
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 thiserror = "1"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "board_bench"
+harness = false

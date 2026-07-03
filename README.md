@@ -117,11 +117,20 @@ Buckets by `phase`/`side`/`eval-bucket` and takes an equal number from each buck
 
 ```bash
 shogiesa split  --input positions.jsonl --by-source --out-dir by_game/
+shogiesa split \
+  --input positions.jsonl \
+  --train train.jsonl --valid valid.jsonl --test test.jsonl \
+  --valid-frac 0.1 --test-frac 0.1 --seed 42
 shogiesa sample --input positions.jsonl --count 10000 --seed 1 --out sample.jsonl
 ```
 
-`split` writes one file per source game plus a `manifest.json` (input path, schema version,
-per-file counts); `sample` deterministically selects N positions.
+`split --by-source` writes one file per source game plus a `manifest.json` (input path, schema
+version, per-file counts). `split --train/--valid/--test` does a seeded ratio split instead —
+every position from the same source game is assigned to exactly one of the three splits (no
+same-game leakage across train/valid/test), and it writes a `manifest.json` with the seed,
+requested fractions, and the *actual* per-split position/source counts (these naturally deviate
+from the requested fractions since games vary in length). `sample` deterministically selects N
+positions.
 
 ### `pack` / `unpack` — binary format
 
@@ -138,7 +147,10 @@ Compact binary encoding of the JSONL schema for faster loading by trainers.
 shogiesa report --input observations.jsonl
 ```
 
-Outputs: position count, ply range, phase/side distribution, duplicate SFENs, tag mismatches, source dominance, balance warnings.
+Outputs: position count, ply range, phase/side distribution, duplicate SFENs, tag mismatches,
+source dominance, balance warnings, and — once positions are labeled — cp/mate ratio, average
+score swing (plus a histogram), average policy margin, and eval-bucket × phase / eval-bucket ×
+side cross-tabs.
 
 ### `validate` — data integrity
 

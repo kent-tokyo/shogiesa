@@ -1,7 +1,7 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -149,7 +149,26 @@ struct SplitArgs {
     #[arg(long)]
     by_source: bool,
     #[arg(long = "out-dir")]
-    out_dir: PathBuf,
+    out_dir: Option<PathBuf>,
+    /// Train-split output JSONL — enables the train/valid/test ratio-split mode
+    /// (requires --valid and --test too)
+    #[arg(long)]
+    train: Option<PathBuf>,
+    /// Valid-split output JSONL
+    #[arg(long)]
+    valid: Option<PathBuf>,
+    /// Test-split output JSONL
+    #[arg(long)]
+    test: Option<PathBuf>,
+    /// Fraction of source games assigned to the valid split
+    #[arg(long, default_value = "0.1")]
+    valid_frac: f64,
+    /// Fraction of source games assigned to the test split
+    #[arg(long, default_value = "0.1")]
+    test_frac: f64,
+    /// Seed for deterministic source-to-split assignment
+    #[arg(long, default_value = "0")]
+    seed: u64,
 }
 
 #[derive(clap::Args)]
@@ -558,11 +577,18 @@ fn cmd_stability(args: StabilityArgs) -> Result<()> {
 }
 
 fn cmd_split(args: SplitArgs) -> Result<()> {
-    if !args.by_source {
-        anyhow::bail!("--by-source is required (it's currently the only split mode)");
+    if args.train.is_some() || args.valid.is_some() || args.test.is_some() {
+        return cmd_split_train_valid_test(args);
     }
-    fs::create_dir_all(&args.out_dir)
-        .with_context(|| format!("cannot create {:?}", args.out_dir))?;
+
+    if !args.by_source {
+        anyhow::bail!("either --by-source --out-dir, or --train/--valid/--test, is required");
+    }
+    let out_dir = args
+        .out_dir
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("--out-dir is required with --by-source"))?;
+    fs::create_dir_all(out_dir).with_context(|| format!("cannot create {out_dir:?}"))?;
 
     let reader = BufReader::new(
         File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
@@ -600,7 +626,7 @@ fn cmd_split(args: SplitArgs) -> Result<()> {
                 })
                 .collect();
             let file_name = format!("{safe}.jsonl");
-            let out_path = args.out_dir.join(&file_name);
+            let out_path = out_dir.join(&file_name);
             let f =
                 File::create(&out_path).with_context(|| format!("cannot create {out_path:?}"))?;
             writers.insert(key.clone(), BufWriter::new(f));
@@ -621,14 +647,136 @@ fn cmd_split(args: SplitArgs) -> Result<()> {
         "total_positions": total,
         "files": file_counts,
     });
-    let manifest_path = args.out_dir.join("manifest.json");
+    let manifest_path = out_dir.join("manifest.json");
     fs::write(&manifest_path, serde_json::to_string_pretty(&manifest)?)
         .with_context(|| format!("cannot write {manifest_path:?}"))?;
 
     eprintln!(
         "done: {total} positions split into {} files → {:?}",
         writers.len(),
-        args.out_dir
+        out_dir
+    );
+    Ok(())
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum SplitBucket {
+    Test,
+    Valid,
+    Train,
+}
+
+fn assign_split_bucket(
+    seed: u64,
+    source_path: &str,
+    valid_frac: f64,
+    test_frac: f64,
+) -> SplitBucket {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    seed.hash(&mut h);
+    source_path.hash(&mut h);
+    let unit = h.finish() as f64 / u64::MAX as f64;
+    if unit < test_frac {
+        SplitBucket::Test
+    } else if unit < test_frac + valid_frac {
+        SplitBucket::Valid
+    } else {
+        SplitBucket::Train
+    }
+}
+
+fn cmd_split_train_valid_test(args: SplitArgs) -> Result<()> {
+    let (Some(train_path), Some(valid_path), Some(test_path)) =
+        (&args.train, &args.valid, &args.test)
+    else {
+        anyhow::bail!("--train, --valid, and --test must all be provided together");
+    };
+    if args.valid_frac + args.test_frac >= 1.0 {
+        anyhow::bail!("--valid-frac + --test-frac must be < 1.0");
+    }
+
+    let reader = BufReader::new(
+        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
+    );
+
+    let mut train_writer = BufWriter::new(
+        File::create(train_path).with_context(|| format!("cannot create {train_path:?}"))?,
+    );
+    let mut valid_writer = BufWriter::new(
+        File::create(valid_path).with_context(|| format!("cannot create {valid_path:?}"))?,
+    );
+    let mut test_writer = BufWriter::new(
+        File::create(test_path).with_context(|| format!("cannot create {test_path:?}"))?,
+    );
+
+    let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
+    let mut sources: HashMap<&'static str, HashSet<String>> = HashMap::new();
+    let mut total = 0usize;
+
+    for (i, line) in reader.lines().enumerate() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let rec: PositionRecord = match serde_json::from_str(&line) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(line = i + 1, "JSON parse error: {e}");
+                continue;
+            }
+        };
+
+        let bucket =
+            assign_split_bucket(args.seed, &rec.source.path, args.valid_frac, args.test_frac);
+        let (name, writer) = match bucket {
+            SplitBucket::Train => ("train", &mut train_writer),
+            SplitBucket::Valid => ("valid", &mut valid_writer),
+            SplitBucket::Test => ("test", &mut test_writer),
+        };
+        serde_json::to_writer(&mut *writer, &rec)?;
+        writer.write_all(b"\n")?;
+        *counts.entry(name).or_default() += 1;
+        sources.entry(name).or_default().insert(rec.source.path);
+        total += 1;
+    }
+
+    train_writer.flush()?;
+    valid_writer.flush()?;
+    test_writer.flush()?;
+
+    let split_manifest = |name: &str, path: &PathBuf| {
+        serde_json::json!({
+            "path": path,
+            "positions": counts.get(name).copied().unwrap_or(0),
+            "sources": sources.get(name).map(HashSet::len).unwrap_or(0),
+        })
+    };
+    let manifest = serde_json::json!({
+        "shogiesa_version": env!("CARGO_PKG_VERSION"),
+        "schema_version": SCHEMA_VERSION,
+        "input": args.input,
+        "seed": args.seed,
+        "requested": { "valid_frac": args.valid_frac, "test_frac": args.test_frac },
+        "total_positions": total,
+        "splits": {
+            "train": split_manifest("train", train_path),
+            "valid": split_manifest("valid", valid_path),
+            "test": split_manifest("test", test_path),
+        },
+    });
+    let manifest_path = train_path
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("manifest.json");
+    fs::write(&manifest_path, serde_json::to_string_pretty(&manifest)?)
+        .with_context(|| format!("cannot write {manifest_path:?}"))?;
+
+    eprintln!(
+        "done: {total} positions split (seed={}) → train={}, valid={}, test={}",
+        args.seed,
+        counts.get("train").copied().unwrap_or(0),
+        counts.get("valid").copied().unwrap_or(0),
+        counts.get("test").copied().unwrap_or(0),
     );
     Ok(())
 }
@@ -1092,6 +1240,16 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
     let mut depth_counts: BTreeMap<u32, usize> = BTreeMap::new();
     // eval buckets: key = floor(cp / 200) * 200; special keys: i32::MIN = unlabeled, i32::MAX = mate
     let mut eval_buckets: BTreeMap<i32, usize> = BTreeMap::new();
+    let mut eval_by_phase: BTreeMap<i32, BTreeMap<String, usize>> = BTreeMap::new();
+    let mut eval_by_side: BTreeMap<i32, BTreeMap<String, usize>> = BTreeMap::new();
+    let mut cp_obs_count = 0usize;
+    let mut mate_obs_count = 0usize;
+    let mut swing_sum = 0f64;
+    let mut swing_count = 0usize;
+    // score swing histogram: key = floor(swing / 50) * 50
+    let mut swing_buckets: BTreeMap<i32, usize> = BTreeMap::new();
+    let mut margin_sum = 0f64;
+    let mut margin_count = 0usize;
 
     for rec in &records {
         *phases.entry(format!("{}", rec.tags.phase)).or_default() += 1;
@@ -1123,6 +1281,16 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
         // observation stats
         if rec.observations.is_empty() {
             *eval_buckets.entry(i32::MIN).or_default() += 1; // unlabeled sentinel
+            *eval_by_phase
+                .entry(i32::MIN)
+                .or_default()
+                .entry(format!("{}", rec.tags.phase))
+                .or_default() += 1;
+            *eval_by_side
+                .entry(i32::MIN)
+                .or_default()
+                .entry(format!("{}", rec.tags.side_to_move))
+                .or_default() += 1;
         } else {
             labeled += 1;
             // depth disagreement
@@ -1130,8 +1298,27 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
             if rec.observations.iter().any(|o| &o.bestmove != first) {
                 depth_disagree += 1;
             }
+            let mut cp_scores = Vec::new();
             for obs in &rec.observations {
                 *depth_counts.entry(obs.depth).or_default() += 1;
+                match obs.score {
+                    Score::Cp { value } => {
+                        cp_obs_count += 1;
+                        cp_scores.push(value);
+                    }
+                    Score::Mate { .. } => mate_obs_count += 1,
+                }
+                if let Some(margin) = obs.policy_margin_cp {
+                    margin_sum += margin as f64;
+                    margin_count += 1;
+                }
+            }
+            if let Some(swing) = score_swing(&cp_scores) {
+                swing_sum += swing as f64;
+                swing_count += 1;
+                *swing_buckets
+                    .entry((swing.div_euclid(50)) * 50)
+                    .or_default() += 1;
             }
             // eval bucket from deepest observation
             if let Some(deepest) = rec.observations.iter().max_by_key(|o| o.depth) {
@@ -1143,6 +1330,16 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
                     Score::Mate { .. } => i32::MAX, // mate sentinel
                 };
                 *eval_buckets.entry(key).or_default() += 1;
+                *eval_by_phase
+                    .entry(key)
+                    .or_default()
+                    .entry(format!("{}", rec.tags.phase))
+                    .or_default() += 1;
+                *eval_by_side
+                    .entry(key)
+                    .or_default()
+                    .entry(format!("{}", rec.tags.side_to_move))
+                    .or_default() += 1;
             }
         }
     }
@@ -1263,6 +1460,23 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
         for (&depth, &count) in &depth_counts {
             println!("    depth {depth:>2}     : {count:>6}");
         }
+        let total_obs = cp_obs_count + mate_obs_count;
+        println!(
+            "  cp/mate ratio  : {cp_obs_count} cp / {mate_obs_count} mate  ({:.1}% mate)",
+            mate_obs_count as f64 / total_obs.max(1) as f64 * 100.0
+        );
+        if swing_count > 0 {
+            println!(
+                "  avg score swing: {:.1}cp  (over {swing_count} records with \u{2265}2 cp observations)",
+                swing_sum / swing_count as f64
+            );
+        }
+        if margin_count > 0 {
+            println!(
+                "  avg policy margin: {:.1}cp  (over {margin_count} observations)",
+                margin_sum / margin_count as f64
+            );
+        }
     }
 
     if !eval_buckets.is_empty() {
@@ -1282,7 +1496,50 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
         }
     }
 
+    if !swing_buckets.is_empty() {
+        let bar_max = swing_buckets.values().copied().max().unwrap_or(1);
+        println!();
+        println!("score swing distribution (50cp buckets, per record):");
+        for (&key, &count) in &swing_buckets {
+            let bar = "█".repeat(count * 20 / bar_max.max(1));
+            println!("  {key:>4}..{:<4}: {count:>5}  {bar}", key + 49);
+        }
+    }
+
+    print_eval_cross_tab("eval bucket x phase", &eval_by_phase);
+    print_eval_cross_tab("eval bucket x side", &eval_by_side);
+
     Ok(())
+}
+
+/// Prints a small fixed-width cross-tab of eval bucket (rows, same keying as the main eval
+/// distribution histogram) against an arbitrary string dimension (columns, e.g. phase or side).
+fn print_eval_cross_tab(title: &str, table: &BTreeMap<i32, BTreeMap<String, usize>>) {
+    if table.is_empty() {
+        return;
+    }
+    let columns: BTreeSet<String> = table.values().flat_map(|m| m.keys().cloned()).collect();
+    println!();
+    println!("{title}:");
+    print!("  {:<14}", "");
+    for col in &columns {
+        print!("{col:>12}");
+    }
+    println!();
+    for (&key, row) in table {
+        let label = if key == i32::MIN {
+            "unlabeled".to_string()
+        } else if key == i32::MAX {
+            "mate".to_string()
+        } else {
+            format!("{:+}..{:+}", key, key + 199)
+        };
+        print!("  {label:<14}");
+        for col in &columns {
+            print!("{:>12}", row.get(col).copied().unwrap_or(0));
+        }
+        println!();
+    }
 }
 
 fn cmd_validate(args: ValidateArgs) -> Result<()> {

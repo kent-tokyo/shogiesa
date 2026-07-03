@@ -21,6 +21,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 - `SCHEMA_VERSION` bumped to 2 and pack `FORMAT_VERSION` bumped to 2 for the new `Observation.policy_margin_cp` field; old `.shgpk` files are not readable by this version
 
 ### Added
+- `split --train/--valid/--test` — a source-aware, seeded ratio split (`--valid-frac`/`--test-frac`) that assigns each source game's positions to exactly one of the three splits, so near-duplicate positions from the same game can't leak across train/valid/test. Writes a `manifest.json` with the seed, requested fractions, and actual per-split position/source counts (which deviate from the requested fractions since games vary in length — that's correct no-leakage behavior).
+- `report` shows cp/mate ratio, average score swing (plus a histogram of the existing `score_swing_cp` metric — not a new composite score), average `policy_margin_cp`, and eval-bucket × phase / eval-bucket × side cross-tabs
 - `label --multipv N` (N≥2) sends `setoption name MultiPV`, parses the runner-up `info` line, and populates each observation's `policy_margin_cp` (bestmove's cp score minus the runner-up's) — a low margin means a weak teacher label even when a bestmove exists. Lowerbound/upperbound-tagged runner-up lines are ignored rather than trusted as a real evaluation.
 - `filter --min-policy-margin-cp`, excluding positions whose margin is too small; observations without a computed margin never trigger this gate
 - `filter --exclude-in-check` / `--exclude-capture`, wiring the existing `tags.in_check`/`tags.has_capture` into filtering

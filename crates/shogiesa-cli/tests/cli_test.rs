@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::Path;
 
@@ -104,6 +105,51 @@ fn report_shows_stats() {
         .stdout(predicate::str::contains("phase distribution"))
         .stdout(predicate::str::contains("duplicate SFENs"))
         .stdout(predicate::str::contains("balance warnings"));
+}
+
+#[test]
+fn report_shows_labeled_diagnostics() {
+    let pos = NamedTempFile::new().unwrap();
+    let obs = NamedTempFile::new().unwrap();
+
+    shogiesa()
+        .args([
+            "extract",
+            "--input",
+            fixture("sample.csa").to_str().unwrap(),
+            "--out",
+            pos.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            pos.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4,6",
+            "--multipv",
+            "2",
+            "--out",
+            obs.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    shogiesa()
+        .args(["report", "--input", obs.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("cp/mate ratio"))
+        .stdout(predicate::str::contains("avg score swing"))
+        .stdout(predicate::str::contains("avg policy margin"))
+        .stdout(predicate::str::contains("score swing distribution"))
+        .stdout(predicate::str::contains("eval bucket x phase"))
+        .stdout(predicate::str::contains("eval bucket x side"));
 }
 
 // --- validate (normal mode) ---
@@ -930,6 +976,147 @@ fn split_by_source_creates_one_file_per_game() {
     assert_eq!(manifest["total_positions"], 2);
     assert_eq!(manifest["files"]["game_a.csa.jsonl"], 1);
     assert_eq!(manifest["files"]["game_b.csa.jsonl"], 1);
+}
+
+fn source_record(path: &str, ply: u32) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "sfen": "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+        "source": { "kind": "csa", "path": path, "ply": ply },
+        "tags": { "phase": "opening", "side_to_move": "black", "in_check": false, "has_capture": false },
+        "observations": []
+    })
+}
+
+#[test]
+fn split_train_valid_test_no_leakage() {
+    use std::io::Write;
+    let mut f = NamedTempFile::new().unwrap();
+    for src in ["game_a.csa", "game_b.csa", "game_c.csa"] {
+        for ply in [1u32, 2] {
+            writeln!(f, "{}", source_record(src, ply)).unwrap();
+        }
+    }
+    f.flush().unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let train = dir.path().join("train.jsonl");
+    let valid = dir.path().join("valid.jsonl");
+    let test = dir.path().join("test.jsonl");
+    shogiesa()
+        .args([
+            "split",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--train",
+            train.to_str().unwrap(),
+            "--valid",
+            valid.to_str().unwrap(),
+            "--test",
+            test.to_str().unwrap(),
+            "--valid-frac",
+            "0.34",
+            "--test-frac",
+            "0.34",
+            "--seed",
+            "7",
+        ])
+        .assert()
+        .success();
+
+    let mut source_to_files: HashMap<String, HashSet<&str>> = HashMap::new();
+    let mut total_lines = 0usize;
+    for (name, path) in [("train", &train), ("valid", &valid), ("test", &test)] {
+        let content = std::fs::read_to_string(path).unwrap();
+        for line in content.lines().filter(|l| !l.trim().is_empty()) {
+            let v: serde_json::Value = serde_json::from_str(line).unwrap();
+            let src = v["source"]["path"].as_str().unwrap().to_string();
+            source_to_files.entry(src).or_default().insert(name);
+            total_lines += 1;
+        }
+    }
+    assert_eq!(total_lines, 6, "no positions dropped");
+    assert_eq!(
+        source_to_files.len(),
+        3,
+        "all 3 sources should appear somewhere"
+    );
+    for (src, files) in &source_to_files {
+        assert_eq!(
+            files.len(),
+            1,
+            "source {src} leaked across splits: {files:?}"
+        );
+    }
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("manifest.json")).unwrap())
+            .unwrap();
+    assert_eq!(manifest["total_positions"], 6);
+    let split_total: u64 = ["train", "valid", "test"]
+        .iter()
+        .map(|s| manifest["splits"][s]["positions"].as_u64().unwrap())
+        .sum();
+    assert_eq!(split_total, 6);
+}
+
+#[test]
+fn split_train_valid_test_deterministic_with_seed() {
+    use std::io::Write;
+    let mut f = NamedTempFile::new().unwrap();
+    for src in ["game_a.csa", "game_b.csa", "game_c.csa", "game_d.csa"] {
+        writeln!(f, "{}", source_record(src, 1)).unwrap();
+    }
+    f.flush().unwrap();
+
+    let run = || {
+        let dir = tempfile::tempdir().unwrap();
+        let train = dir.path().join("train.jsonl");
+        let valid = dir.path().join("valid.jsonl");
+        let test = dir.path().join("test.jsonl");
+        shogiesa()
+            .args([
+                "split",
+                "--input",
+                f.path().to_str().unwrap(),
+                "--train",
+                train.to_str().unwrap(),
+                "--valid",
+                valid.to_str().unwrap(),
+                "--test",
+                test.to_str().unwrap(),
+                "--valid-frac",
+                "0.25",
+                "--test-frac",
+                "0.25",
+                "--seed",
+                "42",
+            ])
+            .assert()
+            .success();
+        (
+            std::fs::read_to_string(&train).unwrap(),
+            std::fs::read_to_string(&valid).unwrap(),
+            std::fs::read_to_string(&test).unwrap(),
+        )
+    };
+    assert_eq!(run(), run());
+}
+
+#[test]
+fn split_train_valid_test_requires_all_three_paths() {
+    let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
+    let dir = tempfile::tempdir().unwrap();
+    shogiesa()
+        .args([
+            "split",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--train",
+            dir.path().join("train.jsonl").to_str().unwrap(),
+        ])
+        .assert()
+        .failure();
 }
 
 // --- sample ---

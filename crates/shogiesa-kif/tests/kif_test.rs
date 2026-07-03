@@ -138,6 +138,48 @@ fn handicap_types_all_parse() {
 }
 
 #[test]
+fn same_square_notation_extracts_correctly() {
+    // Ply 1 is filtered out by min_ply=2, so if `prev_dest` were only updated
+    // after the min_ply filter, ply 4's "同" would resolve against a stale
+    // (or missing) destination instead of ply 3's real destination.
+    let kif = "手合割：平手\n先手：A\n後手：B\n手数----指手\n\
+   1 ７六歩(77)   (0:01/0)\n   2 ３四歩(33)   (0:01/0)\n\
+   3 ２二角成(88)  (0:01/0)\n   4 同　銀(31)   (0:01/0)\n   5 投了\n";
+    let config = ExtractConfig {
+        min_ply: 2,
+        max_ply: None,
+        every_n: 1,
+        dedup: false,
+    };
+    let mut seen = HashSet::new();
+    let records = extract_from_str(kif, "same.kif", &config, &mut seen).unwrap();
+    // Plies 2, 3, 4 should all extract (ply 1 filtered out by min_ply, game
+    // does not get truncated by the "同" move at ply 4).
+    assert_eq!(records.len(), 3);
+    assert_eq!(
+        records.iter().map(|r| r.source.ply).collect::<Vec<_>>(),
+        vec![2, 3, 4]
+    );
+}
+
+#[test]
+fn variation_marker_stops_mainline_extraction() {
+    let kif = "手合割：平手\n先手：A\n後手：B\n手数----指手\n\
+   1 ７六歩(77)   (0:01/0)\n   2 ３四歩(33)   (0:01/0)\n\
+\n変化：2手\n   2 ８四歩(83)   (0:01/0)\n   3 ７八金(69)   (0:01/0)\n";
+    let config = ExtractConfig::default();
+    let mut seen = HashSet::new();
+    let records = extract_from_str(kif, "var.kif", &config, &mut seen).unwrap();
+    // Only the two mainline moves are extracted; the variation's move 2
+    // (a different move than the mainline's) must not be applied to the board.
+    assert_eq!(records.len(), 2);
+    assert_eq!(
+        records.iter().map(|r| r.source.ply).collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+}
+
+#[test]
 fn jsonl_roundtrip() {
     let config = ExtractConfig::default();
     let mut seen = HashSet::new();

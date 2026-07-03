@@ -57,3 +57,19 @@ fn timeout_returns_error() {
     assert!(matches!(result, Err(UsiError::Timeout)));
     // engine.quit() would hang too; just drop (child gets killed on Drop of Child)
 }
+
+#[test]
+fn timeout_not_reset_by_continuous_info() {
+    // fake-usi-engine --spam-info sends "info" lines forever without ever
+    // sending "bestmove" — a per-line-reset timeout would never fire here.
+    let mut cmd = Command::new(cargo_bin("fake-usi-engine"));
+    cmd.arg("--spam-info");
+    let mut engine = UsiEngine::launch_command(cmd, String::new(), TIMEOUT, &[]).unwrap();
+    let start = std::time::Instant::now();
+    let result = engine.analyse(STARTPOS, 4, 300); // short timeout
+    assert!(matches!(result, Err(UsiError::Timeout)));
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(2),
+        "timeout should fire even though the engine keeps sending info lines"
+    );
+}

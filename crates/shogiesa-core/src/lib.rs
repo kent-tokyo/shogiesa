@@ -91,6 +91,16 @@ pub struct Observation {
     pub pv: Option<Vec<String>>,
 }
 
+/// Cp swing (max - min) across at least 2 scores; `None` if fewer than 2.
+pub fn score_swing(cp_scores: &[i32]) -> Option<i32> {
+    if cp_scores.len() < 2 {
+        return None;
+    }
+    let lo = *cp_scores.iter().min().unwrap();
+    let hi = *cp_scores.iter().max().unwrap();
+    Some(hi - lo)
+}
+
 impl PositionRecord {
     pub fn new(sfen: String, source: SourceInfo, tags: PositionTags) -> Self {
         Self {
@@ -116,17 +126,10 @@ impl PositionRecord {
                 Score::Mate { .. } => None,
             })
             .collect();
-        let score_swing_cp = if cp_scores.len() >= 2 {
-            let lo = *cp_scores.iter().min().unwrap();
-            let hi = *cp_scores.iter().max().unwrap();
-            Some(hi - lo)
-        } else {
-            None
-        };
         let first = &self.observations[0].bestmove;
         let bestmove_agreement = self.observations.iter().all(|o| &o.bestmove == first);
         self.stability = Some(StabilityInfo {
-            score_swing_cp,
+            score_swing_cp: score_swing(&cp_scores),
             bestmove_agreement,
         });
     }

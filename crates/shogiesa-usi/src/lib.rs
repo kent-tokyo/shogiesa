@@ -3,7 +3,7 @@ use std::path::Path;
 use std::process::{Child, ChildStdin, Command as StdCommand, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use shogiesa_core::Score;
 use thiserror::Error;
@@ -159,17 +159,22 @@ impl UsiEngine {
         Ok(())
     }
 
-    fn recv(&self, timeout_ms: u64) -> Result<String, UsiError> {
+    /// Receive one line, timing out at `deadline` regardless of how many
+    /// lines arrive before it — a per-call `recv_timeout` would let a chatty
+    /// engine reset the clock on every line and never time out.
+    fn recv_until(&self, deadline: Instant) -> Result<String, UsiError> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
         self.rx
-            .recv_timeout(Duration::from_millis(timeout_ms))
+            .recv_timeout(remaining)
             .map_err(|_| UsiError::Timeout)?
             .map_err(UsiError::Io)
     }
 
     fn handshake(&mut self, timeout_ms: u64, options: &[(String, String)]) -> Result<(), UsiError> {
         self.write_line("usi")?;
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
         loop {
-            let line = self.recv(timeout_ms)?;
+            let line = self.recv_until(deadline)?;
             if line.starts_with("id name ") && self.engine_name.is_empty() {
                 self.engine_name = line.strip_prefix("id name ").unwrap_or("").to_string();
             } else if line.starts_with("id version ") {
@@ -183,8 +188,9 @@ impl UsiEngine {
             self.write_line(&format!("setoption name {k} value {v}"))?;
         }
         self.write_line("isready")?;
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
         loop {
-            let line = self.recv(timeout_ms)?;
+            let line = self.recv_until(deadline)?;
             if line == "readyok" {
                 break;
             }
@@ -202,9 +208,10 @@ impl UsiEngine {
         self.write_line(&format!("position sfen {sfen}"))?;
         self.write_line(&format!("go depth {depth}"))?;
 
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
         let mut last_info: Option<InfoLine> = None;
         loop {
-            let line = self.recv(timeout_ms)?;
+            let line = self.recv_until(deadline)?;
             if line.starts_with("bestmove ") {
                 let bestmove = line
                     .strip_prefix("bestmove ")

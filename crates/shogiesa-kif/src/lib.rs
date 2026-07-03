@@ -94,21 +94,26 @@ struct KifMove {
 
 /// Parse a single KIF move token (the part after the ply number).
 /// Returns `None` for non-move lines (resign, interrupt, etc.).
-fn parse_kif_move(token: &str) -> Option<KifMove> {
+///
+/// `prev_dest` is the destination square of the previous move, needed to
+/// resolve "同" (same-square) notation.
+fn parse_kif_move(token: &str, prev_dest: Option<(u8, u8)>) -> Option<KifMove> {
     let token = token.trim();
 
-    // "同" = same destination as previous move — not supported in initial impl
-    if token.starts_with('同') {
-        return None;
-    }
-
-    // Destination: full-width column + half-width rank digit
-    let mut chars = token.chars();
-    let dest_file_c = chars.next()?;
-    let dest_file = fullwidth_col(dest_file_c)?;
-    let dest_rank_c = chars.next()?;
-    let dest_rank = kanji_rank(dest_rank_c)?;
-    let rest = &token[dest_file_c.len_utf8() + dest_rank_c.len_utf8()..];
+    // "同" = same destination as previous move
+    let (dest_file, dest_rank, rest) = if let Some(rest) = token.strip_prefix('同') {
+        let (dest_file, dest_rank) = prev_dest?;
+        (dest_file, dest_rank, rest.trim_start_matches(['　', ' ']))
+    } else {
+        // Destination: full-width column + half-width rank digit
+        let mut chars = token.chars();
+        let dest_file_c = chars.next()?;
+        let dest_file = fullwidth_col(dest_file_c)?;
+        let dest_rank_c = chars.next()?;
+        let dest_rank = kanji_rank(dest_rank_c)?;
+        let rest = &token[dest_file_c.len_utf8() + dest_rank_c.len_utf8()..];
+        (dest_file, dest_rank, rest)
+    };
 
     // Piece name
     let (base_piece, rest) = piece_from_kif(rest)?;
@@ -221,6 +226,7 @@ pub fn extract_from_str(
     let mut out = Vec::new();
     let mut ply: u32 = 0;
     let mut in_moves = false;
+    let mut prev_dest: Option<(u8, u8)> = None;
 
     for line in content.lines() {
         let line = line.trim();
@@ -257,7 +263,9 @@ pub fn extract_from_str(
         }
 
         // Terminal markers
-        if line.starts_with("まで") || line == "中断" || line == "投了" {
+        // ponytail: 変化(分岐)は本譜のみ抽出し、分岐そのものは追わない。分岐木の完全パースは別スコープ
+        if line.starts_with("まで") || line == "中断" || line == "投了" || line.starts_with("変化")
+        {
             break;
         }
 
@@ -279,7 +287,7 @@ pub fn extract_from_str(
             break;
         }
 
-        let Some(kif_move) = parse_kif_move(move_token) else {
+        let Some(kif_move) = parse_kif_move(move_token, prev_dest) else {
             warn!(
                 path = source_path,
                 ply, "unsupported move syntax {move_token:?}, stopping game"
@@ -313,6 +321,10 @@ pub fn extract_from_str(
             warn!(path = source_path, ply, "board error: {e}");
             break;
         }
+
+        // Updated for every played move (even ones later filtered out below),
+        // so "同" always resolves against the true previous move.
+        prev_dest = Some((kif_move.dest_file, kif_move.dest_rank));
 
         ply += 1;
 
@@ -389,7 +401,7 @@ mod tests {
 
     #[test]
     fn parse_normal_move() {
-        let m = parse_kif_move("７六歩(77)").unwrap();
+        let m = parse_kif_move("７六歩(77)", None).unwrap();
         assert_eq!(m.dest_file, 7);
         assert_eq!(m.dest_rank, 6);
         assert_eq!(m.piece, PieceType::Pawn);
@@ -400,7 +412,7 @@ mod tests {
 
     #[test]
     fn parse_promotion_move() {
-        let m = parse_kif_move("２二角成(88)").unwrap();
+        let m = parse_kif_move("２二角成(88)", None).unwrap();
         assert_eq!(m.dest_file, 2);
         assert_eq!(m.dest_rank, 2);
         assert_eq!(m.piece, PieceType::Horse); // 角 promoted → Horse
@@ -411,10 +423,25 @@ mod tests {
 
     #[test]
     fn parse_drop_move() {
-        let m = parse_kif_move("４五角打").unwrap();
+        let m = parse_kif_move("４五角打", None).unwrap();
         assert_eq!(m.dest_file, 4);
         assert_eq!(m.dest_rank, 5);
         assert_eq!(m.piece, PieceType::Bishop);
         assert!(m.is_drop);
+    }
+
+    #[test]
+    fn parse_same_square_move() {
+        let m = parse_kif_move("同歩(77)", Some((7, 6))).unwrap();
+        assert_eq!(m.dest_file, 7);
+        assert_eq!(m.dest_rank, 6);
+        assert_eq!(m.piece, PieceType::Pawn);
+        assert_eq!(m.from_file, 7);
+        assert_eq!(m.from_rank, 7);
+    }
+
+    #[test]
+    fn parse_same_square_move_without_prev_dest_fails() {
+        assert!(parse_kif_move("同歩(77)", None).is_none());
     }
 }

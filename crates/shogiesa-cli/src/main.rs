@@ -11,7 +11,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::hash::{Hash, Hasher};
 
 use shogiesa_core::{
-    GamePhase, Observation, PositionRecord, Score, SideToMove, sfen::Sfen, zobrist_from_sfen,
+    GamePhase, Observation, PositionRecord, Score, SideToMove, score_swing, sfen::Sfen,
+    zobrist_from_sfen,
 };
 use shogiesa_pack as pack;
 use shogiesa_usi::UsiEngine;
@@ -450,22 +451,22 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
         .map(|mut rec| {
             ENGINE.with(|cell| {
                 let mut opt = cell.borrow_mut();
-                if opt.is_none() {
-                    if let Ok(e) = UsiEngine::launch(
+                if opt.is_none()
+                    && let Ok(e) = UsiEngine::launch(
                         &engine_path,
                         engine_name.clone(),
                         timeout_ms,
                         &engine_options,
-                    ) {
-                        *opt = Some(e);
-                    }
+                    )
+                {
+                    *opt = Some(e);
                 }
                 if let Some(engine) = opt.as_mut() {
                     analyze_record(&mut rec, engine, &depths, timeout_ms);
                 }
             });
             let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-            if n % print_every == 0 || n == total {
+            if n.is_multiple_of(print_every) || n == total {
                 eprint!("\r  {n}/{total}");
             }
             rec
@@ -561,7 +562,7 @@ fn cmd_split(args: SplitArgs) -> Result<()> {
         };
 
         let key = rec.source.path.clone();
-        let w = writers.entry(key.clone()).or_insert_with(|| {
+        if !writers.contains_key(&key) {
             let safe: String = key
                 .chars()
                 .map(|c| {
@@ -573,9 +574,11 @@ fn cmd_split(args: SplitArgs) -> Result<()> {
                 })
                 .collect();
             let out_path = args.out_dir.join(format!("{safe}.jsonl"));
-            let f = File::create(&out_path).expect("cannot create output file");
-            BufWriter::new(f)
-        });
+            let f =
+                File::create(&out_path).with_context(|| format!("cannot create {out_path:?}"))?;
+            writers.insert(key.clone(), BufWriter::new(f));
+        }
+        let w = writers.get_mut(&key).unwrap();
         serde_json::to_writer(&mut *w, &rec)?;
         w.write_all(b"\n")?;
         total += 1;
@@ -659,14 +662,14 @@ fn cmd_mine(args: MineArgs) -> Result<()> {
 
         // Blunder detection: large eval swing between consecutive labeled positions
         for j in 1..indices.len() {
-            if let (Some(e0), Some(e1)) = (evals[j - 1], evals[j]) {
-                if (e1 - e0).abs() >= args.blunder_threshold {
-                    let lo = j.saturating_sub(args.blunder_window);
-                    let hi = (j + args.blunder_window + 1).min(indices.len());
-                    for k in lo..hi {
-                        if !records[indices[k]].observations.is_empty() {
-                            keep.insert(indices[k]);
-                        }
+            if let (Some(e0), Some(e1)) = (evals[j - 1], evals[j])
+                && (e1 - e0).abs() >= args.blunder_threshold
+            {
+                let lo = j.saturating_sub(args.blunder_window);
+                let hi = (j + args.blunder_window + 1).min(indices.len());
+                for k in lo..hi {
+                    if !records[indices[k]].observations.is_empty() {
+                        keep.insert(indices[k]);
                     }
                 }
             }
@@ -881,12 +884,7 @@ fn passes_filter(
     }
 
     if let Some(max_swing) = args.max_score_swing_cp
-        && cp_scores.len() >= 2
-        && {
-            let lo = *cp_scores.iter().min().unwrap();
-            let hi = *cp_scores.iter().max().unwrap();
-            hi - lo > max_swing
-        }
+        && score_swing(&cp_scores).is_some_and(|swing| swing > max_swing)
     {
         return false;
     }

@@ -15,6 +15,22 @@ fn shogiesa() -> Command {
     Command::cargo_bin("shogiesa").unwrap()
 }
 
+// ponytail: `fake-usi-engine` lives in a sibling crate, so plain `cargo test`
+// only builds its unit-test harness, not the plain bin CARGO_BIN_EXE_ needs.
+// Build it explicitly once, then reuse assert_cmd's normal lookup.
+fn fake_usi_engine_bin() -> std::path::PathBuf {
+    static ONCE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    ONCE.get_or_init(|| {
+        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+        let status = std::process::Command::new(cargo)
+            .args(["build", "-p", "fake-usi-engine"])
+            .status()
+            .expect("failed to run cargo build");
+        assert!(status.success(), "failed to build fake-usi-engine");
+    });
+    cargo_bin("fake-usi-engine")
+}
+
 // --- extract ---
 
 #[test]
@@ -223,7 +239,7 @@ fn label_adds_observations() {
             "--input",
             pos.path().to_str().unwrap(),
             "--engine",
-            cargo_bin("fake-usi-engine").to_str().unwrap(),
+            fake_usi_engine_bin().to_str().unwrap(),
             "--depths",
             "4,6",
             "--out",
@@ -271,7 +287,7 @@ fn label_appends_to_existing_observations() {
             "--input",
             pos.path().to_str().unwrap(),
             "--engine",
-            cargo_bin("fake-usi-engine").to_str().unwrap(),
+            fake_usi_engine_bin().to_str().unwrap(),
             "--depths",
             "4",
             "--out",
@@ -287,7 +303,7 @@ fn label_appends_to_existing_observations() {
             "--input",
             obs1.path().to_str().unwrap(),
             "--engine",
-            cargo_bin("fake-usi-engine").to_str().unwrap(),
+            fake_usi_engine_bin().to_str().unwrap(),
             "--depths",
             "6",
             "--out",
@@ -874,7 +890,7 @@ fn filter_end_to_end_with_label() {
             "--input",
             pos.path().to_str().unwrap(),
             "--engine",
-            cargo_bin("fake-usi-engine").to_str().unwrap(),
+            fake_usi_engine_bin().to_str().unwrap(),
             "--depths",
             "4,6",
             "--out",

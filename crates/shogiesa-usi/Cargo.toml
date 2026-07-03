@@ -16,4 +16,3 @@ tracing = "0.1"
 
 [dev-dependencies]
 assert_cmd = "2"
-fake-usi-engine = { path = "../fake-usi-engine" }

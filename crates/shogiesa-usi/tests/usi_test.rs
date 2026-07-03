@@ -7,8 +7,24 @@ use shogiesa_usi::{UsiEngine, UsiError};
 const STARTPOS: &str = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1";
 const TIMEOUT: u64 = 5000;
 
+// ponytail: `fake-usi-engine` lives in a sibling crate, so plain `cargo test`
+// only builds its unit-test harness, not the plain bin CARGO_BIN_EXE_ needs.
+// Build it explicitly once, then reuse assert_cmd's normal lookup.
+fn fake_usi_engine_bin() -> std::path::PathBuf {
+    static ONCE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    ONCE.get_or_init(|| {
+        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+        let status = Command::new(cargo)
+            .args(["build", "-p", "fake-usi-engine"])
+            .status()
+            .expect("failed to run cargo build");
+        assert!(status.success(), "failed to build fake-usi-engine");
+    });
+    cargo_bin("fake-usi-engine")
+}
+
 fn fake_engine() -> UsiEngine {
-    UsiEngine::launch(&cargo_bin("fake-usi-engine"), String::new(), TIMEOUT, &[]).unwrap()
+    UsiEngine::launch(&fake_usi_engine_bin(), String::new(), TIMEOUT, &[]).unwrap()
 }
 
 #[test]
@@ -50,7 +66,7 @@ fn analyse_includes_pv() {
 #[test]
 fn timeout_returns_error() {
     // fake-usi-engine --hang sleeps forever on "go" commands
-    let mut cmd = Command::new(cargo_bin("fake-usi-engine"));
+    let mut cmd = Command::new(fake_usi_engine_bin());
     cmd.arg("--hang");
     let mut engine = UsiEngine::launch_command(cmd, String::new(), TIMEOUT, &[]).unwrap();
     let result = engine.analyse(STARTPOS, 4, 300); // short timeout
@@ -62,7 +78,7 @@ fn timeout_returns_error() {
 fn timeout_not_reset_by_continuous_info() {
     // fake-usi-engine --spam-info sends "info" lines forever without ever
     // sending "bestmove" — a per-line-reset timeout would never fire here.
-    let mut cmd = Command::new(cargo_bin("fake-usi-engine"));
+    let mut cmd = Command::new(fake_usi_engine_bin());
     cmd.arg("--spam-info");
     let mut engine = UsiEngine::launch_command(cmd, String::new(), TIMEOUT, &[]).unwrap();
     let start = std::time::Instant::now();

@@ -771,7 +771,6 @@ dependencies = [
  "anyhow",
  "assert_cmd",
  "clap",
- "fake-usi-engine",
  "predicates",
  "rayon",
  "serde_json",
@@ -827,7 +826,6 @@ name = "shogiesa-usi"
 version = "0.3.0"
 dependencies = [
  "assert_cmd",
- "fake-usi-engine",
  "shogiesa-core",
  "thiserror",
  "tracing",

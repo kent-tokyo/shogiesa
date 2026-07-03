@@ -30,3 +30,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 assert_cmd = "2"
 predicates = "3"
 tempfile = "3"
+fake-usi-engine = { path = "../fake-usi-engine" }

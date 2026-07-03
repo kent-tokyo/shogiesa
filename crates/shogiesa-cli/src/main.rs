@@ -445,6 +445,7 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
         .ok(); // ignore error if global pool already set
 
     let done = AtomicUsize::new(0);
+    let engine_launch_failures = AtomicUsize::new(0);
     let print_every = (total / 100).max(1);
     let labeled_records: Vec<PositionRecord> = records
         .into_par_iter()
@@ -463,6 +464,9 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
                 }
                 if let Some(engine) = opt.as_mut() {
                     analyze_record(&mut rec, engine, &depths, timeout_ms);
+                } else {
+                    engine_launch_failures.fetch_add(1, Ordering::Relaxed);
+                    tracing::warn!(sfen = %rec.sfen, "engine unavailable, position left unlabeled");
                 }
             });
             let n = done.fetch_add(1, Ordering::Relaxed) + 1;
@@ -475,6 +479,7 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
     eprintln!();
 
     let labeled = labeled_records.len();
+    let engine_launch_failures = engine_launch_failures.load(Ordering::Relaxed);
     let out_file =
         File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
     let mut writer = BufWriter::new(out_file);
@@ -485,7 +490,7 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
     writer.flush()?;
 
     eprintln!(
-        "done [{engine_display_name}, jobs={jobs}]: {total} in, {labeled} labeled, {skipped} skipped → {:?}",
+        "done [{engine_display_name}, jobs={jobs}]: {total} in, {labeled} labeled, {skipped} skipped, {engine_launch_failures} engine launch failures → {:?}",
         args.out
     );
     Ok(())

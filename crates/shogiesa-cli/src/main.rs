@@ -121,6 +121,10 @@ struct LabelArgs {
     /// USI engine option in Key=Value format; can be repeated
     #[arg(long = "engine-option", value_name = "KEY=VALUE")]
     engine_options: Vec<String>,
+    /// Number of PV lines the engine should report (sends `setoption name MultiPV`);
+    /// 2+ populates each observation's policy_margin_cp
+    #[arg(long, default_value = "1")]
+    multipv: u32,
     /// Output JSONL file
     #[arg(short, long)]
     out: PathBuf,
@@ -254,6 +258,11 @@ struct FilterArgs {
     /// Filter by game phase: comma-separated (opening,middlegame,endgame)
     #[arg(long)]
     phase: Option<String>,
+    /// Minimum policy_margin_cp (best move vs. runner-up from a MultiPV label pass) —
+    /// positions with a smaller margin are excluded. Observations without a computed
+    /// margin never trigger this gate.
+    #[arg(long, allow_hyphen_values = true)]
+    min_policy_margin_cp: Option<i32>,
 }
 
 fn main() -> Result<()> {
@@ -374,6 +383,7 @@ fn analyze_record(
                     nodes: result.nodes,
                     time_ms: result.time_ms,
                     pv: result.pv,
+                    policy_margin_cp: result.policy_margin_cp,
                 });
             }
             Err(e) => tracing::warn!(depth, "analysis error: {e}"),
@@ -395,7 +405,7 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
     let engine_name = args.engine_name.unwrap_or_default();
     let timeout_ms = args.timeout_ms;
     let jobs = args.jobs.max(1);
-    let engine_options: Vec<(String, String)> = args
+    let mut engine_options: Vec<(String, String)> = args
         .engine_options
         .iter()
         .filter_map(|s| {
@@ -403,6 +413,9 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
             Some((k.to_string(), v.to_string()))
         })
         .collect();
+    if args.multipv > 1 {
+        engine_options.push(("MultiPV".to_string(), args.multipv.to_string()));
+    }
 
     // Parse and validate all input records (streaming for large files)
     let content =
@@ -924,6 +937,13 @@ fn filter_reason(
         && score_swing(&cp_scores).is_some_and(|swing| swing > max_swing)
     {
         return Some("score_swing");
+    }
+
+    if args.min_policy_margin_cp.is_some_and(|min| {
+        obs.iter()
+            .any(|o| o.policy_margin_cp.is_some_and(|m| m < min))
+    }) {
+        return Some("policy_margin");
     }
 
     if args.require_bestmove_agreement && obs.len() >= 2 {

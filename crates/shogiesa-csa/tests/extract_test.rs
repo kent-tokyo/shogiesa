@@ -98,7 +98,7 @@ fn jsonl_roundtrip() {
         assert!(json.contains("\"black\"") || json.contains("\"white\""));
         let back: shogiesa_core::PositionRecord = serde_json::from_str(&json).unwrap();
         assert_eq!(back.sfen, rec.sfen);
-        assert_eq!(back.schema_version, 1);
+        assert_eq!(back.schema_version, shogiesa_core::SCHEMA_VERSION);
     }
 }
 

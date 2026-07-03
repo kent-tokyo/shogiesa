@@ -44,7 +44,7 @@ use shogiesa_core::{
 };
 
 pub const MAGIC: &[u8; 8] = b"SHOGIESA";
-pub const FORMAT_VERSION: u16 = 1;
+pub const FORMAT_VERSION: u16 = 2;
 
 // ── write helpers ─────────────────────────────────────────────────────────────
 
@@ -232,6 +232,13 @@ pub fn encode_record(rec: &PositionRecord, w: &mut impl Write) -> io::Result<()>
                 }
             }
         }
+        match obs.policy_margin_cp {
+            None => wu8(w, 0)?,
+            Some(v) => {
+                wu8(w, 1)?;
+                wi32(w, v)?;
+            }
+        }
     }
 
     Ok(())
@@ -302,6 +309,7 @@ pub fn decode_record(r: &mut impl Read) -> io::Result<PositionRecord> {
             }
             Some(moves)
         };
+        let policy_margin_cp = if ru8(r)? == 0 { None } else { Some(ri32(r)?) };
         observations.push(Observation {
             engine,
             engine_version,
@@ -311,6 +319,7 @@ pub fn decode_record(r: &mut impl Read) -> io::Result<PositionRecord> {
             nodes,
             time_ms,
             pv,
+            policy_margin_cp,
         });
     }
 
@@ -376,6 +385,7 @@ mod tests {
                     nodes: Some(12345),
                     time_ms: Some(100),
                     pv: Some(vec!["7g7f".to_string(), "3c3d".to_string()]),
+                    policy_margin_cp: Some(310),
                 },
                 Observation {
                     engine: "TestEngine".to_string(),
@@ -386,6 +396,7 @@ mod tests {
                     nodes: None,
                     time_ms: None,
                     pv: None,
+                    policy_margin_cp: None,
                 },
             ],
             stability: Some(StabilityInfo {
@@ -419,11 +430,13 @@ mod tests {
             got.observations[0].pv,
             Some(vec!["7g7f".to_string(), "3c3d".to_string()])
         );
+        assert_eq!(got.observations[0].policy_margin_cp, Some(310));
         assert_eq!(got.observations[1].engine_version, None);
         assert!(matches!(
             got.observations[1].score,
             Score::Mate { moves: 3 }
         ));
+        assert_eq!(got.observations[1].policy_margin_cp, None);
         let stab = got.stability.as_ref().unwrap();
         assert_eq!(stab.score_swing_cp, Some(100));
         assert!(!stab.bestmove_agreement);

@@ -188,6 +188,6 @@ fn jsonl_roundtrip() {
         let json = serde_json::to_string(rec).unwrap();
         let back: shogiesa_core::PositionRecord = serde_json::from_str(&json).unwrap();
         assert_eq!(back.sfen, rec.sfen);
-        assert_eq!(back.schema_version, 1);
+        assert_eq!(back.schema_version, shogiesa_core::SCHEMA_VERSION);
     }
 }

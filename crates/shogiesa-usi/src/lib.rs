@@ -28,11 +28,17 @@ pub struct AnalysisResult {
     pub nodes: Option<u64>,
     pub time_ms: Option<u64>,
     pub pv: Option<Vec<String>>,
+    /// `score_cp(bestmove) - score_cp(runner_up)` when the engine was run with
+    /// MultiPV≥2. `None` if MultiPV wasn't used, either score was a mate score,
+    /// or the runner-up's score was a lowerbound/upperbound.
+    pub policy_margin_cp: Option<i32>,
 }
 
 struct InfoLine {
     depth: Option<u32>,
+    multipv: Option<u32>,
     score: Option<Score>,
+    bound: bool,
     nodes: Option<u64>,
     time_ms: Option<u64>,
     pv: Option<Vec<String>>,
@@ -45,7 +51,9 @@ fn parse_info(line: &str) -> Option<InfoLine> {
     }
     let mut info = InfoLine {
         depth: None,
+        multipv: None,
         score: None,
+        bound: false,
         nodes: None,
         time_ms: None,
         pv: None,
@@ -57,25 +65,38 @@ fn parse_info(line: &str) -> Option<InfoLine> {
                 info.depth = tokens.get(i + 1).and_then(|s| s.parse().ok());
                 i += 2;
             }
-            "score" => match tokens.get(i + 1).copied() {
-                Some("cp") => {
-                    info.score = tokens
-                        .get(i + 2)
-                        .and_then(|s| s.parse::<i32>().ok())
-                        .map(|v| Score::Cp { value: v });
-                    i += 3;
+            "multipv" => {
+                info.multipv = tokens.get(i + 1).and_then(|s| s.parse().ok());
+                i += 2;
+            }
+            "score" => {
+                match tokens.get(i + 1).copied() {
+                    Some("cp") => {
+                        info.score = tokens
+                            .get(i + 2)
+                            .and_then(|s| s.parse::<i32>().ok())
+                            .map(|v| Score::Cp { value: v });
+                        i += 3;
+                    }
+                    Some("mate") => {
+                        info.score = tokens
+                            .get(i + 2)
+                            .and_then(|s| s.parse::<i32>().ok())
+                            .map(|m| Score::Mate { moves: m });
+                        i += 3;
+                    }
+                    _ => {
+                        i += 1;
+                    }
                 }
-                Some("mate") => {
-                    info.score = tokens
-                        .get(i + 2)
-                        .and_then(|s| s.parse::<i32>().ok())
-                        .map(|m| Score::Mate { moves: m });
-                    i += 3;
-                }
-                _ => {
+                if matches!(
+                    tokens.get(i).copied(),
+                    Some("lowerbound") | Some("upperbound")
+                ) {
+                    info.bound = true;
                     i += 1;
                 }
-            },
+            }
             "nodes" => {
                 info.nodes = tokens.get(i + 1).and_then(|s| s.parse().ok());
                 i += 2;
@@ -210,6 +231,7 @@ impl UsiEngine {
 
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
         let mut last_info: Option<InfoLine> = None;
+        let mut last_runner_up: Option<InfoLine> = None;
         loop {
             let line = self.recv_until(deadline)?;
             if line.starts_with("bestmove ") {
@@ -219,6 +241,15 @@ impl UsiEngine {
                     .ok_or(UsiError::InvalidResponse)?
                     .to_string();
                 let info = last_info.ok_or(UsiError::NoBestmove)?;
+                let policy_margin_cp = match (&info.score, &last_runner_up) {
+                    (Some(Score::Cp { value: best }), Some(runner_up)) if !runner_up.bound => {
+                        match runner_up.score {
+                            Some(Score::Cp { value: second }) => Some(best - second),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                };
                 return Ok(AnalysisResult {
                     depth: info.depth.unwrap_or(depth),
                     score: info.score.ok_or(UsiError::InvalidResponse)?,
@@ -226,11 +257,16 @@ impl UsiEngine {
                     nodes: info.nodes,
                     time_ms: info.time_ms,
                     pv: info.pv,
+                    policy_margin_cp,
                 });
             } else if line.starts_with("info ")
                 && let Some(info) = parse_info(&line)
             {
-                last_info = Some(info);
+                match info.multipv.unwrap_or(1) {
+                    1 => last_info = Some(info),
+                    2 => last_runner_up = Some(info),
+                    _ => {}
+                }
             }
         }
     }
@@ -280,5 +316,31 @@ mod tests {
     #[test]
     fn parse_info_rejects_non_info() {
         assert!(parse_info("bestmove 7g7f").is_none());
+    }
+
+    #[test]
+    fn parse_info_multipv() {
+        let info = parse_info("info depth 8 multipv 2 score cp 39 nodes 1 time 1").unwrap();
+        assert_eq!(info.multipv, Some(2));
+        assert!(!info.bound);
+    }
+
+    #[test]
+    fn parse_info_no_multipv_token_is_none() {
+        let info = parse_info("info depth 8 score cp 43 nodes 1 time 1").unwrap();
+        assert_eq!(info.multipv, None);
+    }
+
+    #[test]
+    fn parse_info_detects_lowerbound() {
+        let info = parse_info("info depth 8 score cp 39 lowerbound nodes 1 time 1").unwrap();
+        assert!(info.bound);
+        assert!(matches!(info.score, Some(Score::Cp { value: 39 })));
+    }
+
+    #[test]
+    fn parse_info_detects_upperbound() {
+        let info = parse_info("info depth 8 score cp 39 upperbound nodes 1 time 1").unwrap();
+        assert!(info.bound);
     }
 }

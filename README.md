@@ -67,10 +67,14 @@ shogiesa label \
   --engine-name myengine \   # optional; falls back to USI id name
   --depths 4,6,8 \           # search depths
   --timeout-ms 10000 \
+  --multipv 2 \              # optional; populates observations[].policy_margin_cp
   --out observations.jsonl
 ```
 
 Appends observations to existing records — safe to run multiple times with different depths.
+`--multipv 2` sends `setoption name MultiPV value 2` and records how far the bestmove beats
+the runner-up (`policy_margin_cp`) — a low margin means the label is a weak teaching signal
+even when a bestmove exists.
 
 ### `stability` — compute stability scores
 
@@ -149,7 +153,7 @@ Checks: broken JSON, invalid SFENs, duplicate SFENs, `side_to_move` tag vs SFEN 
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "sfen": "lnsgkgsnl/1r5b1/p1ppppppp/1p7/9/2P6/PP1PPPPPP/1B5R1/LNSGKGSNL b - 2",
   "source": {
     "kind": "csa",
@@ -171,13 +175,15 @@ Checks: broken JSON, invalid SFENs, duplicate SFENs, `side_to_move` tag vs SFEN 
       "bestmove": "7g7f",
       "nodes": 123456,
       "time_ms": 120,
-      "pv": ["7g7f", "8h7g"]
+      "pv": ["7g7f", "8h7g"],
+      "policy_margin_cp": 310
     }
   ]
 }
 ```
 
-Score is either `{"kind":"cp","value":N}` or `{"kind":"mate","moves":N}`.
+Score is either `{"kind":"cp","value":N}` or `{"kind":"mate","moves":N}`. `policy_margin_cp` is
+only present when `label --multipv 2` (or higher) was used.
 
 ## Pipeline
 

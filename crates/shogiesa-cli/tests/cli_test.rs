@@ -53,7 +53,7 @@ fn extract_creates_jsonl() {
     // Each line is valid JSON with schema_version
     for line in &lines {
         let v: serde_json::Value = serde_json::from_str(line).unwrap();
-        assert_eq!(v["schema_version"], 1);
+        assert_eq!(v["schema_version"], shogiesa_core::SCHEMA_VERSION);
     }
 }
 
@@ -264,6 +264,46 @@ fn label_adds_observations() {
 }
 
 #[test]
+fn label_multipv_populates_margin() {
+    let pos = NamedTempFile::new().unwrap();
+    let obs = NamedTempFile::new().unwrap();
+
+    shogiesa()
+        .args([
+            "extract",
+            "--input",
+            fixture("sample.csa").to_str().unwrap(),
+            "--out",
+            pos.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            pos.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--multipv",
+            "2",
+            "--out",
+            obs.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let content = std::fs::read_to_string(obs.path()).unwrap();
+    for line in content.lines().filter(|l| !l.trim().is_empty()) {
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(v["observations"][0]["policy_margin_cp"], 310);
+    }
+}
+
+#[test]
 fn label_appends_to_existing_observations() {
     let pos = NamedTempFile::new().unwrap();
     let obs1 = NamedTempFile::new().unwrap();
@@ -354,6 +394,20 @@ fn obs_mate(bestmove: &str, moves: i32, depth: u32) -> serde_json::Value {
         "nodes": null,
         "time_ms": null,
         "pv": null
+    })
+}
+
+fn obs_with_margin(bestmove: &str, score_cp: i32, depth: u32, margin: i32) -> serde_json::Value {
+    serde_json::json!({
+        "engine": "test",
+        "engine_version": null,
+        "depth": depth,
+        "score": { "kind": "cp", "value": score_cp },
+        "bestmove": bestmove,
+        "nodes": null,
+        "time_ms": null,
+        "pv": null,
+        "policy_margin_cp": margin
     })
 }
 
@@ -456,6 +510,36 @@ fn filter_score_swing_excluded() {
         .success();
     let content = std::fs::read_to_string(out.path()).unwrap();
     assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 0);
+}
+
+#[test]
+fn filter_min_policy_margin_cp() {
+    let f = make_labeled_jsonl(&[
+        position(
+            "middlegame",
+            serde_json::json!([obs_with_margin("7g7f", 100, 4, 20)]),
+        ), // low margin, excluded
+        position(
+            "middlegame",
+            serde_json::json!([obs_with_margin("8h2b+", 350, 4, 310)]),
+        ), // high margin, kept
+        position("middlegame", serde_json::json!([obs("7g7f", 100, 4)])), // no margin computed, kept
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--min-policy-margin-cp",
+            "50",
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 2);
 }
 
 #[test]

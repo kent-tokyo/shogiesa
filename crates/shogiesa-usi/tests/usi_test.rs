@@ -79,6 +79,38 @@ fn analyse_reports_actual_depth_when_engine_stops_early() {
 }
 
 #[test]
+fn analyse_computes_policy_margin_from_multipv() {
+    // fake-usi-engine --multipv-margin 310 reports a multipv 2 runner-up 310cp
+    // below the bestmove's score.
+    let mut cmd = Command::new(fake_usi_engine_bin());
+    cmd.args(["--multipv-margin", "310"]);
+    let mut engine = UsiEngine::launch_command(cmd, String::new(), TIMEOUT, &[]).unwrap();
+    let result = engine.analyse(STARTPOS, 4, TIMEOUT).unwrap();
+    assert_eq!(result.policy_margin_cp, Some(310));
+    engine.quit();
+}
+
+#[test]
+fn analyse_ignores_bound_tagged_runner_up() {
+    // fake-usi-engine --multipv-bound sends a multipv 2 line tagged "lowerbound",
+    // which should not be trusted as a real evaluation for margin purposes.
+    let mut cmd = Command::new(fake_usi_engine_bin());
+    cmd.arg("--multipv-bound");
+    let mut engine = UsiEngine::launch_command(cmd, String::new(), TIMEOUT, &[]).unwrap();
+    let result = engine.analyse(STARTPOS, 4, TIMEOUT).unwrap();
+    assert_eq!(result.policy_margin_cp, None);
+    engine.quit();
+}
+
+#[test]
+fn analyse_without_multipv_has_no_margin() {
+    let mut engine = fake_engine();
+    let result = engine.analyse(STARTPOS, 4, TIMEOUT).unwrap();
+    assert_eq!(result.policy_margin_cp, None);
+    engine.quit();
+}
+
+#[test]
 fn timeout_returns_error() {
     // fake-usi-engine --hang sleeps forever on "go" commands
     let mut cmd = Command::new(fake_usi_engine_bin());

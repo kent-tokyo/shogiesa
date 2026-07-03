@@ -2,7 +2,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -89,6 +89,11 @@ pub struct Observation {
     pub nodes: Option<u64>,
     pub time_ms: Option<u64>,
     pub pv: Option<Vec<String>>,
+    /// `score_cp(bestmove) - score_cp(runner_up)` from a MultiPV≥2 label pass.
+    /// `None` when MultiPV wasn't used, either score was a mate score, or the
+    /// runner-up's score was a lowerbound/upperbound rather than a confirmed eval.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_margin_cp: Option<i32>,
 }
 
 /// Cp swing (max - min) across at least 2 scores; `None` if fewer than 2.

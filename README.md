@@ -116,7 +116,8 @@ shogiesa split  --input positions.jsonl --by-source --out-dir by_game/
 shogiesa sample --input positions.jsonl --count 10000 --seed 1 --out sample.jsonl
 ```
 
-`split` writes one file per source game; `sample` deterministically selects N positions.
+`split` writes one file per source game plus a `manifest.json` (input path, schema version,
+per-file counts); `sample` deterministically selects N positions.
 
 ### `pack` / `unpack` — binary format
 

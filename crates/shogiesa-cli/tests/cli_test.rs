@@ -528,6 +528,60 @@ fn filter_phase() {
     assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 2);
 }
 
+fn position_with_flags(in_check: bool, has_capture: bool) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "sfen": "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+        "source": { "kind": "csa", "path": "test.csa", "ply": 1 },
+        "tags": { "phase": "middlegame", "side_to_move": "black", "in_check": in_check, "has_capture": has_capture },
+        "observations": [obs("7g7f", 50, 4)]
+    })
+}
+
+#[test]
+fn filter_exclude_in_check() {
+    let f = make_labeled_jsonl(&[
+        position_with_flags(false, false),
+        position_with_flags(true, false),
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--exclude-in-check",
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 1);
+}
+
+#[test]
+fn filter_exclude_capture() {
+    let f = make_labeled_jsonl(&[
+        position_with_flags(false, false),
+        position_with_flags(false, true),
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--exclude-capture",
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 1);
+}
+
 // --- stability ---
 
 #[test]
@@ -779,7 +833,19 @@ fn split_by_source_creates_one_file_per_game() {
         .success();
 
     let files: Vec<_> = std::fs::read_dir(out_dir.path()).unwrap().collect();
-    assert_eq!(files.len(), 2, "one file per source game");
+    assert_eq!(
+        files.len(),
+        3,
+        "one file per source game, plus manifest.json"
+    );
+
+    let manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(out_dir.path().join("manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["total_positions"], 2);
+    assert_eq!(manifest["files"]["game_a.csa.jsonl"], 1);
+    assert_eq!(manifest["files"]["game_b.csa.jsonl"], 1);
 }
 
 // --- sample ---

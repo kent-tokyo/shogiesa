@@ -220,7 +220,7 @@ impl UsiEngine {
                     .to_string();
                 let info = last_info.ok_or(UsiError::NoBestmove)?;
                 return Ok(AnalysisResult {
-                    depth,
+                    depth: info.depth.unwrap_or(depth),
                     score: info.score.ok_or(UsiError::InvalidResponse)?,
                     bestmove,
                     nodes: info.nodes,

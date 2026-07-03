@@ -12,6 +12,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 - KIF: support `同` (same-square) notation; previously truncated extraction of any game containing it
 - KIF: stop cleanly at `変化` (variation) blocks instead of misapplying moves and truncating extraction
 - USI: `analyse()`/`handshake()` timeouts are now elapsed-time based, so an engine that streams `info` without ever sending `bestmove` can no longer hang `label` forever
+- USI: `analyse()` now reports the depth the engine actually reached instead of blindly echoing the requested depth, so an engine that stops early (e.g. a forced mate) no longer mislabels a shallow observation as the target depth
 - `split`: propagate per-file I/O errors instead of panicking
 - `label`: warn (instead of silently dropping) when a worker thread's USI engine fails to launch
 
@@ -19,6 +20,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 - `PositionRecord::fill_stability()` and `filter --max-score-swing-cp` now share one `score_swing()` implementation
 
 ### Added
+- `filter --exclude-in-check` / `--exclude-capture`, wiring the existing `tags.in_check`/`tags.has_capture` into filtering
+- `filter` prints a per-reason drop-count breakdown to stderr, not just an aggregate skipped count
+- `report` shows in-check ratio and capture ratio
+- `split --by-source` writes a `manifest.json` (input path, schema version, shogiesa version, per-file counts) alongside the split output files
 - `cargo-audit` CI job; `dependabot.yml` for weekly cargo/github-actions updates
 - Cross-platform CI test matrix (ubuntu/windows/macos)
 - `criterion` benchmarks for `shogiesa-core`'s `Sfen::parse` / `Board::apply_normal` / `Board::to_sfen`

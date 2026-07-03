@@ -64,6 +64,21 @@ fn analyse_includes_pv() {
 }
 
 #[test]
+fn analyse_reports_actual_depth_when_engine_stops_early() {
+    // fake-usi-engine --early-stop-depth 3 reports depth 3 regardless of the
+    // requested depth, simulating an engine that stops early (e.g. forced mate).
+    let mut cmd = Command::new(fake_usi_engine_bin());
+    cmd.args(["--early-stop-depth", "3"]);
+    let mut engine = UsiEngine::launch_command(cmd, String::new(), TIMEOUT, &[]).unwrap();
+    let result = engine.analyse(STARTPOS, 8, TIMEOUT).unwrap();
+    assert_eq!(
+        result.depth, 3,
+        "should report the depth the engine actually reached, not the requested depth"
+    );
+    engine.quit();
+}
+
+#[test]
 fn timeout_returns_error() {
     // fake-usi-engine --hang sleeps forever on "go" commands
     let mut cmd = Command::new(fake_usi_engine_bin());

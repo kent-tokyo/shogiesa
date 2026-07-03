@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::hash::{Hash, Hasher};
 
 use shogiesa_core::{
-    GamePhase, Observation, PositionRecord, Score, SideToMove, score_swing, sfen::Sfen,
-    zobrist_from_sfen,
+    GamePhase, Observation, PositionRecord, SCHEMA_VERSION, Score, SideToMove, score_swing,
+    sfen::Sfen, zobrist_from_sfen,
 };
 use shogiesa_pack as pack;
 use shogiesa_usi::UsiEngine;
@@ -233,6 +233,12 @@ struct FilterArgs {
     /// Exclude positions where any observation has a mate score
     #[arg(long)]
     exclude_mate: bool,
+    /// Exclude positions where the side to move is in check
+    #[arg(long)]
+    exclude_in_check: bool,
+    /// Exclude positions reached by an immediate capture
+    #[arg(long)]
+    exclude_capture: bool,
     /// Maximum allowed cp swing across observations (abs(max_cp - min_cp))
     #[arg(long)]
     max_score_swing_cp: Option<i32>,
@@ -551,6 +557,8 @@ fn cmd_split(args: SplitArgs) -> Result<()> {
 
     // Group records by source path, writing into per-source output files
     let mut writers: HashMap<String, BufWriter<File>> = HashMap::new();
+    let mut file_names: HashMap<String, String> = HashMap::new();
+    let mut file_counts: BTreeMap<String, usize> = BTreeMap::new();
     let mut total = 0usize;
 
     for (i, line) in reader.lines().enumerate() {
@@ -578,16 +586,31 @@ fn cmd_split(args: SplitArgs) -> Result<()> {
                     }
                 })
                 .collect();
-            let out_path = args.out_dir.join(format!("{safe}.jsonl"));
+            let file_name = format!("{safe}.jsonl");
+            let out_path = args.out_dir.join(&file_name);
             let f =
                 File::create(&out_path).with_context(|| format!("cannot create {out_path:?}"))?;
             writers.insert(key.clone(), BufWriter::new(f));
+            file_names.insert(key.clone(), file_name);
         }
         let w = writers.get_mut(&key).unwrap();
         serde_json::to_writer(&mut *w, &rec)?;
         w.write_all(b"\n")?;
+        *file_counts.entry(file_names[&key].clone()).or_default() += 1;
         total += 1;
     }
+
+    let manifest = serde_json::json!({
+        "shogiesa_version": env!("CARGO_PKG_VERSION"),
+        "schema_version": SCHEMA_VERSION,
+        "input": args.input,
+        "by_source": args.by_source,
+        "total_positions": total,
+        "files": file_counts,
+    });
+    let manifest_path = args.out_dir.join("manifest.json");
+    fs::write(&manifest_path, serde_json::to_string_pretty(&manifest)?)
+        .with_context(|| format!("cannot write {manifest_path:?}"))?;
 
     eprintln!(
         "done: {total} positions split into {} files → {:?}",
@@ -851,26 +874,35 @@ fn cp_value(s: &Score) -> Option<i32> {
     }
 }
 
-fn passes_filter(
+/// Returns the reason the record was dropped, or `None` if it passes every gate.
+fn filter_reason(
     rec: &PositionRecord,
     args: &FilterArgs,
     allowed_phases: &Option<Vec<GamePhase>>,
-) -> bool {
+) -> Option<&'static str> {
     let obs = &rec.observations;
 
     if (obs.len() as u32) < args.min_observations {
-        return false;
+        return Some("min_observations");
     }
 
     if allowed_phases
         .as_ref()
         .is_some_and(|p| !p.contains(&rec.tags.phase))
     {
-        return false;
+        return Some("phase");
     }
 
     if args.exclude_mate && obs.iter().any(|o| matches!(o.score, Score::Mate { .. })) {
-        return false;
+        return Some("mate");
+    }
+
+    if args.exclude_in_check && rec.tags.in_check {
+        return Some("in_check");
+    }
+
+    if args.exclude_capture && rec.tags.has_capture {
+        return Some("capture");
     }
 
     let cp_scores: Vec<i32> = obs.iter().filter_map(|o| cp_value(&o.score)).collect();
@@ -879,29 +911,29 @@ fn passes_filter(
         .eval_min
         .is_some_and(|min| cp_scores.iter().any(|&v| v < min))
     {
-        return false;
+        return Some("eval_min");
     }
     if args
         .eval_max
         .is_some_and(|max| cp_scores.iter().any(|&v| v > max))
     {
-        return false;
+        return Some("eval_max");
     }
 
     if let Some(max_swing) = args.max_score_swing_cp
         && score_swing(&cp_scores).is_some_and(|swing| swing > max_swing)
     {
-        return false;
+        return Some("score_swing");
     }
 
     if args.require_bestmove_agreement && obs.len() >= 2 {
         let first = &obs[0].bestmove;
         if obs.iter().any(|o| &o.bestmove != first) {
-            return false;
+            return Some("bestmove_disagreement");
         }
     }
 
-    true
+    None
 }
 
 fn cmd_filter(args: FilterArgs) -> Result<()> {
@@ -929,6 +961,7 @@ fn cmd_filter(args: FilterArgs) -> Result<()> {
     let mut total = 0usize;
     let mut passed = 0usize;
     let mut skipped = 0usize;
+    let mut drop_reasons: BTreeMap<&'static str, usize> = BTreeMap::new();
 
     for (i, line) in reader.lines().enumerate() {
         let line = line?;
@@ -942,16 +975,21 @@ fn cmd_filter(args: FilterArgs) -> Result<()> {
             Err(e) => {
                 tracing::warn!(line = i + 1, "JSON parse error: {e}");
                 skipped += 1;
+                *drop_reasons.entry("parse_error").or_default() += 1;
                 continue;
             }
         };
 
-        if passes_filter(&rec, &args, &allowed_phases) {
-            serde_json::to_writer(&mut writer, &rec)?;
-            writer.write_all(b"\n")?;
-            passed += 1;
-        } else {
-            skipped += 1;
+        match filter_reason(&rec, &args, &allowed_phases) {
+            None => {
+                serde_json::to_writer(&mut writer, &rec)?;
+                writer.write_all(b"\n")?;
+                passed += 1;
+            }
+            Some(reason) => {
+                skipped += 1;
+                *drop_reasons.entry(reason).or_default() += 1;
+            }
         }
     }
 
@@ -960,6 +998,12 @@ fn cmd_filter(args: FilterArgs) -> Result<()> {
         "done: {total} read, {passed} passed, {skipped} filtered → {:?}",
         args.out
     );
+    if !drop_reasons.is_empty() {
+        eprintln!("drop reasons:");
+        for (reason, count) in &drop_reasons {
+            eprintln!("  {reason:<24} {count}");
+        }
+    }
     Ok(())
 }
 
@@ -1022,6 +1066,8 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
     let mut tag_mismatches = 0usize;
     let mut invalid_sfens = 0usize;
     let mut labeled = 0usize;
+    let mut in_check = 0usize;
+    let mut has_capture = 0usize;
     let mut depth_disagree = 0usize;
     let mut depth_counts: BTreeMap<u32, usize> = BTreeMap::new();
     // eval buckets: key = floor(cp / 200) * 200; special keys: i32::MIN = unlabeled, i32::MAX = mate
@@ -1033,6 +1079,12 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
             .entry(format!("{}", rec.tags.side_to_move))
             .or_default() += 1;
         *schema_versions.entry(rec.schema_version).or_default() += 1;
+        if rec.tags.in_check {
+            in_check += 1;
+        }
+        if rec.tags.has_capture {
+            has_capture += 1;
+        }
         let ply = rec.source.ply;
         ply_sum += ply as u64;
         ply_min = ply_min.min(ply);
@@ -1119,6 +1171,16 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
             *count as f64 / n as f64 * 100.0
         );
     }
+    println!();
+    println!("tag ratios:");
+    println!(
+        "  in-check       {in_check:>6}  ({:.1}%)",
+        in_check as f64 / n as f64 * 100.0
+    );
+    println!(
+        "  capture        {has_capture:>6}  ({:.1}%)",
+        has_capture as f64 / n as f64 * 100.0
+    );
     println!();
     println!("source files: {}", sources.len());
     for (path, count) in sources.iter().take(10) {

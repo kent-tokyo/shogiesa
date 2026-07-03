@@ -8,11 +8,37 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ## [Unreleased]
 
-### Planned
-- Parallel labeling (`--jobs N`)
-- `--engine-option Key=Value` for USI option passthrough
-- `shogiesa-kif` — KIF format ingestion
-- `shogiesa split` / `shogiesa sample` commands
+### Fixed
+- KIF: support `同` (same-square) notation; previously truncated extraction of any game containing it
+- KIF: stop cleanly at `変化` (variation) blocks instead of misapplying moves and truncating extraction
+- USI: `analyse()`/`handshake()` timeouts are now elapsed-time based, so an engine that streams `info` without ever sending `bestmove` can no longer hang `label` forever
+- `split`: propagate per-file I/O errors instead of panicking
+- `label`: warn (instead of silently dropping) when a worker thread's USI engine fails to launch
+
+### Changed
+- `PositionRecord::fill_stability()` and `filter --max-score-swing-cp` now share one `score_swing()` implementation
+
+### Added
+- `cargo-audit` CI job; `dependabot.yml` for weekly cargo/github-actions updates
+- Cross-platform CI test matrix (ubuntu/windows/macos)
+- `criterion` benchmarks for `shogiesa-core`'s `Sfen::parse` / `Board::apply_normal` / `Board::to_sfen`
+
+---
+
+## [0.3.0] — 2026-06-28
+
+### Added
+- `shogiesa-kif` crate — KIF format ingestion (kanji ranks, full-width file digits, promotions, drops, handicap boards); `shogiesa-core` gains a shared `Board`/`PieceType` used by both `shogiesa-csa` and `shogiesa-kif`
+- `shogiesa-pack` crate — compact binary encoding (`b"SHOGIESA"` magic + length-prefixed LE fields) with `shogiesa pack` / `shogiesa unpack` CLI commands
+- `shogiesa stability` — computes `score_swing_cp` / `bestmove_agreement` and attaches `StabilityInfo` to each record
+- `shogiesa mine` — hard-position mining via blunder detection (eval swing) and/or a losing-eval threshold
+- `shogiesa balance` — rebalances a dataset by phase/side/eval-bucket
+- `shogiesa split --by-source` / `shogiesa sample --count --seed` — dataset slicing
+- `label --jobs N` — parallel labeling (one engine process per worker thread)
+- `label --engine-option Key=Value` — USI option passthrough (repeatable)
+- `extract --dedup-zobrist` — Zobrist-hash-based dedup
+- `in_check` / `has_capture` tags are now computed (`Board::is_in_check` / `is_capture`) instead of always `false`
+- `report`: eval-bucket histogram, depth-disagreement count, per-depth observation counts
 
 ---
 
@@ -63,6 +89,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 - CLI integration tests (`assert_cmd` / `predicates` / `tempfile`)
 - `LICENSE-MIT` and `LICENSE-APACHE`
 
-[Unreleased]: https://github.com/kent-tokyo/shogiesa/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/kent-tokyo/shogiesa/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/kent-tokyo/shogiesa/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/kent-tokyo/shogiesa/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/kent-tokyo/shogiesa/releases/tag/v0.1.0

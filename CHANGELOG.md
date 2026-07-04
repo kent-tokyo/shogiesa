@@ -13,6 +13,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 - `filter --require-requested-depth-reached` excludes positions where any non-mate observation's achieved depth fell short of its own `requested_depth`; a no-op on observations with no recorded `requested_depth`. Mate observations are exempt, same rationale as `--min-depth-reached`.
 - `report` shows a requested-depth underreach rate (how many observations with a `requested_depth` fell short of it) when any are present in the dataset
 - `label`/`filter`/etc. `--manifest` gains `requested_depth_total`/`requested_depth_underreach` counters
+- `select` command — picks positions worth a closer look/re-label instead of re-labeling an entire dataset at higher depth. `--strategy uncertain` ranks by `evaluate_quality`'s pass-fraction (reusing `filter`'s exact gates); `--strategy hard` ranks by eval swing/bestmove disagreement/blunder-adjacency (reusing `mine`'s blunder-window detection); `--strategy coverage` prioritizes the thinnest phase/side/eval-bucket combinations (reusing `balance`'s bucket key). Outputs in ranked order, not restored to input order.
 
 ### Changed
 - `SCHEMA_VERSION` bumped to 6 and pack `FORMAT_VERSION` bumped to 6 for the new `Observation.requested_depth` field; old `.shgpk` files are not readable by this version

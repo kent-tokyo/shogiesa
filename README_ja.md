@@ -190,6 +190,38 @@ shogiesa balance --input positions.jsonl --by phase --by side --out balanced.jso
 
 `phase`/`side`/`eval-bucket`でバケット分けし、各バケットから同数を採用します。
 
+### `select` — 再ラベル候補の選別
+
+```bash
+shogiesa select \
+  --input observations.jsonl \
+  --strategy uncertain \
+  --count 100000 \
+  --seed 42 \
+  --out relabel_candidates.jsonl
+```
+
+`filter` は「訓練に使える局面か」を判定するコマンド、`select` は「もっと深く読み直す価値が
+ある局面」を選ぶコマンドです — 全局面を高depthで再ラベルするコストは、実際に弱いのが
+1%でも100%でも変わらないため、`select` はその予算を最も見込みのある局面に集中させます。
+`--strategy`:
+
+- `uncertain` — ラベルの信頼シグナルが弱い、または欠けている局面: 非確定スコア、
+  `policy_margin_cp` 未計算、`requested_depth` 未達、エンジン間の不一致。`filter` と同じ
+  ゲートロジック(`require-exact-score`/`require-policy-margin`/
+  `require-requested-depth-reached`/`require-engine-agreement` を同時に有効化)を使う
+  `evaluate_quality` 自身の通過率で順位付けします — 悪い順。`--min-policy-margin-cp N` を
+  指定すると、margin が「存在しない」だけでなく「小さすぎる」局面も考慮されます
+  (`filter` の同名フラグと同じ意味)。
+- `hard` — evalの大きな揺れ、bestmove不一致、blunder近傍(`mine` の blunder-window 検出を
+  `--blunder-threshold`/`--blunder-window` 経由で再利用)— 悪い順。
+- `coverage` — phase/side/eval-bucket の組み合わせが薄いバケットから優先します
+  (`balance` のバケットキーを再利用)— 薄い順。
+
+`sample`/`balance` と異なり、出力は入力順ではなく順位順(最も見るべき局面が先頭)です —
+再ラベルの待ち行列は優先順位で先頭から読む方が有用なためです。同順位内のタイブレークは
+`--seed` により決定的です(`sample` と同じ仕組み)。
+
 ### `split` / `sample` — データセットの分割・抽出
 
 ```bash

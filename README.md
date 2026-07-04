@@ -189,6 +189,37 @@ shogiesa balance --input positions.jsonl --by phase --by side --out balanced.jso
 
 Buckets by `phase`/`side`/`eval-bucket` and takes an equal number from each bucket.
 
+### `select` — re-labeling candidates
+
+```bash
+shogiesa select \
+  --input observations.jsonl \
+  --strategy uncertain \
+  --count 100000 \
+  --seed 42 \
+  --out relabel_candidates.jsonl
+```
+
+`filter` decides what's good enough to train on; `select` picks what's worth a second, deeper
+label pass — re-labeling an entire dataset at higher depth costs the same whether 1% or 100% of
+it is actually weak, so `select` spends that budget on the positions most likely to need it.
+`--strategy`:
+
+- `uncertain` — weak or missing label signals: non-exact score, no computed `policy_margin_cp`,
+  `requested_depth` not reached, or engine disagreement. Ranks by `evaluate_quality`'s own
+  pass-fraction (the same gate logic `filter` uses, via `require-exact-score`/
+  `require-policy-margin`/`require-requested-depth-reached`/`require-engine-agreement` all
+  enabled at once) — worst first. `--min-policy-margin-cp N` optionally also weighs in a
+  too-small (rather than merely absent) margin, mirroring `filter`'s flag of the same name.
+- `hard` — large eval swings, bestmove disagreement, and blunder-adjacency (reusing `mine`'s
+  blunder-window detection via `--blunder-threshold`/`--blunder-window`) — worst first.
+- `coverage` — positions from the thinnest phase/side/eval-bucket combinations (reusing
+  `balance`'s bucket key) — thinnest first.
+
+Unlike `sample`/`balance`, output is in ranked order (most-worth-a-look first), not restored to
+input order — a re-labeling queue is more useful read top-to-bottom by priority. Ties within a
+rank break deterministically by `--seed`, the same mechanism `sample` uses.
+
 ### `split` / `sample` — dataset slicing
 
 ```bash

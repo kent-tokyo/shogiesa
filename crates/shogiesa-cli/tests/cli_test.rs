@@ -2236,6 +2236,182 @@ fn balance_manifest_records_counts() {
     assert_eq!(manifest["labeled_records"], 2);
 }
 
+// --- select ---
+
+#[test]
+fn select_uncertain_ranks_worst_quality_first() {
+    fn obs_full(
+        bound: &str,
+        requested_depth: u32,
+        depth: u32,
+        margin: Option<i32>,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "engine": "e", "engine_version": null, "depth": depth, "requested_depth": requested_depth,
+            "score": { "kind": "cp", "value": 50 }, "score_bound": bound, "bestmove": "7g7f",
+            "nodes": null, "time_ms": null, "pv": null, "policy_margin_cp": margin
+        })
+    }
+    // clean: exact score, margin present, requested depth met -> every gate passes
+    let clean = position(
+        "opening",
+        serde_json::json!([obs_full("exact", 8, 8, Some(50))]),
+    );
+    // partial: missing policy margin only -> 1 of 4 gates fails
+    let partial = position(
+        "opening",
+        serde_json::json!([obs_full("exact", 8, 8, None)]),
+    );
+    // worst: non-exact score, missing margin, and depth underreach -> 3 of 4 gates fail
+    let worst = position(
+        "opening",
+        serde_json::json!([obs_full("lowerbound", 12, 8, None)]),
+    );
+
+    let f = make_labeled_jsonl(&[clean, partial.clone(), worst.clone()]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "select",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--strategy",
+            "uncertain",
+            "--count",
+            "2",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    let lines: Vec<serde_json::Value> = content
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0]["observations"][0]["score_bound"], "lowerbound");
+    assert_eq!(
+        lines[1]["observations"][0]["policy_margin_cp"],
+        serde_json::Value::Null
+    );
+}
+
+#[test]
+fn select_hard_prioritizes_blunder_adjacent_position() {
+    let f = make_labeled_jsonl(&[
+        game_pos(1, 0),
+        game_pos(2, 300), // swing 300 from ply1 >= default threshold 200
+        game_pos(3, 305), // swing 5 from ply2, not a blunder
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "select",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--strategy",
+            "hard",
+            "--count",
+            "1",
+            "--blunder-window",
+            "0", // only the blunder ply itself, not its neighbors -- keeps this test unambiguous
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    let lines: Vec<serde_json::Value> = content
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0]["source"]["ply"], 2);
+}
+
+#[test]
+fn select_hard_breaks_ties_by_per_record_score_swing() {
+    fn multi_obs_position(ply: u32, scores: &[i32]) -> serde_json::Value {
+        let observations: Vec<serde_json::Value> = scores
+            .iter()
+            .enumerate()
+            .map(|(depth, &cp)| obs("7g7f", cp, depth as u32 + 1))
+            .collect();
+        let mut rec = game_pos(ply, scores[0]);
+        rec["observations"] = serde_json::json!(observations);
+        rec
+    }
+    // --blunder-threshold 9999 disables blunder detection so only per-record swing matters.
+    let low_swing = multi_obs_position(1, &[100, 110]);
+    let high_swing = multi_obs_position(2, &[120, 600]);
+
+    let f = make_labeled_jsonl(&[low_swing, high_swing]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "select",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--strategy",
+            "hard",
+            "--count",
+            "1",
+            "--blunder-threshold",
+            "9999",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    let lines: Vec<serde_json::Value> = content
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(
+        lines[0]["source"]["ply"], 2,
+        "bigger per-record swing ranks first"
+    );
+}
+
+#[test]
+fn select_coverage_prioritizes_thin_bucket() {
+    let mut records: Vec<serde_json::Value> = (0..5)
+        .map(|_| position("opening", serde_json::json!([])))
+        .collect();
+    records.push(position("endgame", serde_json::json!([])));
+
+    let f = make_labeled_jsonl(&records);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "select",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--strategy",
+            "coverage",
+            "--count",
+            "1",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    let lines: Vec<serde_json::Value> = content
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0]["tags"]["phase"], "endgame");
+}
+
 #[test]
 fn sample_manifest_records_counts() {
     let f = make_labeled_jsonl(&[

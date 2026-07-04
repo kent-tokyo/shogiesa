@@ -48,6 +48,9 @@ enum Commands {
     Mine(MineArgs),
     /// Balance dataset distribution by phase / side / eval-bucket
     Balance(BalanceArgs),
+    /// Select positions worth a closer look (re-labeling candidates), instead of re-labeling
+    /// everything at higher depth
+    Select(SelectArgs),
     /// Filter labeled positions by stability criteria
     Filter(FilterArgs),
     /// Report statistics about a positions dataset
@@ -251,6 +254,38 @@ struct BalanceArgs {
 }
 
 #[derive(clap::Args)]
+struct SelectArgs {
+    /// Input labeled positions JSONL
+    #[arg(short, long)]
+    input: PathBuf,
+    /// Which positions are worth a closer look: `uncertain` (weak/missing label signals),
+    /// `hard` (large eval swings, bestmove disagreement, blunder-adjacent), or `coverage`
+    /// (thin phase/side/eval-bucket combinations)
+    #[arg(long, value_parser = ["uncertain", "hard", "coverage"])]
+    strategy: String,
+    /// Number of positions to select
+    #[arg(long)]
+    count: usize,
+    /// Seed for deterministic tie-breaking (default 0)
+    #[arg(long, default_value = "0")]
+    seed: u64,
+    /// Output JSONL file
+    #[arg(short, long)]
+    out: PathBuf,
+    /// (uncertain strategy) also require a minimum policy_margin_cp, like `filter
+    /// --min-policy-margin-cp`
+    #[arg(long, allow_hyphen_values = true)]
+    min_policy_margin_cp: Option<i32>,
+    /// (hard strategy) eval swing (cp, black's perspective) between consecutive plies to count
+    /// as a blunder
+    #[arg(long, default_value = "200")]
+    blunder_threshold: i32,
+    /// (hard strategy) include positions within N plies of a blunder
+    #[arg(long, default_value = "1")]
+    blunder_window: usize,
+}
+
+#[derive(clap::Args)]
 struct PackArgs {
     /// Input positions JSONL
     #[arg(short, long)]
@@ -372,6 +407,7 @@ fn main() -> Result<()> {
         Commands::Sample(args) => cmd_sample(args),
         Commands::Mine(args) => cmd_mine(args),
         Commands::Balance(args) => cmd_balance(args),
+        Commands::Select(args) => cmd_select(args),
         Commands::Pack(args) => cmd_pack(args),
         Commands::Unpack(args) => cmd_unpack(args),
         Commands::Filter(args) => cmd_filter(args),
@@ -1202,6 +1238,16 @@ fn accumulate_coverage(manifest: &mut RunManifest, records: &[PositionRecord]) {
     manifest.requested_depth_underreach += underreach;
 }
 
+/// Deterministic hash of `(seed, s)` — the same tie-breaking/spreading mechanism used by
+/// `sample` (to pick which positions) and `select` (to break ties within a rank), so "pick N
+/// deterministically" behaves identically wherever it's used.
+fn seeded_hash(seed: u64, s: &str) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    seed.hash(&mut h);
+    s.hash(&mut h);
+    h.finish()
+}
+
 fn cmd_sample(args: SampleArgs) -> Result<()> {
     let (records, _) = load_records(&args.input)?;
     let total = records.len();
@@ -1210,12 +1256,7 @@ fn cmd_sample(args: SampleArgs) -> Result<()> {
     // Sort indices by hash(seed, sfen) — deterministic, spread across the dataset
     let seed = args.seed;
     let mut indices: Vec<usize> = (0..total).collect();
-    indices.sort_by_key(|&i| {
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        seed.hash(&mut h);
-        records[i].sfen.hash(&mut h);
-        h.finish()
-    });
+    indices.sort_by_key(|&i| seeded_hash(seed, &records[i].sfen));
     indices.truncate(count);
 
     // Output in original order
@@ -1265,11 +1306,15 @@ fn eval_black(rec: &PositionRecord) -> Option<i32> {
         })
 }
 
-fn cmd_mine(args: MineArgs) -> Result<()> {
-    let (records, _) = load_records(&args.input)?;
-    let total = records.len();
-
-    // Group indices by source game path, then sort each group by ply
+/// Indices within `blunder_window` plies of a large eval swing (per source game, in ply order),
+/// restricted to labeled positions. Shared by `mine` (its original purpose) and
+/// `select --strategy hard` (one of several "worth a closer look" signals there), so the two
+/// commands' definition of "blunder-adjacent" can't drift apart.
+fn blunder_adjacent_indices(
+    records: &[PositionRecord],
+    blunder_threshold: i32,
+    blunder_window: usize,
+) -> HashSet<usize> {
     let mut by_game: HashMap<String, Vec<usize>> = HashMap::new();
     for (i, rec) in records.iter().enumerate() {
         by_game.entry(rec.source.path.clone()).or_default().push(i);
@@ -1279,17 +1324,14 @@ fn cmd_mine(args: MineArgs) -> Result<()> {
     }
 
     let mut keep = HashSet::<usize>::new();
-
     for indices in by_game.values() {
         let evals: Vec<Option<i32>> = indices.iter().map(|&i| eval_black(&records[i])).collect();
-
-        // Blunder detection: large eval swing between consecutive labeled positions
         for j in 1..indices.len() {
             if let (Some(e0), Some(e1)) = (evals[j - 1], evals[j])
-                && (e1 - e0).abs() >= args.blunder_threshold
+                && (e1 - e0).abs() >= blunder_threshold
             {
-                let lo = j.saturating_sub(args.blunder_window);
-                let hi = (j + args.blunder_window + 1).min(indices.len());
+                let lo = j.saturating_sub(blunder_window);
+                let hi = (j + blunder_window + 1).min(indices.len());
                 for k in lo..hi {
                     if !records[indices[k]].observations.is_empty() {
                         keep.insert(indices[k]);
@@ -1297,6 +1339,28 @@ fn cmd_mine(args: MineArgs) -> Result<()> {
                 }
             }
         }
+    }
+    keep
+}
+
+fn cmd_mine(args: MineArgs) -> Result<()> {
+    let (records, _) = load_records(&args.input)?;
+    let total = records.len();
+
+    let mut keep = blunder_adjacent_indices(&records, args.blunder_threshold, args.blunder_window);
+
+    // Group indices by source game path, then sort each group by ply -- only needed below for
+    // the losing-threshold pass, which blunder_adjacent_indices doesn't cover.
+    let mut by_game: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, rec) in records.iter().enumerate() {
+        by_game.entry(rec.source.path.clone()).or_default().push(i);
+    }
+    for indices in by_game.values_mut() {
+        indices.sort_by_key(|&i| records[i].source.ply);
+    }
+
+    for indices in by_game.values() {
+        let evals: Vec<Option<i32>> = indices.iter().map(|&i| eval_black(&records[i])).collect();
 
         // Losing positions: side to move's eval worse than -threshold
         if let Some(threshold) = args.losing_threshold {
@@ -1333,6 +1397,32 @@ fn cmd_mine(args: MineArgs) -> Result<()> {
     Ok(())
 }
 
+/// Composite phase/side/eval-bucket key for one record. Shared by `balance` (equal-count
+/// rebalancing) and `select --strategy coverage` (thin-bucket prioritization) so the two
+/// commands' notion of "bucket" can never drift apart.
+fn bucket_key(rec: &PositionRecord, by_phase: bool, by_side: bool, by_eval: bool) -> String {
+    let mut key = String::new();
+    if by_phase {
+        key.push_str(&format!("{}:", rec.tags.phase));
+    }
+    if by_side {
+        key.push_str(&format!("{}:", rec.tags.side_to_move));
+    }
+    if by_eval {
+        let bucket_str = rec
+            .observations
+            .iter()
+            .max_by_key(|o| o.depth)
+            .map(|o| match o.score {
+                Score::Cp { value } => format!("{}:", (value.div_euclid(200)) * 200),
+                Score::Mate { .. } => "mate:".to_string(),
+            })
+            .unwrap_or_else(|| "_none_:".to_string());
+        key.push_str(&bucket_str);
+    }
+    key
+}
+
 fn cmd_balance(args: BalanceArgs) -> Result<()> {
     if args.by.is_empty() {
         anyhow::bail!("--by requires at least one of: phase, side, eval-bucket");
@@ -1347,26 +1437,10 @@ fn cmd_balance(args: BalanceArgs) -> Result<()> {
     // Build composite bucket key for each record
     let mut buckets: HashMap<String, Vec<usize>> = HashMap::new();
     for (i, rec) in records.iter().enumerate() {
-        let mut key = String::new();
-        if by_phase {
-            key.push_str(&format!("{}:", rec.tags.phase));
-        }
-        if by_side {
-            key.push_str(&format!("{}:", rec.tags.side_to_move));
-        }
-        if by_eval {
-            let bucket_str = rec
-                .observations
-                .iter()
-                .max_by_key(|o| o.depth)
-                .map(|o| match o.score {
-                    Score::Cp { value } => format!("{}:", (value.div_euclid(200)) * 200),
-                    Score::Mate { .. } => "mate:".to_string(),
-                })
-                .unwrap_or_else(|| "_none_:".to_string());
-            key.push_str(&bucket_str);
-        }
-        buckets.entry(key).or_default().push(i);
+        buckets
+            .entry(bucket_key(rec, by_phase, by_side, by_eval))
+            .or_default()
+            .push(i);
     }
 
     let min_size = buckets.values().map(|v| v.len()).min().unwrap_or(0);
@@ -1412,6 +1486,111 @@ fn cmd_balance(args: BalanceArgs) -> Result<()> {
         accumulate_coverage(&mut manifest, &kept_records);
         write_manifest(manifest_path, &manifest)?;
     }
+    Ok(())
+}
+
+// Why `select` exists at all: re-labeling an entire dataset at higher depth to chase accuracy
+// costs the same whether 1% or 100% of it is actually wrong or uninformative. Each strategy
+// below ranks positions by a signal that predicts "worth a second look" and reuses the exact
+// judgment logic `filter`/`mine`/`balance` already have (evaluate_quality, blunder-window
+// detection, bucket keys) rather than re-deriving what "uncertain"/"hard"/"thin" means.
+fn cmd_select(args: SelectArgs) -> Result<()> {
+    let (records, _) = load_records(&args.input)?;
+    let total = records.len();
+    let count = args.count.min(total);
+    let seed = args.seed;
+
+    let mut ranked: Vec<usize> = (0..total).collect();
+    match args.strategy.as_str() {
+        "uncertain" => {
+            // No arbitrary thresholds: every gate here is either a plain existence check or,
+            // for depth, requested_depth-vs-achieved (self-referential, no floor to pick) --
+            // require_engine_agreement stands in for the spec's "engine_disagreement" signal.
+            // --min-policy-margin-cp is the one optional, user-supplied threshold, mirroring
+            // `filter`'s flag of the same name instead of inventing a default.
+            let config = QualityConfig {
+                require_exact_score: true,
+                require_policy_margin: true,
+                require_requested_depth_reached: true,
+                require_engine_agreement: true,
+                min_policy_margin_cp: args.min_policy_margin_cp,
+                ..Default::default()
+            };
+            // decision.score is evaluate_quality's own "fraction of gates passed" -- reused
+            // directly as the ranking key instead of re-deriving a severity score from reasons.
+            ranked.sort_by(|&a, &b| {
+                let score_a = evaluate_quality(&records[a], &config).score;
+                let score_b = evaluate_quality(&records[b], &config).score;
+                score_a.total_cmp(&score_b).then_with(|| {
+                    seeded_hash(seed, &records[a].sfen).cmp(&seeded_hash(seed, &records[b].sfen))
+                })
+            });
+        }
+        "hard" => {
+            let blunder_set =
+                blunder_adjacent_indices(&records, args.blunder_threshold, args.blunder_window);
+            let hardness = |i: usize| -> (bool, bool, i32) {
+                let rec = &records[i];
+                let cp_scores: Vec<i32> = rec
+                    .observations
+                    .iter()
+                    .filter_map(|o| match o.score {
+                        Score::Cp { value } => Some(value),
+                        Score::Mate { .. } => None,
+                    })
+                    .collect();
+                let swing = score_swing(&cp_scores).unwrap_or(0);
+                let disagreement = rec
+                    .observations
+                    .first()
+                    .is_some_and(|f| rec.observations.iter().any(|o| o.bestmove != f.bestmove));
+                (blunder_set.contains(&i), disagreement, swing)
+            };
+            ranked.sort_by(|&a, &b| {
+                hardness(b).cmp(&hardness(a)).then_with(|| {
+                    seeded_hash(seed, &records[a].sfen).cmp(&seeded_hash(seed, &records[b].sfen))
+                })
+            });
+        }
+        "coverage" => {
+            let keys: Vec<String> = records
+                .iter()
+                .map(|r| bucket_key(r, true, true, true))
+                .collect();
+            let mut bucket_counts: HashMap<&str, usize> = HashMap::new();
+            for k in &keys {
+                *bucket_counts.entry(k.as_str()).or_default() += 1;
+            }
+            ranked.sort_by(|&a, &b| {
+                bucket_counts[keys[a].as_str()]
+                    .cmp(&bucket_counts[keys[b].as_str()])
+                    .then_with(|| {
+                        seeded_hash(seed, &records[a].sfen)
+                            .cmp(&seeded_hash(seed, &records[b].sfen))
+                    })
+            });
+        }
+        other => anyhow::bail!("unknown --strategy {other:?} (expected uncertain/hard/coverage)"),
+    }
+    ranked.truncate(count);
+
+    // Output in ranked order (most-worth-a-look first), unlike `sample`/`balance` which restore
+    // input order -- a re-labeling queue is more useful read top-to-bottom by priority than by
+    // original file position.
+    let out_file =
+        File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
+    let mut writer = BufWriter::new(out_file);
+    for &i in &ranked {
+        serde_json::to_writer(&mut writer, &records[i])?;
+        writer.write_all(b"\n")?;
+    }
+    writer.flush()?;
+    eprintln!(
+        "done: {}/{total} selected (strategy={}, seed={seed}) → {:?}",
+        ranked.len(),
+        args.strategy,
+        args.out
+    );
     Ok(())
 }
 

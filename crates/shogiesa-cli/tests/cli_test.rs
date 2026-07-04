@@ -4,7 +4,7 @@ use std::path::Path;
 
 use assert_cmd::{Command, cargo::cargo_bin};
 use predicates::prelude::*;
-use tempfile::NamedTempFile;
+use tempfile::{NamedTempFile, TempDir};
 
 fn fixture(name: &str) -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -975,6 +975,83 @@ fn label_manifest_records_engine_and_depths() {
     assert_eq!(manifest["records_kept"], 1);
     assert_eq!(manifest["records_dropped"], 0);
     assert_eq!(manifest["engine_launch_failures"], 0);
+}
+
+#[test]
+fn label_cache_dir_hits_on_second_run_and_output_matches() {
+    let pos = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "extract",
+            "--input",
+            fixture("sample.csa").to_str().unwrap(),
+            "--out",
+            pos.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let cache_dir = TempDir::new().unwrap();
+    let out1 = NamedTempFile::new().unwrap();
+    let manifest1 = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            pos.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4,6",
+            "--cache-dir",
+            cache_dir.path().to_str().unwrap(),
+            "--out",
+            out1.path().to_str().unwrap(),
+            "--manifest",
+            manifest1.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let manifest1: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest1.path()).unwrap()).unwrap();
+    assert_eq!(manifest1["cache_hits"], 0, "first run: nothing cached yet");
+    let observations_total = manifest1["observations_total"].as_u64().unwrap();
+    assert_eq!(manifest1["cache_misses"], observations_total);
+
+    // Re-run against the same (now-populated) cache dir and input, with a fresh --out.
+    let out2 = NamedTempFile::new().unwrap();
+    let manifest2 = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            pos.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4,6",
+            "--cache-dir",
+            cache_dir.path().to_str().unwrap(),
+            "--out",
+            out2.path().to_str().unwrap(),
+            "--manifest",
+            manifest2.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let manifest2: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest2.path()).unwrap()).unwrap();
+    assert_eq!(
+        manifest2["cache_hits"], observations_total,
+        "second run: every observation should come from cache"
+    );
+    assert_eq!(manifest2["cache_misses"], 0);
+
+    assert_eq!(
+        std::fs::read_to_string(out1.path()).unwrap(),
+        std::fs::read_to_string(out2.path()).unwrap(),
+        "cached output must be identical to the freshly-labeled output"
+    );
 }
 
 // --- filter ---

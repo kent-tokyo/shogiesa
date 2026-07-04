@@ -110,6 +110,14 @@ recorded `requested_depth` still matches on achieved depth alone, for older JSON
 `--manifest PATH` writes a run manifest (engine/depths/MultiPV config, launch failures, coverage
 stats) — see "Run manifests" further down.
 
+`--cache-dir PATH` caches each observation as a small JSON file, sharded into subdirectories by
+the first byte of a content hash over `(sfen, engine name, engine version, engine options,
+requested depth, multipv, schema version)` — no database, just files you can inspect or delete by
+hand. Labeling (running the engine) is the dominant cost of the whole pipeline, so repeated
+experiments over the same positions (tuning a downstream filter config, resuming after a crash,
+sharing a labeling budget across datasets) reuse a cached observation instead of re-running the
+engine. Cache hit/miss counts appear in `--manifest`.
+
 ### `stability` — compute stability scores
 
 ```bash
@@ -258,9 +266,10 @@ plain non-cryptographic digest for "did the input change between runs" — not a
 SHA-256 checksum), records read/kept/dropped, drop-reason counts, labeled/unlabeled record
 counts, MultiPV candidate coverage, `score_bound` distribution, requested-depth total/underreach
 counts, and (for `filter`) the resolved quality configuration or (for `label`) the engine
-name/depths/MultiPV/engine options/job count and engine-launch-failure count. It's opt-in and
-additive — no effect on the command's normal output when omitted. `split` doesn't have
-`--manifest`: it already writes its own tailored `manifest.json` (see above).
+name/depths/MultiPV/engine options/job count, engine-launch-failure count, and (when
+`--cache-dir` is used) cache hit/miss counts. It's opt-in and additive — no effect on the
+command's normal output when omitted. `split` doesn't have `--manifest`: it already writes its
+own tailored `manifest.json` (see above).
 
 ### `report` — dataset statistics
 

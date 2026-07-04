@@ -14,6 +14,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 - `report` shows a requested-depth underreach rate (how many observations with a `requested_depth` fell short of it) when any are present in the dataset
 - `label`/`filter`/etc. `--manifest` gains `requested_depth_total`/`requested_depth_underreach` counters
 - `select` command — picks positions worth a closer look/re-label instead of re-labeling an entire dataset at higher depth. `--strategy uncertain` ranks by `evaluate_quality`'s pass-fraction (reusing `filter`'s exact gates); `--strategy hard` ranks by eval swing/bestmove disagreement/blunder-adjacency (reusing `mine`'s blunder-window detection); `--strategy coverage` prioritizes the thinnest phase/side/eval-bucket combinations (reusing `balance`'s bucket key). Outputs in ranked order, not restored to input order.
+- `label --cache-dir PATH` caches each observation as a sharded, content-addressed JSON file keyed on `(sfen, engine name, engine version, engine options, requested depth, multipv, schema version)`, so repeated experiments over the same positions reuse a cached observation instead of re-running the engine. No database — plain files. Cache hit/miss counts appear in `--manifest`.
 
 ### Changed
 - `SCHEMA_VERSION` bumped to 6 and pack `FORMAT_VERSION` bumped to 6 for the new `Observation.requested_depth` field; old `.shgpk` files are not readable by this version

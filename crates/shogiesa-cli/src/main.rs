@@ -146,6 +146,11 @@ struct LabelArgs {
     /// buffer entirely, so a slow position never delays already-finished ones behind it.
     #[arg(long)]
     unordered_output: bool,
+    /// Cache observations under this directory, keyed by (sfen, engine, engine version, engine
+    /// options, requested depth, multipv, schema version) — repeated experiments over the same
+    /// positions reuse a cached observation instead of re-running the engine
+    #[arg(long)]
+    cache_dir: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy)]
@@ -493,12 +498,62 @@ fn cmd_extract(args: ExtractArgs) -> Result<()> {
     Ok(())
 }
 
+/// Per-run label cache config, shared read-only across worker threads (`hits`/`misses` are the
+/// only mutable state, via atomics). Owned rather than borrowed since worker closures need
+/// `'static` data.
+struct LabelCache {
+    dir: PathBuf,
+    engine_options_hash: u64,
+    multipv: u32,
+    hits: Arc<AtomicUsize>,
+    misses: Arc<AtomicUsize>,
+}
+
+/// Hash of the resolved USI engine options, sorted so option order doesn't change the label
+/// cache key below.
+fn engine_options_hash(options: &[(String, String)]) -> u64 {
+    let mut sorted: Vec<&(String, String)> = options.iter().collect();
+    sorted.sort();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for (k, v) in sorted {
+        k.hash(&mut h);
+        v.hash(&mut h);
+    }
+    h.finish()
+}
+
+// Why cache at all: labeling (running the engine) is the dominant cost of the whole pipeline.
+// The same engine run against the same position at the same requested depth always produces the
+// same observation, so repeated experiments (tuning filter/select downstream, re-running after a
+// crash, sharing a labeling budget across datasets) can reuse it instead of paying search cost
+// again. Content-addressed sharded JSON files need no database dependency and are trivial to
+// inspect/delete by hand, at the cost of one small file per cached observation.
+fn label_cache_path(
+    cache: &LabelCache,
+    sfen: &str,
+    engine_name: &str,
+    engine_version: Option<&str>,
+    requested_depth: u32,
+) -> PathBuf {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    sfen.hash(&mut h);
+    engine_name.hash(&mut h);
+    engine_version.hash(&mut h);
+    cache.engine_options_hash.hash(&mut h);
+    requested_depth.hash(&mut h);
+    cache.multipv.hash(&mut h);
+    SCHEMA_VERSION.hash(&mut h);
+    let key = format!("{:016x}", h.finish());
+    cache.dir.join(&key[0..2]).join(format!("{key}.json"))
+}
+
 fn analyze_record(
     rec: &mut PositionRecord,
     engine: &mut UsiEngine,
     depths: &[u32],
     timeout_ms: u64,
     existing_policy: ExistingPolicy,
+    cache: Option<&LabelCache>,
 ) {
     for &depth in depths {
         // The engine may stop before reaching `depth` (e.g. a forced mate) — check coverage
@@ -511,37 +566,79 @@ fn analyze_record(
         {
             continue;
         }
-        match engine.analyse(&rec.sfen, depth, timeout_ms) {
-            Ok(result) => {
-                // Dedupe on the achieved depth, not the requested one, for the same reason —
-                // if Skip couldn't skip (under-reach) and re-achieves the same depth, this
-                // replaces the stale entry instead of duplicating it. Also require
-                // requested_depth to match (or be absent, for pre-field legacy entries): without
-                // this, "requested 12, reached 8" and "requested 8, reached 8" would collide and
-                // silently erase the distinction requested_depth exists to preserve.
-                if !matches!(existing_policy, ExistingPolicy::Append) {
-                    rec.observations.retain(|o| {
-                        !(o.engine == engine.engine_name
-                            && o.depth == result.depth
-                            && (o.requested_depth.is_none() || o.requested_depth == Some(depth)))
-                    });
+
+        let cache_path = cache.map(|c| {
+            label_cache_path(
+                c,
+                &rec.sfen,
+                &engine.engine_name,
+                engine.engine_version.as_deref(),
+                depth,
+            )
+        });
+        let cached: Option<Observation> = cache_path.as_ref().and_then(|path| {
+            let hit = fs::read_to_string(path)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok());
+            if let Some(c) = cache {
+                c.hits.fetch_add(hit.is_some() as usize, Ordering::Relaxed);
+                c.misses
+                    .fetch_add(hit.is_none() as usize, Ordering::Relaxed);
+            }
+            hit
+        });
+
+        let observation = match cached {
+            Some(obs) => Some(obs),
+            None => match engine.analyse(&rec.sfen, depth, timeout_ms) {
+                Ok(result) => {
+                    let obs = Observation {
+                        engine: engine.engine_name.clone(),
+                        engine_version: engine.engine_version.clone(),
+                        depth: result.depth,
+                        requested_depth: Some(depth),
+                        score: result.score,
+                        score_bound: result.score_bound,
+                        bestmove: result.bestmove,
+                        nodes: result.nodes,
+                        time_ms: result.time_ms,
+                        pv: result.pv,
+                        policy_margin_cp: result.policy_margin_cp,
+                        candidates: result.candidates,
+                    };
+                    if let Some(path) = &cache_path {
+                        if let Some(parent) = path.parent() {
+                            let _ = fs::create_dir_all(parent);
+                        }
+                        if let Ok(json) = serde_json::to_string(&obs) {
+                            let _ = fs::write(path, json);
+                        }
+                    }
+                    Some(obs)
                 }
-                rec.observations.push(Observation {
-                    engine: engine.engine_name.clone(),
-                    engine_version: engine.engine_version.clone(),
-                    depth: result.depth,
-                    requested_depth: Some(depth),
-                    score: result.score,
-                    score_bound: result.score_bound,
-                    bestmove: result.bestmove,
-                    nodes: result.nodes,
-                    time_ms: result.time_ms,
-                    pv: result.pv,
-                    policy_margin_cp: result.policy_margin_cp,
-                    candidates: result.candidates,
+                Err(e) => {
+                    tracing::warn!(depth, "analysis error: {e}");
+                    None
+                }
+            },
+        };
+
+        if let Some(obs) = observation {
+            // Dedupe on the achieved depth, not the requested one, for the same reason —
+            // if Skip couldn't skip (under-reach) and re-achieves the same depth, this
+            // replaces the stale entry instead of duplicating it. Also require
+            // requested_depth to match (or be absent, for pre-field legacy entries): without
+            // this, "requested 12, reached 8" and "requested 8, reached 8" would collide and
+            // silently erase the distinction requested_depth exists to preserve.
+            if !matches!(existing_policy, ExistingPolicy::Append) {
+                rec.observations.retain(|o| {
+                    !(o.engine == obs.engine
+                        && o.depth == obs.depth
+                        && (o.requested_depth.is_none()
+                            || o.requested_depth == obs.requested_depth))
                 });
             }
-            Err(e) => tracing::warn!(depth, "analysis error: {e}"),
+            rec.observations.push(obs);
         }
     }
 }
@@ -603,6 +700,15 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
     } else {
         ExistingPolicy::Append
     };
+    let cache: Option<Arc<LabelCache>> = args.cache_dir.as_ref().map(|dir| {
+        Arc::new(LabelCache {
+            dir: dir.clone(),
+            engine_options_hash: engine_options_hash(&engine_options),
+            multipv: args.multipv,
+            hits: Arc::new(AtomicUsize::new(0)),
+            misses: Arc::new(AtomicUsize::new(0)),
+        })
+    });
 
     // Verify the engine launches before committing to any pipeline work.
     let probe = UsiEngine::launch(
@@ -691,6 +797,7 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
             let engine_launch_failures = Arc::clone(&engine_launch_failures);
             let done = Arc::clone(&done);
             let depths = depths.clone();
+            let cache = cache.clone();
             std::thread::spawn(move || {
                 let mut engine: Option<UsiEngine> = None;
                 loop {
@@ -712,7 +819,14 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
                         engine = Some(e);
                     }
                     if let Some(eng) = engine.as_mut() {
-                        analyze_record(&mut record, eng, &depths, timeout_ms, existing_policy);
+                        analyze_record(
+                            &mut record,
+                            eng,
+                            &depths,
+                            timeout_ms,
+                            existing_policy,
+                            cache.as_deref(),
+                        );
                     } else {
                         engine_launch_failures.fetch_add(1, Ordering::Relaxed);
                         tracing::warn!(sfen = %record.sfen, "engine unavailable, position left unlabeled");
@@ -786,9 +900,18 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
             .map_err(|_| anyhow::anyhow!("label worker thread panicked"))?;
     }
     let engine_launch_failures = engine_launch_failures.load(Ordering::Relaxed);
+    let cache_counts = cache.as_ref().map(|c| {
+        (
+            c.hits.load(Ordering::Relaxed),
+            c.misses.load(Ordering::Relaxed),
+        )
+    });
 
+    let cache_suffix = cache_counts
+        .map(|(hits, misses)| format!(", {hits} cache hits, {misses} cache misses"))
+        .unwrap_or_default();
     eprintln!(
-        "done [{engine_display_name}, jobs={jobs}]: {total} in, {written} labeled, {skipped} skipped, {engine_launch_failures} engine launch failures → {:?}",
+        "done [{engine_display_name}, jobs={jobs}]: {total} in, {written} labeled, {skipped} skipped, {engine_launch_failures} engine launch failures{cache_suffix} → {:?}",
         args.out
     );
     if let Some(mut manifest) = manifest {
@@ -802,6 +925,10 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
         manifest.engine_options = Some(args.engine_options.clone());
         manifest.jobs = Some(jobs);
         manifest.engine_launch_failures = Some(engine_launch_failures);
+        if let Some((hits, misses)) = cache_counts {
+            manifest.cache_hits = Some(hits);
+            manifest.cache_misses = Some(misses);
+        }
         write_manifest(args.manifest.as_ref().unwrap(), &manifest)?;
     }
     Ok(())
@@ -1111,6 +1238,10 @@ struct RunManifest {
     jobs: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     engine_launch_failures: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_hits: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_misses: Option<usize>,
 }
 
 impl RunManifest {
@@ -1142,6 +1273,8 @@ impl RunManifest {
             engine_options: None,
             jobs: None,
             engine_launch_failures: None,
+            cache_hits: None,
+            cache_misses: None,
         }
     }
 }

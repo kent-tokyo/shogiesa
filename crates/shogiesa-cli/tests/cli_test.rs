@@ -151,7 +151,8 @@ fn report_shows_labeled_diagnostics() {
         .stdout(predicate::str::contains("eval bucket x phase"))
         .stdout(predicate::str::contains("eval bucket x side"))
         .stdout(predicate::str::contains("multipv coverage"))
-        .stdout(predicate::str::contains("score bound distribution"))
+        .stdout(predicate::str::contains("score bound (multipv candidates)"))
+        .stdout(predicate::str::contains("score bound (observations)"))
         .stdout(predicate::str::contains("exact"));
 }
 
@@ -397,6 +398,22 @@ fn schema_v4_candidates_round_trips() {
     assert_schema_compat(position_with_version(
         4,
         serde_json::json!([observation]),
+        Some(serde_json::json!({
+            "score_swing_cp": null,
+            "bestmove_agreement": true,
+            "engine_bestmove_agreement": true,
+            "engine_score_swing_cp": 20
+        })),
+    ));
+}
+
+#[test]
+fn schema_v5_score_bound_round_trips() {
+    // v5: adds Observation.score_bound (top-level, distinct from CandidateMove.score_bound).
+    // No "score_bound" key at all here -- proves #[serde(default)] still loads it as Exact.
+    assert_schema_compat(position_with_version(
+        5,
+        serde_json::json!([obs_with_margin("7g7f", 50, 4, 30)]),
         Some(serde_json::json!({
             "score_swing_cp": null,
             "bestmove_agreement": true,
@@ -1156,6 +1173,55 @@ fn filter_min_policy_margin_cp() {
         .success();
     let content = std::fs::read_to_string(out.path()).unwrap();
     assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 2);
+}
+
+#[test]
+fn filter_require_exact_score_excludes_non_exact() {
+    let mut non_exact = obs("7g7f", 100, 4);
+    non_exact["score_bound"] = serde_json::json!("lowerbound");
+    let f = make_labeled_jsonl(&[
+        position("middlegame", serde_json::json!([non_exact])),
+        position("middlegame", serde_json::json!([obs("8h2b+", 100, 4)])), // exact (default), kept
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--require-exact-score",
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 1);
+}
+
+#[test]
+fn filter_require_policy_margin_excludes_missing_margin() {
+    let f = make_labeled_jsonl(&[
+        position("middlegame", serde_json::json!([obs("7g7f", 100, 4)])), // no margin, excluded
+        position(
+            "middlegame",
+            serde_json::json!([obs_with_margin("8h2b+", 100, 4, 50)]),
+        ), // has margin, kept
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--require-policy-margin",
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 1);
 }
 
 #[test]

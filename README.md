@@ -133,6 +133,12 @@ Keeps only positions passing the given stability/eval-range/phase criteria. See 
 (a teacher-ensemble disagreement signal) instead of across depths of one engine — both are a
 no-op on positions labeled by only one engine.
 
+`--require-exact-score` excludes positions where any observation's score is a search bound
+(lowerbound/upperbound) rather than a confirmed evaluation. `--require-policy-margin` excludes
+positions where no observation has a computed `policy_margin_cp` at all — unlike
+`--min-policy-margin-cp` (a no-op when every margin is unset, since it only checks margins that
+were actually computed), this requires a margin to exist in the first place.
+
 `--manifest PATH` (also on `balance`/`sample`/`pack`/`label`, below) writes a run manifest — see
 "Run manifests" further down.
 
@@ -205,11 +211,13 @@ shogiesa report --input observations.jsonl
 ```
 
 Outputs: position count, ply range, phase/side distribution, duplicate SFENs, tag mismatches,
-source dominance, balance warnings, and — once positions are labeled — cp/mate ratio, average
-score swing (plus a histogram), average policy margin, eval-bucket × phase / eval-bucket ×
-side cross-tabs, (for positions labeled by 2+ distinct engines) an engine-disagreement rate, and
-(when `label --multipv N` (N≥2) was used) MultiPV-candidate coverage and a `score_bound`
-(exact/lowerbound/upperbound) distribution.
+source dominance, balance warnings, and — once positions are labeled — cp/mate ratio, an
+observation-level `score_bound` (exact/lowerbound/upperbound) distribution (unconditional — this
+reflects `Observation.score_bound`, so it's meaningful even without MultiPV), average score swing
+(plus a histogram), average policy margin, eval-bucket × phase / eval-bucket × side cross-tabs,
+(for positions labeled by 2+ distinct engines) an engine-disagreement rate, and (when
+`label --multipv N` (N≥2) was used) MultiPV-candidate coverage and a separate `score_bound`
+distribution scoped to those candidates.
 
 ### `validate` — data integrity
 
@@ -224,7 +232,7 @@ Checks: broken JSON, invalid SFENs, duplicate SFENs, `side_to_move` tag vs SFEN 
 
 ```json
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "sfen": "lnsgkgsnl/1r5b1/p1ppppppp/1p7/9/2P6/PP1PPPPPP/1B5R1/LNSGKGSNL b - 2",
   "source": {
     "kind": "csa",
@@ -243,6 +251,7 @@ Checks: broken JSON, invalid SFENs, duplicate SFENs, `side_to_move` tag vs SFEN 
       "engine_version": "0.1.0",
       "depth": 8,
       "score": { "kind": "cp", "value": 43 },
+      "score_bound": "exact",
       "bestmove": "7g7f",
       "nodes": 123456,
       "time_ms": 120,
@@ -257,8 +266,11 @@ Checks: broken JSON, invalid SFENs, duplicate SFENs, `side_to_move` tag vs SFEN 
 }
 ```
 
-Score is either `{"kind":"cp","value":N}` or `{"kind":"mate","moves":N}`. `policy_margin_cp` and
-`candidates` are only present when `label --multipv 2` (or higher) was used.
+Score is either `{"kind":"cp","value":N}` or `{"kind":"mate","moves":N}`. `score_bound`
+(`exact`/`lowerbound`/`upperbound`) marks whether the bestmove's own score is a confirmed
+evaluation or a search bound, independent of MultiPV — it defaults to `exact` on older JSONL that
+predates this field. `policy_margin_cp` and `candidates` are only present when `label --multipv 2`
+(or higher) was used.
 
 ## Pipeline
 

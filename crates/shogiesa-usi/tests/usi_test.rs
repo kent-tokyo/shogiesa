@@ -1,7 +1,7 @@
 use std::process::Command;
 
 use assert_cmd::cargo::cargo_bin;
-use shogiesa_core::Score;
+use shogiesa_core::{Score, ScoreBound};
 use shogiesa_usi::{UsiEngine, UsiError};
 
 const STARTPOS: &str = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1";
@@ -112,6 +112,9 @@ fn analyse_ignores_bound_tagged_bestmove() {
     let mut engine = UsiEngine::launch_command(cmd, String::new(), TIMEOUT, &[]).unwrap();
     let result = engine.analyse(STARTPOS, 4, TIMEOUT).unwrap();
     assert_eq!(result.policy_margin_cp, None);
+    // The bound tag on the bestmove's own line must surface on AnalysisResult.score_bound --
+    // this is what a plain single-PV label (no MultiPV at all) would otherwise silently lose.
+    assert_eq!(result.score_bound, ScoreBound::Lowerbound);
     engine.quit();
 }
 

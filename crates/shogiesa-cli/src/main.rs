@@ -313,6 +313,15 @@ struct FilterArgs {
     /// margin never trigger this gate.
     #[arg(long, allow_hyphen_values = true)]
     min_policy_margin_cp: Option<i32>,
+    /// Exclude positions where any observation's score is a search bound (lowerbound/
+    /// upperbound) rather than a confirmed evaluation
+    #[arg(long)]
+    require_exact_score: bool,
+    /// Exclude positions where no observation has a computed policy_margin_cp at all.
+    /// Unlike --min-policy-margin-cp (a no-op when every margin is unset), this requires a
+    /// margin to have been computed in the first place.
+    #[arg(long)]
+    require_policy_margin: bool,
     /// Require every distinct engine's deepest observation to agree on bestmove. A no-op
     /// unless the position was labeled by 2+ engines (see `label --engine-name`).
     #[arg(long)]
@@ -459,6 +468,7 @@ fn analyze_record(
                     engine_version: engine.engine_version.clone(),
                     depth: result.depth,
                     score: result.score,
+                    score_bound: result.score_bound,
                     bestmove: result.bestmove,
                     nodes: result.nodes,
                     time_ms: result.time_ms,
@@ -1330,6 +1340,8 @@ fn build_quality_config(
         require_bestmove_agreement: args.require_bestmove_agreement,
         require_engine_agreement: args.require_engine_agreement,
         max_engine_score_swing_cp: args.max_engine_score_swing_cp,
+        require_exact_score: args.require_exact_score,
+        require_policy_margin: args.require_policy_margin,
     }
 }
 
@@ -1511,6 +1523,7 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
     let mut swing_buckets: BTreeMap<i32, usize> = BTreeMap::new();
     let mut margin_sum = 0f64;
     let mut margin_count = 0usize;
+    let mut obs_score_bound_counts: BTreeMap<&'static str, usize> = BTreeMap::new();
 
     for rec in &records {
         *phases.entry(format!("{}", rec.tags.phase)).or_default() += 1;
@@ -1579,6 +1592,12 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
                     margin_sum += margin as f64;
                     margin_count += 1;
                 }
+                let bound_key = match obs.score_bound {
+                    shogiesa_core::ScoreBound::Exact => "exact",
+                    shogiesa_core::ScoreBound::Lowerbound => "lowerbound",
+                    shogiesa_core::ScoreBound::Upperbound => "upperbound",
+                };
+                *obs_score_bound_counts.entry(bound_key).or_default() += 1;
             }
             if let Some(swing) = score_swing(&cp_scores) {
                 swing_sum += swing as f64;
@@ -1738,6 +1757,10 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
             "  cp/mate ratio  : {cp_obs_count} cp / {mate_obs_count} mate  ({:.1}% mate)",
             mate_obs_count as f64 / total_obs.max(1) as f64 * 100.0
         );
+        println!("  score bound (observations):");
+        for (bound, count) in &obs_score_bound_counts {
+            println!("    {bound:<10} : {count:>6}");
+        }
         if swing_count > 0 {
             println!(
                 "  avg score swing: {:.1}cp  (over {swing_count} records with \u{2265}2 cp observations)",
@@ -1757,7 +1780,7 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
                 "  multipv coverage: {obs_with_candidates:>6}  ({:.1}% of {obs_total} observations)",
                 obs_with_candidates as f64 / obs_total as f64 * 100.0
             );
-            println!("  score bound distribution:");
+            println!("  score bound (multipv candidates):");
             for (bound, count) in &score_bound_distribution {
                 println!("    {bound:<10} : {count:>6}");
             }

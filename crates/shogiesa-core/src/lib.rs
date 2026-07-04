@@ -3,7 +3,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -115,6 +115,11 @@ pub struct Observation {
     pub engine_version: Option<String>,
     pub depth: u32,
     pub score: Score,
+    /// Whether `score` is a confirmed evaluation or a search bound (e.g. an aspiration-window
+    /// fail-high/low). Only ever set from the engine's own bestmove line, independent of
+    /// whether MultiPV was used — `CandidateMove.score_bound` covers runner-up ranks.
+    #[serde(default)]
+    pub score_bound: ScoreBound,
     pub bestmove: String,
     pub nodes: Option<u64>,
     pub time_ms: Option<u64>,
@@ -200,6 +205,8 @@ pub enum QualityReason {
     BestmoveDisagreement,
     EngineDisagreement,
     EngineScoreSwing,
+    NonExactScore,
+    MissingPolicyMargin,
 }
 
 impl QualityReason {
@@ -217,6 +224,8 @@ impl QualityReason {
             QualityReason::BestmoveDisagreement => "bestmove_disagreement",
             QualityReason::EngineDisagreement => "engine_disagreement",
             QualityReason::EngineScoreSwing => "engine_score_swing",
+            QualityReason::NonExactScore => "non_exact_score",
+            QualityReason::MissingPolicyMargin => "missing_policy_margin",
         }
     }
 }
@@ -237,6 +246,14 @@ pub struct QualityConfig {
     pub require_bestmove_agreement: bool,
     pub require_engine_agreement: bool,
     pub max_engine_score_swing_cp: Option<i32>,
+    /// Reject a record if any observation's `score` is a search bound rather than a confirmed
+    /// evaluation. Independent of `min_policy_margin_cp` (which only checks margins that were
+    /// actually computed).
+    pub require_exact_score: bool,
+    /// Reject a record if no observation has a computed `policy_margin_cp` at all. Unlike
+    /// `min_policy_margin_cp` (a no-op when every margin is `None`), this catches "we never
+    /// confirmed a margin" rather than only "the margin we confirmed was too small."
+    pub require_policy_margin: bool,
 }
 
 /// Result of evaluating a `PositionRecord` against a `QualityConfig`.
@@ -349,6 +366,20 @@ pub fn evaluate_quality(rec: &PositionRecord, config: &QualityConfig) -> Quality
                 .any(|o| o.policy_margin_cp.is_some_and(|m| m < min))
         }) {
             reasons.push(QualityReason::PolicyMargin);
+        }
+    }
+
+    if config.require_exact_score {
+        configured_gates += 1;
+        if obs.iter().any(|o| o.score_bound != ScoreBound::Exact) {
+            reasons.push(QualityReason::NonExactScore);
+        }
+    }
+
+    if config.require_policy_margin {
+        configured_gates += 1;
+        if !obs.iter().any(|o| o.policy_margin_cp.is_some()) {
+            reasons.push(QualityReason::MissingPolicyMargin);
         }
     }
 
@@ -472,6 +503,7 @@ mod tests {
             engine_version: None,
             depth,
             score: Score::Cp { value: cp },
+            score_bound: ScoreBound::Exact,
             bestmove: bestmove.to_string(),
             nodes: None,
             time_ms: None,
@@ -479,6 +511,18 @@ mod tests {
             policy_margin_cp: None,
             candidates: Vec::new(),
         }
+    }
+
+    fn obs_with_bound(
+        engine: &str,
+        depth: u32,
+        cp: i32,
+        bestmove: &str,
+        score_bound: ScoreBound,
+    ) -> Observation {
+        let mut o = obs(engine, depth, cp, bestmove);
+        o.score_bound = score_bound;
+        o
     }
 
     #[test]
@@ -535,6 +579,7 @@ mod tests {
             engine_version: None,
             depth,
             score: Score::Mate { moves },
+            score_bound: ScoreBound::Exact,
             bestmove: bestmove.to_string(),
             nodes: None,
             time_ms: None,
@@ -700,6 +745,64 @@ mod tests {
         let observations = vec![obs_with_margin("a", 4, 10, "7g7f", 20)];
         let decision = evaluate_quality(&simple_rec(observations), &config);
         assert_eq!(decision.reasons, vec![QualityReason::PolicyMargin]);
+    }
+
+    #[test]
+    fn evaluate_quality_require_exact_score_rejects_non_exact() {
+        let config = QualityConfig {
+            require_exact_score: true,
+            ..Default::default()
+        };
+        let observations = vec![obs_with_bound("a", 4, 10, "7g7f", ScoreBound::Lowerbound)];
+        let decision = evaluate_quality(&simple_rec(observations), &config);
+        assert_eq!(decision.reasons, vec![QualityReason::NonExactScore]);
+    }
+
+    #[test]
+    fn evaluate_quality_require_exact_score_passes_exact() {
+        let config = QualityConfig {
+            require_exact_score: true,
+            ..Default::default()
+        };
+        let observations = vec![obs("a", 4, 10, "7g7f")];
+        let decision = evaluate_quality(&simple_rec(observations), &config);
+        assert!(decision.keep);
+    }
+
+    #[test]
+    fn evaluate_quality_require_exact_score_passes_mate() {
+        // Mate scores are inherently confirmed -- they carry ScoreBound::Exact by convention
+        // (USI mate scores don't carry bound tokens), so this gate must not treat them as
+        // unconfirmed.
+        let config = QualityConfig {
+            require_exact_score: true,
+            ..Default::default()
+        };
+        let observations = vec![obs_mate("a", 4, 3, "7g7f")];
+        let decision = evaluate_quality(&simple_rec(observations), &config);
+        assert!(decision.keep);
+    }
+
+    #[test]
+    fn evaluate_quality_require_policy_margin_rejects_when_none_computed() {
+        let config = QualityConfig {
+            require_policy_margin: true,
+            ..Default::default()
+        };
+        let observations = vec![obs("a", 4, 10, "7g7f")];
+        let decision = evaluate_quality(&simple_rec(observations), &config);
+        assert_eq!(decision.reasons, vec![QualityReason::MissingPolicyMargin]);
+    }
+
+    #[test]
+    fn evaluate_quality_require_policy_margin_passes_when_computed() {
+        let config = QualityConfig {
+            require_policy_margin: true,
+            ..Default::default()
+        };
+        let observations = vec![obs_with_margin("a", 4, 10, "7g7f", 20)];
+        let decision = evaluate_quality(&simple_rec(observations), &config);
+        assert!(decision.keep);
     }
 
     #[test]

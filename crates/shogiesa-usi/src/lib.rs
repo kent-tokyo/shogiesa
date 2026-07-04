@@ -35,6 +35,10 @@ pub struct AnalysisResult {
     pub policy_margin_cp: Option<i32>,
     /// Every MultiPV rank observed, populated only when the engine was run with MultiPV≥2.
     pub candidates: Vec<CandidateMove>,
+    /// Whether `score` (the bestmove's own line) is a confirmed evaluation or a search bound.
+    /// Always set, independent of MultiPV -- this is what a plain single-PV label would
+    /// otherwise silently discard (only `candidates[0].score_bound` carried it before).
+    pub score_bound: ScoreBound,
 }
 
 struct InfoLine {
@@ -287,6 +291,7 @@ impl UsiEngine {
                     pv: info.pv.clone(),
                     policy_margin_cp,
                     candidates,
+                    score_bound: info.bound,
                 });
             } else if line.starts_with("info ")
                 && let Some(info) = parse_info(&line)

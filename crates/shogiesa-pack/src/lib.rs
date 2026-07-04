@@ -60,7 +60,7 @@ use shogiesa_core::{
 };
 
 pub const MAGIC: &[u8; 8] = b"SHOGIESA";
-pub const FORMAT_VERSION: u16 = 4;
+pub const FORMAT_VERSION: u16 = 5;
 
 // ── write helpers ─────────────────────────────────────────────────────────────
 
@@ -237,6 +237,14 @@ pub fn encode_record(rec: &PositionRecord, w: &mut impl Write) -> io::Result<()>
                 wi32(w, moves)?;
             }
         }
+        wu8(
+            w,
+            match obs.score_bound {
+                ScoreBound::Exact => 0,
+                ScoreBound::Lowerbound => 1,
+                ScoreBound::Upperbound => 2,
+            },
+        )?;
         ws8(w, &obs.bestmove)?;
         match obs.nodes {
             None => wu8(w, 0)?,
@@ -367,6 +375,12 @@ pub fn decode_record(r: &mut impl Read) -> io::Result<PositionRecord> {
             1 => Score::Mate { moves: ri32(r)? },
             _ => return Err(bad("bad score kind")),
         };
+        let obs_score_bound = match ru8(r)? {
+            0 => ScoreBound::Exact,
+            1 => ScoreBound::Lowerbound,
+            2 => ScoreBound::Upperbound,
+            _ => return Err(bad("bad score bound")),
+        };
         let bestmove = rs8(r)?;
         let nodes = if ru8(r)? == 0 { None } else { Some(ru64(r)?) };
         let time_ms = if ru8(r)? == 0 { None } else { Some(ru64(r)?) };
@@ -420,6 +434,7 @@ pub fn decode_record(r: &mut impl Read) -> io::Result<PositionRecord> {
             engine_version,
             depth,
             score,
+            score_bound: obs_score_bound,
             bestmove,
             nodes,
             time_ms,
@@ -487,6 +502,7 @@ mod tests {
                     engine_version: Some("1.0".to_string()),
                     depth: 8,
                     score: Score::Cp { value: 42 },
+                    score_bound: ScoreBound::Lowerbound,
                     bestmove: "7g7f".to_string(),
                     nodes: Some(12345),
                     time_ms: Some(100),
@@ -521,6 +537,7 @@ mod tests {
                     engine_version: None,
                     depth: 12,
                     score: Score::Mate { moves: 3 },
+                    score_bound: ScoreBound::Exact,
                     bestmove: "2b3c".to_string(),
                     nodes: None,
                     time_ms: None,
@@ -556,6 +573,7 @@ mod tests {
         assert_eq!(got.observations.len(), 2);
         assert_eq!(got.observations[0].depth, 8);
         assert!(matches!(got.observations[0].score, Score::Cp { value: 42 }));
+        assert_eq!(got.observations[0].score_bound, ScoreBound::Lowerbound);
         assert_eq!(got.observations[0].engine_version, Some("1.0".to_string()));
         assert_eq!(got.observations[0].nodes, Some(12345));
         assert_eq!(
@@ -601,6 +619,7 @@ mod tests {
             Score::Mate { moves: 3 }
         ));
         assert_eq!(got.observations[1].policy_margin_cp, None);
+        assert_eq!(got.observations[1].score_bound, ScoreBound::Exact);
         assert!(got.observations[1].candidates.is_empty());
         let stab = got.stability.as_ref().unwrap();
         assert_eq!(stab.score_swing_cp, Some(100));

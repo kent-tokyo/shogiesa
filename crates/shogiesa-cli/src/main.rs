@@ -199,6 +199,9 @@ struct SampleArgs {
     /// Seed for deterministic sampling (default 0)
     #[arg(long, default_value = "0")]
     seed: u64,
+    /// Write a run manifest (git sha, input hash, counts, coverage stats) to this path
+    #[arg(long)]
+    manifest: Option<PathBuf>,
 }
 
 #[derive(clap::Args)]
@@ -234,6 +237,9 @@ struct BalanceArgs {
     /// Target per bucket; defaults to the smallest bucket's count
     #[arg(long)]
     target: Option<usize>,
+    /// Write a run manifest (git sha, input hash, counts, coverage stats) to this path
+    #[arg(long)]
+    manifest: Option<PathBuf>,
 }
 
 #[derive(clap::Args)]
@@ -244,6 +250,9 @@ struct PackArgs {
     /// Output binary pack file (.shgpk)
     #[arg(short, long)]
     out: PathBuf,
+    /// Write a run manifest (git sha, input hash, counts, coverage stats) to this path
+    #[arg(long)]
+    manifest: Option<PathBuf>,
 }
 
 #[derive(clap::Args)]
@@ -304,6 +313,10 @@ struct FilterArgs {
     /// --max-score-swing-cp, but grouped by engine first). A no-op with fewer than 2 engines.
     #[arg(long)]
     max_engine_score_swing_cp: Option<i32>,
+    /// Write a run manifest (git sha, input hash, counts, drop reasons, filter config,
+    /// coverage stats) to this path
+    #[arg(long)]
+    manifest: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -842,6 +855,111 @@ fn cmd_split_train_valid_test(args: SplitArgs) -> Result<()> {
     Ok(())
 }
 
+/// Opt-in run provenance, written when `--manifest PATH` is given. `input_hash` is a plain
+/// `DefaultHasher` digest (same mechanism already used by `assign_split_bucket`/`cmd_sample`),
+/// not a cryptographic SHA-256 — this is a "did the input change between runs" marker, not an
+/// integrity check against untrusted input, so it isn't worth a new dependency.
+#[derive(serde::Serialize)]
+struct RunManifest {
+    shogiesa_version: &'static str,
+    git_sha: &'static str,
+    schema_version: u32,
+    pack_format_version: u16,
+    command: &'static str,
+    args: Vec<String>,
+    input_path: String,
+    input_hash: String,
+    records_read: usize,
+    records_kept: usize,
+    /// Meaning is command-specific: parse-skips for `pack`, not-selected for `sample`/
+    /// `balance`, gate-failures for `filter`. Disambiguate using `command`.
+    records_dropped: usize,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    drop_reasons: BTreeMap<&'static str, usize>,
+    labeled_records: usize,
+    unlabeled_records: usize,
+    observations_with_candidates: usize,
+    observations_total: usize,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    score_bound_distribution: BTreeMap<&'static str, usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    filter_config: Option<QualityConfig>,
+}
+
+impl RunManifest {
+    fn new(command: &'static str, input_path: &Path) -> Self {
+        Self {
+            shogiesa_version: env!("CARGO_PKG_VERSION"),
+            git_sha: env!("SHOGIESA_GIT_SHA"),
+            schema_version: SCHEMA_VERSION,
+            pack_format_version: pack::FORMAT_VERSION,
+            command,
+            args: std::env::args().collect(),
+            input_path: input_path.display().to_string(),
+            input_hash: String::new(),
+            records_read: 0,
+            records_kept: 0,
+            records_dropped: 0,
+            drop_reasons: BTreeMap::new(),
+            labeled_records: 0,
+            unlabeled_records: 0,
+            observations_with_candidates: 0,
+            observations_total: 0,
+            score_bound_distribution: BTreeMap::new(),
+            filter_config: None,
+        }
+    }
+}
+
+fn write_manifest(path: &Path, manifest: &RunManifest) -> Result<()> {
+    fs::write(path, serde_json::to_string_pretty(manifest)?)
+        .with_context(|| format!("cannot write {path:?}"))
+}
+
+/// Hash a whole file's bytes with `DefaultHasher`. Only called when `--manifest` is given, on
+/// commands that already fully materialize their input (`sample`/`balance`) — an extra read is
+/// acceptable there since they aren't streaming to begin with.
+/// Hashes line-by-line (content + `\n` per line) to match `cmd_pack`/`cmd_filter`'s inline
+/// streaming hash exactly — so the same input file gets the same `input_hash` in a manifest
+/// regardless of which command produced it.
+fn hash_file(path: &Path) -> Result<String> {
+    let reader = BufReader::new(File::open(path).with_context(|| format!("cannot open {path:?}"))?);
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for line in reader.lines() {
+        h.write(line?.as_bytes());
+        h.write(b"\n");
+    }
+    Ok(format!("{:016x}", h.finish()))
+}
+
+/// Tally labeled/unlabeled records, MultiPV candidate coverage, and score-bound distribution
+/// across a batch of records — the same descriptive stats `report` computes ad hoc, shared here
+/// for `RunManifest`. Not a quality *decision* (no pass/fail judgment), so it lives in the CLI
+/// rather than `shogiesa_core::evaluate_quality`.
+fn accumulate_coverage(manifest: &mut RunManifest, records: &[PositionRecord]) {
+    for rec in records {
+        if rec.observations.is_empty() {
+            manifest.unlabeled_records += 1;
+        } else {
+            manifest.labeled_records += 1;
+        }
+        for obs in &rec.observations {
+            manifest.observations_total += 1;
+            if !obs.candidates.is_empty() {
+                manifest.observations_with_candidates += 1;
+                for c in &obs.candidates {
+                    let key = match c.score_bound {
+                        shogiesa_core::ScoreBound::Exact => "exact",
+                        shogiesa_core::ScoreBound::Lowerbound => "lowerbound",
+                        shogiesa_core::ScoreBound::Upperbound => "upperbound",
+                    };
+                    *manifest.score_bound_distribution.entry(key).or_default() += 1;
+                }
+            }
+        }
+    }
+}
+
 fn cmd_sample(args: SampleArgs) -> Result<()> {
     let (records, _) = load_records(&args.input)?;
     let total = records.len();
@@ -864,11 +982,15 @@ fn cmd_sample(args: SampleArgs) -> Result<()> {
         File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
     let mut writer = BufWriter::new(out_file);
     let mut kept = 0usize;
+    let mut kept_records = Vec::new();
     for (i, rec) in records.iter().enumerate() {
         if selected.contains(&i) {
             serde_json::to_writer(&mut writer, rec)?;
             writer.write_all(b"\n")?;
             kept += 1;
+            if args.manifest.is_some() {
+                kept_records.push(rec.clone());
+            }
         }
     }
     writer.flush()?;
@@ -876,6 +998,15 @@ fn cmd_sample(args: SampleArgs) -> Result<()> {
         "done: {kept}/{total} sampled (seed={seed}) → {:?}",
         args.out
     );
+    if let Some(manifest_path) = &args.manifest {
+        let mut manifest = RunManifest::new("sample", &args.input);
+        manifest.input_hash = hash_file(&args.input)?;
+        manifest.records_read = total;
+        manifest.records_kept = kept;
+        manifest.records_dropped = total - kept;
+        accumulate_coverage(&mut manifest, &kept_records);
+        write_manifest(manifest_path, &manifest)?;
+    }
     Ok(())
 }
 
@@ -1013,11 +1144,15 @@ fn cmd_balance(args: BalanceArgs) -> Result<()> {
         File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
     let mut writer = BufWriter::new(out_file);
     let mut kept = 0usize;
+    let mut kept_records = Vec::new();
     for (i, rec) in records.iter().enumerate() {
         if keep.contains(&i) {
             serde_json::to_writer(&mut writer, rec)?;
             writer.write_all(b"\n")?;
             kept += 1;
+            if args.manifest.is_some() {
+                kept_records.push(rec.clone());
+            }
         }
     }
     writer.flush()?;
@@ -1026,6 +1161,15 @@ fn cmd_balance(args: BalanceArgs) -> Result<()> {
         buckets.len(),
         args.out
     );
+    if let Some(manifest_path) = &args.manifest {
+        let mut manifest = RunManifest::new("balance", &args.input);
+        manifest.input_hash = hash_file(&args.input)?;
+        manifest.records_read = total;
+        manifest.records_kept = kept;
+        manifest.records_dropped = total - kept;
+        accumulate_coverage(&mut manifest, &kept_records);
+        write_manifest(manifest_path, &manifest)?;
+    }
     Ok(())
 }
 
@@ -1041,8 +1185,17 @@ fn cmd_pack(args: PackArgs) -> Result<()> {
 
     let mut total = 0usize;
     let mut skipped = 0usize;
+    let mut manifest = args
+        .manifest
+        .is_some()
+        .then(|| RunManifest::new("pack", &args.input));
+    let mut input_hasher = std::collections::hash_map::DefaultHasher::new();
     for (i, line) in reader.lines().enumerate() {
         let line = line?;
+        if manifest.is_some() {
+            input_hasher.write(line.as_bytes());
+            input_hasher.write(b"\n");
+        }
         if line.trim().is_empty() {
             continue;
         }
@@ -1050,6 +1203,9 @@ fn cmd_pack(args: PackArgs) -> Result<()> {
             Ok(rec) => {
                 pack::encode_record(&rec, &mut writer)?;
                 total += 1;
+                if let Some(m) = &mut manifest {
+                    accumulate_coverage(m, std::slice::from_ref(&rec));
+                }
             }
             Err(e) => {
                 tracing::warn!(line = i + 1, "JSON parse error: {e}");
@@ -1059,6 +1215,13 @@ fn cmd_pack(args: PackArgs) -> Result<()> {
     }
     writer.flush()?;
     eprintln!("done: {total} packed, {skipped} skipped → {:?}", args.out);
+    if let (Some(mut m), Some(manifest_path)) = (manifest, &args.manifest) {
+        m.input_hash = format!("{:016x}", input_hasher.finish());
+        m.records_read = total + skipped;
+        m.records_kept = total;
+        m.records_dropped = skipped;
+        write_manifest(manifest_path, &m)?;
+    }
     Ok(())
 }
 
@@ -1136,9 +1299,18 @@ fn cmd_filter(args: FilterArgs) -> Result<()> {
     let mut passed = 0usize;
     let mut skipped = 0usize;
     let mut drop_reasons: BTreeMap<&'static str, usize> = BTreeMap::new();
+    let mut manifest = args
+        .manifest
+        .is_some()
+        .then(|| RunManifest::new("filter", &args.input));
+    let mut input_hasher = std::collections::hash_map::DefaultHasher::new();
 
     for (i, line) in reader.lines().enumerate() {
         let line = line?;
+        if manifest.is_some() {
+            input_hasher.write(line.as_bytes());
+            input_hasher.write(b"\n");
+        }
         if line.trim().is_empty() {
             continue;
         }
@@ -1160,6 +1332,9 @@ fn cmd_filter(args: FilterArgs) -> Result<()> {
                 serde_json::to_writer(&mut writer, &rec)?;
                 writer.write_all(b"\n")?;
                 passed += 1;
+                if let Some(m) = &mut manifest {
+                    accumulate_coverage(m, std::slice::from_ref(&rec));
+                }
             }
             Some(reason) => {
                 skipped += 1;
@@ -1178,6 +1353,15 @@ fn cmd_filter(args: FilterArgs) -> Result<()> {
         for (reason, count) in &drop_reasons {
             eprintln!("  {reason:<24} {count}");
         }
+    }
+    if let (Some(mut m), Some(manifest_path)) = (manifest, &args.manifest) {
+        m.input_hash = format!("{:016x}", input_hasher.finish());
+        m.records_read = total;
+        m.records_kept = passed;
+        m.records_dropped = skipped;
+        m.drop_reasons = drop_reasons;
+        m.filter_config = Some(config);
+        write_manifest(manifest_path, &m)?;
     }
     Ok(())
 }

@@ -223,7 +223,7 @@ impl QualityReason {
 
 /// Configuration for `evaluate_quality`'s gates — the single place `filter`'s pass/fail logic
 /// lives, so other consumers can reuse the exact same decision instead of reimplementing it.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct QualityConfig {
     pub min_observations: u32,
     pub allowed_phases: Option<Vec<GamePhase>>,

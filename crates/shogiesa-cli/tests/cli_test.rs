@@ -1678,3 +1678,183 @@ fn filter_end_to_end_with_label() {
     let content = std::fs::read_to_string(filtered.path()).unwrap();
     assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 5);
 }
+
+#[test]
+fn filter_manifest_records_drop_reasons_and_config() {
+    let f = make_labeled_jsonl(&[
+        position("opening", serde_json::json!([obs("7g7f", 50, 4)])),
+        position("opening", serde_json::json!([obs_mate("7g7f", 3, 4)])),
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    let manifest_path = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--exclude-mate",
+            "--manifest",
+            manifest_path.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest_path.path()).unwrap()).unwrap();
+    assert!(!manifest["git_sha"].as_str().unwrap().is_empty());
+    assert_eq!(manifest["schema_version"], shogiesa_core::SCHEMA_VERSION);
+    assert_eq!(manifest["command"], "filter");
+    assert_eq!(manifest["records_read"], 2);
+    assert_eq!(manifest["records_kept"], 1);
+    assert_eq!(manifest["records_dropped"], 1);
+    assert_eq!(manifest["drop_reasons"]["mate"], 1);
+    assert_eq!(manifest["filter_config"]["exclude_mate"], true);
+}
+
+#[test]
+fn balance_manifest_records_counts() {
+    let f = make_labeled_jsonl(&[
+        position("opening", serde_json::json!([obs("7g7f", 50, 4)])),
+        position("opening", serde_json::json!([obs("7g7f", 60, 4)])),
+        position("middlegame", serde_json::json!([obs("7g7f", 100, 4)])),
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    let manifest_path = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "balance",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--by",
+            "phase",
+            "--manifest",
+            manifest_path.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest_path.path()).unwrap()).unwrap();
+    assert_eq!(manifest["command"], "balance");
+    assert_eq!(manifest["records_read"], 3);
+    assert_eq!(manifest["records_kept"], 2); // min bucket size (1) per phase * 2 phases
+    assert_eq!(manifest["records_dropped"], 1);
+    assert_eq!(manifest["labeled_records"], 2);
+}
+
+#[test]
+fn sample_manifest_records_counts() {
+    let f = make_labeled_jsonl(&[
+        position("opening", serde_json::json!([obs("7g7f", 50, 4)])),
+        position("opening", serde_json::json!([obs("7g7f", 60, 4)])),
+        position("opening", serde_json::json!([obs("7g7f", 70, 4)])),
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    let manifest_path = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "sample",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--count",
+            "2",
+            "--manifest",
+            manifest_path.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest_path.path()).unwrap()).unwrap();
+    assert_eq!(manifest["command"], "sample");
+    assert_eq!(manifest["records_read"], 3);
+    assert_eq!(manifest["records_kept"], 2);
+    assert_eq!(manifest["records_dropped"], 1);
+}
+
+#[test]
+fn pack_manifest_records_counts() {
+    let f = make_labeled_jsonl(&[
+        position("opening", serde_json::json!([obs("7g7f", 50, 4)])),
+        position("opening", serde_json::json!([obs("7g7f", 60, 4)])),
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    let manifest_path = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "pack",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--manifest",
+            manifest_path.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest_path.path()).unwrap()).unwrap();
+    assert_eq!(manifest["command"], "pack");
+    assert_eq!(
+        manifest["pack_format_version"],
+        shogiesa_pack::FORMAT_VERSION
+    );
+    assert_eq!(manifest["records_read"], 2);
+    assert_eq!(manifest["records_kept"], 2);
+    assert_eq!(manifest["records_dropped"], 0);
+}
+
+#[test]
+fn same_input_file_produces_same_manifest_input_hash_across_commands() {
+    // filter/pack hash incrementally while streaming; sample/balance hash via a separate
+    // whole-file pass -- both must agree, or comparing manifests across commands for the
+    // same file would show a spurious "changed input" for no reason.
+    let f = make_labeled_jsonl(&[
+        position("opening", serde_json::json!([obs("7g7f", 50, 4)])),
+        position("opening", serde_json::json!([obs("7g7f", 60, 4)])),
+    ]);
+    let filter_out = NamedTempFile::new().unwrap();
+    let filter_manifest = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            filter_out.path().to_str().unwrap(),
+            "--manifest",
+            filter_manifest.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let sample_out = NamedTempFile::new().unwrap();
+    let sample_manifest = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "sample",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            sample_out.path().to_str().unwrap(),
+            "--count",
+            "2",
+            "--manifest",
+            sample_manifest.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let filter_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(filter_manifest.path()).unwrap()).unwrap();
+    let sample_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(sample_manifest.path()).unwrap()).unwrap();
+    assert_eq!(filter_json["input_hash"], sample_json["input_hash"]);
+}

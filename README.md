@@ -130,6 +130,9 @@ Keeps only positions passing the given stability/eval-range/phase criteria. See 
 (a teacher-ensemble disagreement signal) instead of across depths of one engine — both are a
 no-op on positions labeled by only one engine.
 
+`--manifest PATH` (also on `balance`/`sample`/`pack`, below) writes a run manifest — see
+"Run manifests" further down.
+
 ### `mine` — hard-position mining
 
 ```bash
@@ -160,10 +163,11 @@ shogiesa sample --input positions.jsonl --count 10000 --seed 1 --out sample.json
 `split --by-source` writes one file per source game plus a `manifest.json` (input path, schema
 version, per-file counts). `split --train/--valid/--test` does a seeded ratio split instead —
 every position from the same source game is assigned to exactly one of the three splits (no
-same-game leakage across train/valid/test), and it writes a `manifest.json` with the seed,
-requested fractions, and the *actual* per-split position/source counts (these naturally deviate
-from the requested fractions since games vary in length). `sample` deterministically selects N
-positions.
+same-game leakage across train/valid/test — this includes a KIF `変化` variation's positions,
+which are assigned alongside their mainline rather than independently, since they share a parent
+position), and it writes a `manifest.json` with the seed, requested fractions, and the *actual*
+per-split position/source counts (these naturally deviate from the requested fractions since
+games vary in length). `sample` deterministically selects N positions.
 
 ### `pack` / `unpack` — binary format
 
@@ -173,6 +177,19 @@ shogiesa unpack --input data.shgpk --out observations.jsonl
 ```
 
 Compact binary encoding of the JSONL schema for faster loading by trainers.
+
+### Run manifests
+
+`filter`/`balance`/`sample`/`pack` accept `--manifest PATH` to write a JSON provenance record
+alongside their normal output: shogiesa version, git sha (embedded at build time), schema/pack
+format version, the full command line, the input file's path and a content hash (a plain
+non-cryptographic digest for "did the input change between runs" — not a verifiable SHA-256
+checksum), records read/kept/dropped, drop-reason counts, labeled/unlabeled record counts, MultiPV
+candidate coverage, `score_bound` distribution, and (for `filter`) the resolved quality
+configuration. It's opt-in and additive — no effect on the command's normal output when omitted.
+`label` and `split` don't have `--manifest`: `split` already writes its own tailored
+`manifest.json` (see above), and `label`'s natural manifest fields (per-engine/per-worker) don't
+fit this shape.
 
 ### `report` — dataset statistics
 

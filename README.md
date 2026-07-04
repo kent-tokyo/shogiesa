@@ -78,10 +78,18 @@ shogiesa label \
 ```
 
 By default, appends observations to existing records — safe to run multiple times with
-different depths, but re-running the same depth adds a duplicate. `--multipv 2` sends
-`setoption name MultiPV value 2` and records how far the bestmove beats the runner-up
+different depths, but re-running the same depth adds a duplicate. `--multipv N` (N≥2) sends
+`setoption name MultiPV value N` and records how far the bestmove beats the runner-up
 (`policy_margin_cp`) — a low margin means the label is a weak teaching signal even when a
-bestmove exists.
+bestmove exists. Every rank the engine reports is kept in `observations[].candidates` (each with
+its own `multipv`/`bestmove`/`score`/`score_bound`/`pv`), not just the top two used for
+`policy_margin_cp` — empty unless MultiPV≥2 was actually used, so ordinary single-PV labeling
+gains no extra output. `score_bound` (`exact`/`lowerbound`/`upperbound`) marks whether a
+candidate's score is a confirmed evaluation or a search bound — a bound-tagged runner-up is
+never trusted for `policy_margin_cp`.
+
+`label` runs on `--jobs` parallel engine processes via a rayon thread pool scoped to that one
+label invocation.
 
 `--skip-existing` skips a requested depth if this engine already has an observation reaching at
 least that depth — useful for cheaply resuming a large labeling run. `--replace-existing`
@@ -190,7 +198,7 @@ Checks: broken JSON, invalid SFENs, duplicate SFENs, `side_to_move` tag vs SFEN 
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "sfen": "lnsgkgsnl/1r5b1/p1ppppppp/1p7/9/2P6/PP1PPPPPP/1B5R1/LNSGKGSNL b - 2",
   "source": {
     "kind": "csa",
@@ -213,14 +221,18 @@ Checks: broken JSON, invalid SFENs, duplicate SFENs, `side_to_move` tag vs SFEN 
       "nodes": 123456,
       "time_ms": 120,
       "pv": ["7g7f", "8h7g"],
-      "policy_margin_cp": 310
+      "policy_margin_cp": 310,
+      "candidates": [
+        { "multipv": 1, "bestmove": "7g7f", "score": { "kind": "cp", "value": 43 }, "score_bound": "exact", "pv": ["7g7f", "8h7g"] },
+        { "multipv": 2, "bestmove": "2g2f", "score": { "kind": "cp", "value": -267 }, "score_bound": "exact", "pv": ["2g2f"] }
+      ]
     }
   ]
 }
 ```
 
-Score is either `{"kind":"cp","value":N}` or `{"kind":"mate","moves":N}`. `policy_margin_cp` is
-only present when `label --multipv 2` (or higher) was used.
+Score is either `{"kind":"cp","value":N}` or `{"kind":"mate","moves":N}`. `policy_margin_cp` and
+`candidates` are only present when `label --multipv 2` (or higher) was used.
 
 ## Pipeline
 

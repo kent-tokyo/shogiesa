@@ -3,7 +3,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -88,6 +88,27 @@ pub enum Score {
     Mate { moves: i32 },
 }
 
+/// Whether a USI `info` line's score is a confirmed evaluation or a search bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ScoreBound {
+    #[default]
+    Exact,
+    Lowerbound,
+    Upperbound,
+}
+
+/// One MultiPV candidate line from a `label --multipv N` (N≥2) pass.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CandidateMove {
+    pub multipv: u32,
+    pub bestmove: String,
+    pub score: Score,
+    #[serde(default)]
+    pub score_bound: ScoreBound,
+    pub pv: Option<Vec<String>>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Observation {
     pub engine: String,
@@ -103,6 +124,10 @@ pub struct Observation {
     /// runner-up's score was a lowerbound/upperbound rather than a confirmed eval.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy_margin_cp: Option<i32>,
+    /// Every MultiPV rank from the search, populated only when the engine was run with
+    /// MultiPV≥2 (empty otherwise, matching `policy_margin_cp`'s convention).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidates: Vec<CandidateMove>,
 }
 
 /// Cp swing (max - min) across at least 2 scores; `None` if fewer than 2.
@@ -452,6 +477,7 @@ mod tests {
             time_ms: None,
             pv: None,
             policy_margin_cp: None,
+            candidates: Vec::new(),
         }
     }
 
@@ -514,6 +540,7 @@ mod tests {
             time_ms: None,
             pv: None,
             policy_margin_cp: None,
+            candidates: Vec::new(),
         }
     }
 

@@ -6,16 +6,18 @@
 ///                          "bestmove", simulating an engine that never terminates search
 ///   --early-stop-depth N : ignore the requested depth and report depth N before bestmove,
 ///                          simulating an engine that stops early (e.g. found a forced mate)
-///   --multipv-margin N   : emit a multipv 2 runner-up line N cp below the bestmove's score,
+///   --multipv-margin N   : cp margin between adjacent multipv ranks,
 ///                          simulating a MultiPV≥2 engine (used to test policy_margin_cp)
-///   --multipv-bound      : like --multipv-margin, but the runner-up line is tagged
-///                          "lowerbound" (used to test that bound-tagged runner-ups are ignored)
+///   --multipv-bound      : tags rank 2 as "lowerbound" (used to test that bound-tagged
+///                          runner-ups are ignored)
+///   --multipv-count N    : emit N multipv-tagged ranks instead of the default 2 (used to test
+///                          Observation.candidates capturing every rank, not just top-2)
 ///   --bestmove MOVE      : report MOVE instead of the default "7g7f" (used to simulate two
 ///                          engines disagreeing)
 ///
 /// Also honors, sent over stdin (as the real `label` command does via `--engine-option`,
 /// since `label` never passes extra argv to the spawned engine):
-///   setoption name MultiPV value N        : N>=2 has the same effect as --multipv-margin 310
+///   setoption name MultiPV value N        : same effect as --multipv-count N (N>=2)
 ///   setoption name EarlyStopDepth value N : same effect as --early-stop-depth N
 ///   setoption name Bestmove value MOVE    : same effect as --bestmove MOVE
 use std::io::{self, BufRead, Write};
@@ -33,12 +35,18 @@ fn main() {
         .position(|a| a == "--early-stop-depth")
         .and_then(|i| args.get(i + 1))
         .and_then(|s| s.parse().ok());
-    let mut multipv_margin: Option<i32> = args
+    let multipv_margin: Option<i32> = args
         .iter()
         .position(|a| a == "--multipv-margin")
         .and_then(|i| args.get(i + 1))
         .and_then(|s| s.parse().ok());
     let multipv_bound = args.iter().any(|a| a == "--multipv-bound");
+    let mut multipv_count: u32 = args
+        .iter()
+        .position(|a| a == "--multipv-count")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
     let mut bestmove: String = args
         .iter()
         .position(|a| a == "--bestmove")
@@ -70,8 +78,8 @@ fn main() {
                     .next()
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(1);
-                if n >= 2 && multipv_margin.is_none() {
-                    multipv_margin = Some(DEFAULT_MULTIPV_MARGIN);
+                if n >= 2 {
+                    multipv_count = n;
                 }
             }
             s if s.starts_with("setoption name EarlyStopDepth value ") => {
@@ -101,29 +109,39 @@ fn main() {
                         .and_then(|t| t.parse().ok())
                         .unwrap_or(1)
                 });
-                let multipv_prefix = if multipv_margin.is_some() || multipv_bound {
-                    "multipv 1 "
+                let effective_count = if multipv_count >= 2 {
+                    multipv_count
+                } else if multipv_margin.is_some() || multipv_bound {
+                    2
                 } else {
-                    ""
+                    0
                 };
-                writeln!(
-                    out,
-                    "info depth {depth} {multipv_prefix}score cp 100 nodes 1000 time 50 pv 7g7f 8h7g"
-                )
-                .unwrap();
-                if multipv_bound {
+                if effective_count == 0 {
                     writeln!(
                         out,
-                        "info depth {depth} multipv 2 score cp 50 lowerbound nodes 1000 time 50 pv 2g2f 8h7g"
+                        "info depth {depth} score cp 100 nodes 1000 time 50 pv 7g7f 8h7g"
                     )
                     .unwrap();
-                } else if let Some(margin) = multipv_margin {
-                    writeln!(
-                        out,
-                        "info depth {depth} multipv 2 score cp {} nodes 1000 time 50 pv 2g2f 8h7g",
-                        100 - margin
-                    )
-                    .unwrap();
+                } else {
+                    let margin = multipv_margin.unwrap_or(DEFAULT_MULTIPV_MARGIN);
+                    for rank in 1..=effective_count {
+                        let score = 100 - (rank as i32 - 1) * margin;
+                        let mv = if rank == 1 {
+                            "7g7f".to_string()
+                        } else {
+                            format!("{rank}g{rank}f")
+                        };
+                        let bound_suffix = if rank == 2 && multipv_bound {
+                            " lowerbound"
+                        } else {
+                            ""
+                        };
+                        writeln!(
+                            out,
+                            "info depth {depth} multipv {rank} score cp {score}{bound_suffix} nodes 1000 time 50 pv {mv} 8h7g"
+                        )
+                        .unwrap();
+                    }
                 }
                 writeln!(out, "bestmove {bestmove}").unwrap();
                 out.flush().unwrap();

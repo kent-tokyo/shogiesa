@@ -443,6 +443,7 @@ fn analyze_record(
                     time_ms: result.time_ms,
                     pv: result.pv,
                     policy_margin_cp: result.policy_margin_cp,
+                    candidates: result.candidates,
                 });
             }
             Err(e) => tracing::warn!(depth, "analysis error: {e}"),

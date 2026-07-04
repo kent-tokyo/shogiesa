@@ -3,7 +3,7 @@
 //! ```text
 //! Header (10 bytes):
 //!   magic[8]  = b"SHOGIESA"
-//!   version   = u16 le  (= 3)
+//!   version   = u16 le  (= 4)
 //!
 //! Record (variable, repeated until EOF):
 //!   sfen              u16le + bytes
@@ -40,17 +40,27 @@
 //!     pv[i]           u8le  + bytes
 //!     margin_tag      u8 (0/1)
 //!     policy_margin   i32le          [if margin_tag=1]
+//!     candidates_count u16le
+//!     per candidate:
+//!       multipv        u32le
+//!       bestmove       u8le  + bytes
+//!       score_kind     u8 (0=cp 1=mate)
+//!       score_val      i32le
+//!       score_bound    u8 (0=exact 1=lowerbound 2=upperbound)
+//!       pv_tag         u8 (0/1)
+//!       pv_count       u16le          [if pv_tag=1]
+//!       pv[i]          u8le  + bytes
 //! ```
 
 use std::io::{self, Read, Write};
 
 use shogiesa_core::{
-    GamePhase, Observation, PositionRecord, PositionTags, SCHEMA_VERSION, Score, SideToMove,
-    SourceInfo, StabilityInfo,
+    CandidateMove, GamePhase, Observation, PositionRecord, PositionTags, SCHEMA_VERSION, Score,
+    ScoreBound, SideToMove, SourceInfo, StabilityInfo,
 };
 
 pub const MAGIC: &[u8; 8] = b"SHOGIESA";
-pub const FORMAT_VERSION: u16 = 3;
+pub const FORMAT_VERSION: u16 = 4;
 
 // ── write helpers ─────────────────────────────────────────────────────────────
 
@@ -259,6 +269,39 @@ pub fn encode_record(rec: &PositionRecord, w: &mut impl Write) -> io::Result<()>
                 wi32(w, v)?;
             }
         }
+        wu16(w, obs.candidates.len() as u16)?;
+        for c in &obs.candidates {
+            wu32(w, c.multipv)?;
+            ws8(w, &c.bestmove)?;
+            match c.score {
+                Score::Cp { value } => {
+                    wu8(w, 0)?;
+                    wi32(w, value)?;
+                }
+                Score::Mate { moves } => {
+                    wu8(w, 1)?;
+                    wi32(w, moves)?;
+                }
+            }
+            wu8(
+                w,
+                match c.score_bound {
+                    ScoreBound::Exact => 0,
+                    ScoreBound::Lowerbound => 1,
+                    ScoreBound::Upperbound => 2,
+                },
+            )?;
+            match &c.pv {
+                None => wu8(w, 0)?,
+                Some(pv) => {
+                    wu8(w, 1)?;
+                    wu16(w, pv.len() as u16)?;
+                    for mv in pv {
+                        ws8(w, mv)?;
+                    }
+                }
+            }
+        }
     }
 
     Ok(())
@@ -338,6 +381,40 @@ pub fn decode_record(r: &mut impl Read) -> io::Result<PositionRecord> {
             Some(moves)
         };
         let policy_margin_cp = if ru8(r)? == 0 { None } else { Some(ri32(r)?) };
+        let candidate_count = ru16(r)? as usize;
+        let mut candidates = Vec::with_capacity(candidate_count);
+        for _ in 0..candidate_count {
+            let multipv = ru32(r)?;
+            let c_bestmove = rs8(r)?;
+            let c_score = match ru8(r)? {
+                0 => Score::Cp { value: ri32(r)? },
+                1 => Score::Mate { moves: ri32(r)? },
+                _ => return Err(bad("bad score kind")),
+            };
+            let score_bound = match ru8(r)? {
+                0 => ScoreBound::Exact,
+                1 => ScoreBound::Lowerbound,
+                2 => ScoreBound::Upperbound,
+                _ => return Err(bad("bad score bound")),
+            };
+            let c_pv = if ru8(r)? == 0 {
+                None
+            } else {
+                let n = ru16(r)? as usize;
+                let mut moves = Vec::with_capacity(n);
+                for _ in 0..n {
+                    moves.push(rs8(r)?);
+                }
+                Some(moves)
+            };
+            candidates.push(CandidateMove {
+                multipv,
+                bestmove: c_bestmove,
+                score: c_score,
+                score_bound,
+                pv: c_pv,
+            });
+        }
         observations.push(Observation {
             engine,
             engine_version,
@@ -348,6 +425,7 @@ pub fn decode_record(r: &mut impl Read) -> io::Result<PositionRecord> {
             time_ms,
             pv,
             policy_margin_cp,
+            candidates,
         });
     }
 
@@ -414,6 +492,22 @@ mod tests {
                     time_ms: Some(100),
                     pv: Some(vec!["7g7f".to_string(), "3c3d".to_string()]),
                     policy_margin_cp: Some(310),
+                    candidates: vec![
+                        CandidateMove {
+                            multipv: 1,
+                            bestmove: "7g7f".to_string(),
+                            score: Score::Cp { value: 42 },
+                            score_bound: ScoreBound::Exact,
+                            pv: Some(vec!["7g7f".to_string(), "3c3d".to_string()]),
+                        },
+                        CandidateMove {
+                            multipv: 2,
+                            bestmove: "2g2f".to_string(),
+                            score: Score::Cp { value: -268 },
+                            score_bound: ScoreBound::Lowerbound,
+                            pv: None,
+                        },
+                    ],
                 },
                 Observation {
                     engine: "TestEngine".to_string(),
@@ -425,6 +519,7 @@ mod tests {
                     time_ms: None,
                     pv: None,
                     policy_margin_cp: None,
+                    candidates: Vec::new(),
                 },
             ],
             stability: Some(StabilityInfo {
@@ -461,12 +556,35 @@ mod tests {
             Some(vec!["7g7f".to_string(), "3c3d".to_string()])
         );
         assert_eq!(got.observations[0].policy_margin_cp, Some(310));
+        assert_eq!(got.observations[0].candidates.len(), 2);
+        assert_eq!(got.observations[0].candidates[0].multipv, 1);
+        assert_eq!(got.observations[0].candidates[0].bestmove, "7g7f");
+        assert_eq!(
+            got.observations[0].candidates[0].score_bound,
+            ScoreBound::Exact
+        );
+        assert_eq!(
+            got.observations[0].candidates[0].pv,
+            Some(vec!["7g7f".to_string(), "3c3d".to_string()])
+        );
+        assert_eq!(got.observations[0].candidates[1].multipv, 2);
+        assert_eq!(got.observations[0].candidates[1].bestmove, "2g2f");
+        assert!(matches!(
+            got.observations[0].candidates[1].score,
+            Score::Cp { value: -268 }
+        ));
+        assert_eq!(
+            got.observations[0].candidates[1].score_bound,
+            ScoreBound::Lowerbound
+        );
+        assert_eq!(got.observations[0].candidates[1].pv, None);
         assert_eq!(got.observations[1].engine_version, None);
         assert!(matches!(
             got.observations[1].score,
             Score::Mate { moves: 3 }
         ));
         assert_eq!(got.observations[1].policy_margin_cp, None);
+        assert!(got.observations[1].candidates.is_empty());
         let stab = got.stability.as_ref().unwrap();
         assert_eq!(stab.score_swing_cp, Some(100));
         assert!(!stab.bestmove_agreement);

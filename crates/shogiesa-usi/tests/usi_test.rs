@@ -107,6 +107,31 @@ fn analyse_without_multipv_has_no_margin() {
     let mut engine = fake_engine();
     let result = engine.analyse(STARTPOS, 4, TIMEOUT).unwrap();
     assert_eq!(result.policy_margin_cp, None);
+    assert!(result.candidates.is_empty());
+    engine.quit();
+}
+
+#[test]
+fn analyse_returns_all_multipv_candidates() {
+    // fake-usi-engine --multipv-count 4 emits 4 multipv-tagged ranks; candidates must capture
+    // every rank, not just the top-2 used for policy_margin_cp.
+    let mut cmd = Command::new(fake_usi_engine_bin());
+    cmd.args(["--multipv-count", "4", "--multipv-margin", "10"]);
+    let mut engine = UsiEngine::launch_command(cmd, String::new(), TIMEOUT, &[]).unwrap();
+    let result = engine.analyse(STARTPOS, 4, TIMEOUT).unwrap();
+    assert_eq!(result.candidates.len(), 4);
+    for (i, candidate) in result.candidates.iter().enumerate() {
+        let rank = (i + 1) as u32;
+        assert_eq!(candidate.multipv, rank);
+        let expected_score = 100 - (rank as i32 - 1) * 10;
+        assert!(matches!(
+            candidate.score,
+            shogiesa_core::Score::Cp { value } if value == expected_score
+        ));
+    }
+    assert_eq!(result.candidates[0].bestmove, "7g7f");
+    assert_eq!(result.candidates[1].bestmove, "2g2f");
+    assert_eq!(result.policy_margin_cp, Some(10));
     engine.quit();
 }
 

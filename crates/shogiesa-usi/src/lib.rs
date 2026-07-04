@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command as StdCommand, Stdio};
@@ -5,7 +6,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use shogiesa_core::Score;
+use shogiesa_core::{CandidateMove, Score, ScoreBound};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -32,13 +33,15 @@ pub struct AnalysisResult {
     /// MultiPV≥2. `None` if MultiPV wasn't used, either score was a mate score,
     /// or the runner-up's score was a lowerbound/upperbound.
     pub policy_margin_cp: Option<i32>,
+    /// Every MultiPV rank observed, populated only when the engine was run with MultiPV≥2.
+    pub candidates: Vec<CandidateMove>,
 }
 
 struct InfoLine {
     depth: Option<u32>,
     multipv: Option<u32>,
     score: Option<Score>,
-    bound: bool,
+    bound: ScoreBound,
     nodes: Option<u64>,
     time_ms: Option<u64>,
     pv: Option<Vec<String>>,
@@ -53,7 +56,7 @@ fn parse_info(line: &str) -> Option<InfoLine> {
         depth: None,
         multipv: None,
         score: None,
-        bound: false,
+        bound: ScoreBound::Exact,
         nodes: None,
         time_ms: None,
         pv: None,
@@ -89,12 +92,16 @@ fn parse_info(line: &str) -> Option<InfoLine> {
                         i += 1;
                     }
                 }
-                if matches!(
-                    tokens.get(i).copied(),
-                    Some("lowerbound") | Some("upperbound")
-                ) {
-                    info.bound = true;
-                    i += 1;
+                match tokens.get(i).copied() {
+                    Some("lowerbound") => {
+                        info.bound = ScoreBound::Lowerbound;
+                        i += 1;
+                    }
+                    Some("upperbound") => {
+                        info.bound = ScoreBound::Upperbound;
+                        i += 1;
+                    }
+                    _ => {}
                 }
             }
             "nodes" => {
@@ -230,8 +237,7 @@ impl UsiEngine {
         self.write_line(&format!("go depth {depth}"))?;
 
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-        let mut last_info: Option<InfoLine> = None;
-        let mut last_runner_up: Option<InfoLine> = None;
+        let mut candidates_by_rank: BTreeMap<u32, InfoLine> = BTreeMap::new();
         loop {
             let line = self.recv_until(deadline)?;
             if line.starts_with("bestmove ") {
@@ -240,9 +246,11 @@ impl UsiEngine {
                     .and_then(|s| s.split_whitespace().next())
                     .ok_or(UsiError::InvalidResponse)?
                     .to_string();
-                let info = last_info.ok_or(UsiError::NoBestmove)?;
-                let policy_margin_cp = match (&info.score, &last_runner_up) {
-                    (Some(Score::Cp { value: best }), Some(runner_up)) if !runner_up.bound => {
+                let info = candidates_by_rank.get(&1).ok_or(UsiError::NoBestmove)?;
+                let policy_margin_cp = match (&info.score, candidates_by_rank.get(&2)) {
+                    (Some(Score::Cp { value: best }), Some(runner_up))
+                        if runner_up.bound == ScoreBound::Exact =>
+                    {
                         match runner_up.score {
                             Some(Score::Cp { value: second }) => Some(best - second),
                             _ => None,
@@ -250,23 +258,40 @@ impl UsiEngine {
                     }
                     _ => None,
                 };
+                let candidates: Vec<CandidateMove> = if candidates_by_rank.len() >= 2 {
+                    candidates_by_rank
+                        .iter()
+                        .filter_map(|(&multipv, info)| {
+                            let pv = info.pv.clone()?;
+                            let bestmove = pv.first()?.clone();
+                            let score = info.score.clone()?;
+                            Some(CandidateMove {
+                                multipv,
+                                bestmove,
+                                score,
+                                score_bound: info.bound,
+                                pv: Some(pv),
+                            })
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 return Ok(AnalysisResult {
                     depth: info.depth.unwrap_or(depth),
-                    score: info.score.ok_or(UsiError::InvalidResponse)?,
+                    score: info.score.clone().ok_or(UsiError::InvalidResponse)?,
                     bestmove,
                     nodes: info.nodes,
                     time_ms: info.time_ms,
-                    pv: info.pv,
+                    pv: info.pv.clone(),
                     policy_margin_cp,
+                    candidates,
                 });
             } else if line.starts_with("info ")
                 && let Some(info) = parse_info(&line)
             {
-                match info.multipv.unwrap_or(1) {
-                    1 => last_info = Some(info),
-                    2 => last_runner_up = Some(info),
-                    _ => {}
-                }
+                let rank = info.multipv.unwrap_or(1);
+                candidates_by_rank.insert(rank, info);
             }
         }
     }
@@ -322,7 +347,7 @@ mod tests {
     fn parse_info_multipv() {
         let info = parse_info("info depth 8 multipv 2 score cp 39 nodes 1 time 1").unwrap();
         assert_eq!(info.multipv, Some(2));
-        assert!(!info.bound);
+        assert_eq!(info.bound, ScoreBound::Exact);
     }
 
     #[test]
@@ -334,13 +359,13 @@ mod tests {
     #[test]
     fn parse_info_detects_lowerbound() {
         let info = parse_info("info depth 8 score cp 39 lowerbound nodes 1 time 1").unwrap();
-        assert!(info.bound);
+        assert_eq!(info.bound, ScoreBound::Lowerbound);
         assert!(matches!(info.score, Some(Score::Cp { value: 39 })));
     }
 
     #[test]
     fn parse_info_detects_upperbound() {
         let info = parse_info("info depth 8 score cp 39 upperbound nodes 1 time 1").unwrap();
-        assert!(info.bound);
+        assert_eq!(info.bound, ScoreBound::Upperbound);
     }
 }

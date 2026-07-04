@@ -3,7 +3,7 @@
 //! ```text
 //! Header (10 bytes):
 //!   magic[8]  = b"SHOGIESA"
-//!   version   = u16 le  (= 4)
+//!   version   = u16 le  (= 5)
 //!
 //! Record (variable, repeated until EOF):
 //!   sfen              u16le + bytes
@@ -30,6 +30,7 @@
 //!     depth           u32le
 //!     score_kind      u8 (0=cp 1=mate)
 //!     score_val       i32le
+//!     score_bound     u8 (0=exact 1=lowerbound 2=upperbound)
 //!     bestmove        u8le  + bytes
 //!     nodes_tag       u8 (0/1)
 //!     nodes           u64le          [if nodes_tag=1]

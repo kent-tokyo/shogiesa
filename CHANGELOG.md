@@ -17,6 +17,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 - `label`: warn (instead of silently dropping) when a worker thread's USI engine fails to launch
 - USI: `analyse()`'s `policy_margin_cp` now also checks the bestmove's (rank 1's) own `ScoreBound`, not just the runner-up's — a lowerbound/upperbound-tagged bestmove score (possible with aspiration-window searches) was still being used as a confirmed evaluation for the margin subtraction
 - `split --train/--valid/--test`: a KIF variation's positions now hash into the same split bucket as the mainline game it branched from, instead of independently by its suffixed `source.path` — previously a variation and its mainline (which share a parent position) could land in different splits, leaking correlated positions across train/valid/test
+- `shogiesa-pack`'s module doc comment was still describing format version 4 and didn't mention the per-observation `score_bound` byte added when `FORMAT_VERSION` bumped to 5 — both fixed to match the actual encoding
 
 ### Changed
 - `PositionRecord::fill_stability()` and `filter --max-score-swing-cp` now share one `score_swing()` implementation

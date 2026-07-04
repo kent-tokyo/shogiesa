@@ -716,6 +716,17 @@ enum SplitBucket {
     Train,
 }
 
+/// Strip a KIF variation suffix (`#varN@ply`, from shogiesa-kif's `extract_from_str`) so a
+/// variation's positions hash into the same split bucket as the mainline game it branched
+/// from. A variation only emits moves from its branch ply onward, so what's at stake isn't
+/// identical positions landing in different splits -- it's *correlation* between siblings:
+/// mainline-ply-N and variation-ply-N share the exact same parent position and near-identical
+/// context. Splitting correlated siblings across train/valid/test lets the model be evaluated
+/// on positions correlated with ones it trained on, inflating validation results.
+fn split_root_path(source_path: &str) -> &str {
+    source_path.split("#var").next().unwrap_or(source_path)
+}
+
 fn assign_split_bucket(
     seed: u64,
     source_path: &str,
@@ -724,7 +735,7 @@ fn assign_split_bucket(
 ) -> SplitBucket {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     seed.hash(&mut h);
-    source_path.hash(&mut h);
+    split_root_path(source_path).hash(&mut h);
     let unit = h.finish() as f64 / u64::MAX as f64;
     if unit < test_frac {
         SplitBucket::Test

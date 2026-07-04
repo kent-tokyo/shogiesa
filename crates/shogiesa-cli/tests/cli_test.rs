@@ -1429,6 +1429,62 @@ fn split_train_valid_test_no_leakage() {
 }
 
 #[test]
+fn split_train_valid_test_keeps_variation_with_mainline() {
+    use std::io::Write;
+    let mut f = NamedTempFile::new().unwrap();
+    // Each "game" has a mainline position and a KIF-variation-suffixed sibling, mirroring
+    // shogiesa-kif's `source.path` convention for 変化 branches (`path#varN@ply`).
+    for src in ["game_a.kif", "game_b.kif", "game_c.kif", "game_d.kif"] {
+        writeln!(f, "{}", source_record(src, 1)).unwrap();
+        writeln!(f, "{}", source_record(&format!("{src}#var1@2"), 2)).unwrap();
+    }
+    f.flush().unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let train = dir.path().join("train.jsonl");
+    let valid = dir.path().join("valid.jsonl");
+    let test = dir.path().join("test.jsonl");
+    shogiesa()
+        .args([
+            "split",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--train",
+            train.to_str().unwrap(),
+            "--valid",
+            valid.to_str().unwrap(),
+            "--test",
+            test.to_str().unwrap(),
+            "--valid-frac",
+            "0.34",
+            "--test-frac",
+            "0.34",
+            "--seed",
+            "7",
+        ])
+        .assert()
+        .success();
+
+    let mut path_to_file: HashMap<String, &str> = HashMap::new();
+    for (name, path) in [("train", &train), ("valid", &valid), ("test", &test)] {
+        let content = std::fs::read_to_string(path).unwrap();
+        for line in content.lines().filter(|l| !l.trim().is_empty()) {
+            let v: serde_json::Value = serde_json::from_str(line).unwrap();
+            let src = v["source"]["path"].as_str().unwrap().to_string();
+            path_to_file.insert(src, name);
+        }
+    }
+    for src in ["game_a.kif", "game_b.kif", "game_c.kif", "game_d.kif"] {
+        let mainline_file = path_to_file[src];
+        let variation_file = path_to_file[&format!("{src}#var1@2")];
+        assert_eq!(
+            mainline_file, variation_file,
+            "{src}'s mainline and variation landed in different splits"
+        );
+    }
+}
+
+#[test]
 fn split_train_valid_test_deterministic_with_seed() {
     use std::io::Write;
     let mut f = NamedTempFile::new().unwrap();

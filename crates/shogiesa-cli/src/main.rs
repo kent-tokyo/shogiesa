@@ -524,43 +524,45 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
         static ENGINE: std::cell::RefCell<Option<UsiEngine>> = const { std::cell::RefCell::new(None) };
     }
 
-    rayon::ThreadPoolBuilder::new()
+    let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(jobs)
-        .build_global()
-        .ok(); // ignore error if global pool already set
+        .build()
+        .context("failed to build thread pool")?;
 
     let done = AtomicUsize::new(0);
     let engine_launch_failures = AtomicUsize::new(0);
     let print_every = (total / 100).max(1);
-    let labeled_records: Vec<PositionRecord> = records
-        .into_par_iter()
-        .map(|mut rec| {
-            ENGINE.with(|cell| {
-                let mut opt = cell.borrow_mut();
-                if opt.is_none()
-                    && let Ok(e) = UsiEngine::launch(
-                        &engine_path,
-                        engine_name.clone(),
-                        timeout_ms,
-                        &engine_options,
-                    )
-                {
-                    *opt = Some(e);
+    let labeled_records: Vec<PositionRecord> = pool.install(|| {
+        records
+            .into_par_iter()
+            .map(|mut rec| {
+                ENGINE.with(|cell| {
+                    let mut opt = cell.borrow_mut();
+                    if opt.is_none()
+                        && let Ok(e) = UsiEngine::launch(
+                            &engine_path,
+                            engine_name.clone(),
+                            timeout_ms,
+                            &engine_options,
+                        )
+                    {
+                        *opt = Some(e);
+                    }
+                    if let Some(engine) = opt.as_mut() {
+                        analyze_record(&mut rec, engine, &depths, timeout_ms, existing_policy);
+                    } else {
+                        engine_launch_failures.fetch_add(1, Ordering::Relaxed);
+                        tracing::warn!(sfen = %rec.sfen, "engine unavailable, position left unlabeled");
+                    }
+                });
+                let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                if n.is_multiple_of(print_every) || n == total {
+                    eprint!("\r  {n}/{total}");
                 }
-                if let Some(engine) = opt.as_mut() {
-                    analyze_record(&mut rec, engine, &depths, timeout_ms, existing_policy);
-                } else {
-                    engine_launch_failures.fetch_add(1, Ordering::Relaxed);
-                    tracing::warn!(sfen = %rec.sfen, "engine unavailable, position left unlabeled");
-                }
-            });
-            let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-            if n.is_multiple_of(print_every) || n == total {
-                eprint!("\r  {n}/{total}");
-            }
-            rec
-        })
-        .collect();
+                rec
+            })
+            .collect()
+    });
     eprintln!();
 
     let labeled = labeled_records.len();

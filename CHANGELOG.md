@@ -8,6 +8,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ## [Unreleased]
 
+### Added
+- `Observation.requested_depth: Option<u32>` — the depth `label` asked the engine to search to, distinct from `depth` (what it actually reached). `None` on records labeled before this field existed.
+- `filter --require-requested-depth-reached` excludes positions where any non-mate observation's achieved depth fell short of its own `requested_depth`; a no-op on observations with no recorded `requested_depth`. Mate observations are exempt, same rationale as `--min-depth-reached`.
+- `report` shows a requested-depth underreach rate (how many observations with a `requested_depth` fell short of it) when any are present in the dataset
+- `label`/`filter`/etc. `--manifest` gains `requested_depth_total`/`requested_depth_underreach` counters
+
+### Changed
+- `SCHEMA_VERSION` bumped to 6 and pack `FORMAT_VERSION` bumped to 6 for the new `Observation.requested_depth` field; old `.shgpk` files are not readable by this version
+- `label --replace-existing`'s dedup now also matches on `requested_depth` (treating a legacy `None` as a wildcard), so "requested 12, reached 8" and "requested 8, reached 8" are no longer collapsed into the same entry
+- `validate` now reads its input line-by-line instead of loading the whole file into memory, so it stays memory-flat on multi-GB JSONL
+
 ---
 
 ## [0.4.0] — 2026-07-04

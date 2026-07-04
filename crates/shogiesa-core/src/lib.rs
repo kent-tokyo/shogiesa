@@ -3,7 +3,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA_VERSION: u32 = 5;
+pub const SCHEMA_VERSION: u32 = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -114,6 +114,12 @@ pub struct Observation {
     pub engine: String,
     pub engine_version: Option<String>,
     pub depth: u32,
+    /// The depth `label` asked the engine to search to, distinct from `depth` (what it actually
+    /// reached) — an engine can stop early on a forced mate. `None` on records labeled before
+    /// this field existed. Lets `require_requested_depth_reached` tell "requested 12, reached 8"
+    /// apart from "requested 8, reached 8", which `min_depth_reached` alone cannot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_depth: Option<u32>,
     pub score: Score,
     /// Whether `score` is a confirmed evaluation or a search bound (e.g. an aspiration-window
     /// fail-high/low). Only ever set from the engine's own bestmove line, independent of
@@ -209,6 +215,7 @@ pub enum QualityReason {
     NonExactScore,
     MissingPolicyMargin,
     LowActualDepth,
+    RequestedDepthNotReached,
 }
 
 impl QualityReason {
@@ -229,6 +236,7 @@ impl QualityReason {
             QualityReason::NonExactScore => "non_exact_score",
             QualityReason::MissingPolicyMargin => "missing_policy_margin",
             QualityReason::LowActualDepth => "low_actual_depth",
+            QualityReason::RequestedDepthNotReached => "requested_depth_not_reached",
         }
     }
 }
@@ -262,6 +270,14 @@ pub struct QualityConfig {
     /// caused by finding a forced mate (a confirmed, high-confidence result), not a weak search
     /// -- gating on depth without this exemption would penalize the most reliable observations.
     pub min_depth_reached: Option<u32>,
+    /// Reject a record if any *non-mate* observation's `requested_depth` is `Some` and the
+    /// achieved `depth` fell short of it. Unlike `min_depth_reached` (a fixed floor the caller
+    /// picks), this checks each observation against the depth *it itself* was asked to reach —
+    /// which matters once caching or incremental re-labeling means different observations in the
+    /// same dataset were requested to different depths. Mate is exempt for the same reason as
+    /// `min_depth_reached`: a forced mate found short of the requested depth is a confirmed,
+    /// high-confidence result, not a weak search.
+    pub require_requested_depth_reached: bool,
 }
 
 /// Result of evaluating a `PositionRecord` against a `QualityConfig`.
@@ -401,6 +417,16 @@ pub fn evaluate_quality(rec: &PositionRecord, config: &QualityConfig) -> Quality
         }
     }
 
+    if config.require_requested_depth_reached {
+        configured_gates += 1;
+        if obs.iter().any(|o| {
+            o.requested_depth.is_some_and(|rd| o.depth < rd)
+                && !matches!(o.score, Score::Mate { .. })
+        }) {
+            reasons.push(QualityReason::RequestedDepthNotReached);
+        }
+    }
+
     let bestmove_agreement = obs.is_empty() || obs.iter().all(|o| o.bestmove == obs[0].bestmove);
     if config.require_bestmove_agreement {
         configured_gates += 1;
@@ -520,6 +546,7 @@ mod tests {
             engine: engine.to_string(),
             engine_version: None,
             depth,
+            requested_depth: None,
             score: Score::Cp { value: cp },
             score_bound: ScoreBound::Exact,
             bestmove: bestmove.to_string(),
@@ -596,6 +623,7 @@ mod tests {
             engine: engine.to_string(),
             engine_version: None,
             depth,
+            requested_depth: None,
             score: Score::Mate { moves },
             score_bound: ScoreBound::Exact,
             bestmove: bestmove.to_string(),
@@ -605,6 +633,18 @@ mod tests {
             policy_margin_cp: None,
             candidates: Vec::new(),
         }
+    }
+
+    fn obs_with_requested_depth(
+        engine: &str,
+        depth: u32,
+        requested_depth: u32,
+        cp: i32,
+        bestmove: &str,
+    ) -> Observation {
+        let mut o = obs(engine, depth, cp, bestmove);
+        o.requested_depth = Some(requested_depth);
+        o
     }
 
     fn obs_with_margin(
@@ -859,6 +899,57 @@ mod tests {
     }
 
     #[test]
+    fn evaluate_quality_require_requested_depth_reached_rejects_underreach() {
+        let config = QualityConfig {
+            require_requested_depth_reached: true,
+            ..Default::default()
+        };
+        let observations = vec![obs_with_requested_depth("a", 8, 12, 10, "7g7f")];
+        let decision = evaluate_quality(&simple_rec(observations), &config);
+        assert_eq!(
+            decision.reasons,
+            vec![QualityReason::RequestedDepthNotReached]
+        );
+    }
+
+    #[test]
+    fn evaluate_quality_require_requested_depth_reached_exempts_mate() {
+        // Same rationale as min_depth_reached: a forced mate found short of the requested depth
+        // is a confirmed, high-confidence result, not a weak search.
+        let config = QualityConfig {
+            require_requested_depth_reached: true,
+            ..Default::default()
+        };
+        let mut o = obs_mate("a", 8, 3, "7g7f");
+        o.requested_depth = Some(12);
+        let decision = evaluate_quality(&simple_rec(vec![o]), &config);
+        assert!(decision.keep);
+    }
+
+    #[test]
+    fn evaluate_quality_require_requested_depth_reached_passes_when_met() {
+        let config = QualityConfig {
+            require_requested_depth_reached: true,
+            ..Default::default()
+        };
+        let observations = vec![obs_with_requested_depth("a", 12, 12, 10, "7g7f")];
+        let decision = evaluate_quality(&simple_rec(observations), &config);
+        assert!(decision.keep);
+    }
+
+    #[test]
+    fn evaluate_quality_require_requested_depth_reached_is_noop_when_unset() {
+        // requested_depth: None (legacy pre-field data) must not trip the gate.
+        let config = QualityConfig {
+            require_requested_depth_reached: true,
+            ..Default::default()
+        };
+        let observations = vec![obs("a", 6, 10, "7g7f")];
+        let decision = evaluate_quality(&simple_rec(observations), &config);
+        assert!(decision.keep);
+    }
+
+    #[test]
     fn evaluate_quality_bestmove_disagreement_gate() {
         let config = QualityConfig {
             require_bestmove_agreement: true,
@@ -961,5 +1052,23 @@ mod tests {
             let serialized = serde_json::to_string(&reason).unwrap();
             assert_eq!(serialized, format!("\"{}\"", reason.as_str()));
         }
+    }
+
+    #[test]
+    fn observation_without_requested_depth_key_deserializes_to_none() {
+        // Pre-schema-v6 JSONL has no `requested_depth` key at all on its observations.
+        // #[serde(default)] must still load it as None rather than failing to parse.
+        let json = serde_json::json!({
+            "engine": "myengine",
+            "engine_version": null,
+            "depth": 8,
+            "score": { "kind": "cp", "value": 43 },
+            "bestmove": "7g7f",
+            "nodes": null,
+            "time_ms": null,
+            "pv": null
+        });
+        let observation: Observation = serde_json::from_value(json).unwrap();
+        assert_eq!(observation.requested_depth, None);
     }
 }

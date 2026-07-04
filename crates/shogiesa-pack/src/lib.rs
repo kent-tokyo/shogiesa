@@ -3,7 +3,7 @@
 //! ```text
 //! Header (10 bytes):
 //!   magic[8]  = b"SHOGIESA"
-//!   version   = u16 le  (= 5)
+//!   version   = u16 le  (= 6)
 //!
 //! Record (variable, repeated until EOF):
 //!   sfen              u16le + bytes
@@ -28,6 +28,8 @@
 //!     ver_tag         u8 (0/1)
 //!     version         u8le  + bytes  [if ver_tag=1]
 //!     depth           u32le
+//!     req_depth_tag   u8 (0/1)
+//!     req_depth       u32le          [if req_depth_tag=1]
 //!     score_kind      u8 (0=cp 1=mate)
 //!     score_val       i32le
 //!     score_bound     u8 (0=exact 1=lowerbound 2=upperbound)
@@ -61,7 +63,7 @@ use shogiesa_core::{
 };
 
 pub const MAGIC: &[u8; 8] = b"SHOGIESA";
-pub const FORMAT_VERSION: u16 = 5;
+pub const FORMAT_VERSION: u16 = 6;
 
 // ── write helpers ─────────────────────────────────────────────────────────────
 
@@ -228,6 +230,13 @@ pub fn encode_record(rec: &PositionRecord, w: &mut impl Write) -> io::Result<()>
             }
         }
         wu32(w, obs.depth)?;
+        match obs.requested_depth {
+            None => wu8(w, 0)?,
+            Some(v) => {
+                wu8(w, 1)?;
+                wu32(w, v)?;
+            }
+        }
         match obs.score {
             Score::Cp { value } => {
                 wu8(w, 0)?;
@@ -371,6 +380,7 @@ pub fn decode_record(r: &mut impl Read) -> io::Result<PositionRecord> {
         let engine = rs8(r)?;
         let engine_version = if ru8(r)? == 0 { None } else { Some(rs8(r)?) };
         let depth = ru32(r)?;
+        let requested_depth = if ru8(r)? == 0 { None } else { Some(ru32(r)?) };
         let score = match ru8(r)? {
             0 => Score::Cp { value: ri32(r)? },
             1 => Score::Mate { moves: ri32(r)? },
@@ -434,6 +444,7 @@ pub fn decode_record(r: &mut impl Read) -> io::Result<PositionRecord> {
             engine,
             engine_version,
             depth,
+            requested_depth,
             score,
             score_bound: obs_score_bound,
             bestmove,
@@ -502,6 +513,7 @@ mod tests {
                     engine: "TestEngine".to_string(),
                     engine_version: Some("1.0".to_string()),
                     depth: 8,
+                    requested_depth: Some(12),
                     score: Score::Cp { value: 42 },
                     score_bound: ScoreBound::Lowerbound,
                     bestmove: "7g7f".to_string(),
@@ -537,6 +549,7 @@ mod tests {
                     engine: "TestEngine".to_string(),
                     engine_version: None,
                     depth: 12,
+                    requested_depth: None,
                     score: Score::Mate { moves: 3 },
                     score_bound: ScoreBound::Exact,
                     bestmove: "2b3c".to_string(),
@@ -573,6 +586,7 @@ mod tests {
         assert!(got.tags.has_capture);
         assert_eq!(got.observations.len(), 2);
         assert_eq!(got.observations[0].depth, 8);
+        assert_eq!(got.observations[0].requested_depth, Some(12));
         assert!(matches!(got.observations[0].score, Score::Cp { value: 42 }));
         assert_eq!(got.observations[0].score_bound, ScoreBound::Lowerbound);
         assert_eq!(got.observations[0].engine_version, Some("1.0".to_string()));
@@ -615,6 +629,7 @@ mod tests {
             ScoreBound::Upperbound
         );
         assert_eq!(got.observations[1].engine_version, None);
+        assert_eq!(got.observations[1].requested_depth, None);
         assert!(matches!(
             got.observations[1].score,
             Score::Mate { moves: 3 }

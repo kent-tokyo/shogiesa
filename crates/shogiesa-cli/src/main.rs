@@ -327,6 +327,12 @@ struct FilterArgs {
     /// dominantly caused by finding a forced mate, a confirmed result, not a weak search.
     #[arg(long)]
     min_depth_reached: Option<u32>,
+    /// Exclude positions where any non-mate observation's achieved depth fell short of its own
+    /// requested_depth (from `label`). Unlike --min-depth-reached (a fixed floor), this checks
+    /// each observation against the depth it was itself asked to reach. A no-op on observations
+    /// with no recorded requested_depth (e.g. labeled before this field existed).
+    #[arg(long)]
+    require_requested_depth_reached: bool,
     /// Require every distinct engine's deepest observation to agree on bestmove. A no-op
     /// unless the position was labeled by 2+ engines (see `label --engine-name`).
     #[arg(long)]
@@ -469,15 +475,22 @@ fn analyze_record(
             Ok(result) => {
                 // Dedupe on the achieved depth, not the requested one, for the same reason —
                 // if Skip couldn't skip (under-reach) and re-achieves the same depth, this
-                // replaces the stale entry instead of duplicating it.
+                // replaces the stale entry instead of duplicating it. Also require
+                // requested_depth to match (or be absent, for pre-field legacy entries): without
+                // this, "requested 12, reached 8" and "requested 8, reached 8" would collide and
+                // silently erase the distinction requested_depth exists to preserve.
                 if !matches!(existing_policy, ExistingPolicy::Append) {
-                    rec.observations
-                        .retain(|o| !(o.engine == engine.engine_name && o.depth == result.depth));
+                    rec.observations.retain(|o| {
+                        !(o.engine == engine.engine_name
+                            && o.depth == result.depth
+                            && (o.requested_depth.is_none() || o.requested_depth == Some(depth)))
+                    });
                 }
                 rec.observations.push(Observation {
                     engine: engine.engine_name.clone(),
                     engine_version: engine.engine_version.clone(),
                     depth: result.depth,
+                    requested_depth: Some(depth),
                     score: result.score,
                     score_bound: result.score_bound,
                     bestmove: result.bestmove,
@@ -926,6 +939,11 @@ struct RunManifest {
     observations_total: usize,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     score_bound_distribution: BTreeMap<&'static str, usize>,
+    /// How many observations recorded a `requested_depth`, and how many of those fell short of
+    /// it (excluding mate) — surfaces "how often does this engine/depth config under-deliver"
+    /// across a whole run, not just per-record.
+    requested_depth_total: usize,
+    requested_depth_underreach: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     filter_config: Option<QualityConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -962,6 +980,8 @@ impl RunManifest {
             observations_with_candidates: 0,
             observations_total: 0,
             score_bound_distribution: BTreeMap::new(),
+            requested_depth_total: 0,
+            requested_depth_underreach: 0,
             filter_config: None,
             engine_name: None,
             depths: None,
@@ -1026,6 +1046,26 @@ fn candidate_coverage_stats(
     (with_candidates, total, score_bound_distribution)
 }
 
+/// Tally how many observations recorded a `requested_depth`, and how many of those under-reached
+/// it (achieved `depth` below `requested_depth`, non-mate — mirrors
+/// `evaluate_quality`'s `require_requested_depth_reached` gate). Shared by `report` and
+/// manifests for the same reason `candidate_coverage_stats` is: one implementation, not two.
+fn requested_depth_stats(records: &[PositionRecord]) -> (usize, usize) {
+    let mut total_with_requested = 0usize;
+    let mut underreach = 0usize;
+    for rec in records {
+        for obs in &rec.observations {
+            if let Some(rd) = obs.requested_depth {
+                total_with_requested += 1;
+                if obs.depth < rd && !matches!(obs.score, shogiesa_core::Score::Mate { .. }) {
+                    underreach += 1;
+                }
+            }
+        }
+    }
+    (total_with_requested, underreach)
+}
+
 fn accumulate_coverage(manifest: &mut RunManifest, records: &[PositionRecord]) {
     for rec in records {
         if rec.observations.is_empty() {
@@ -1040,6 +1080,9 @@ fn accumulate_coverage(manifest: &mut RunManifest, records: &[PositionRecord]) {
     for (key, count) in distribution {
         *manifest.score_bound_distribution.entry(key).or_default() += count;
     }
+    let (requested_total, underreach) = requested_depth_stats(records);
+    manifest.requested_depth_total += requested_total;
+    manifest.requested_depth_underreach += underreach;
 }
 
 fn cmd_sample(args: SampleArgs) -> Result<()> {
@@ -1354,6 +1397,7 @@ fn build_quality_config(
         require_exact_score: args.require_exact_score,
         require_policy_margin: args.require_policy_margin,
         min_depth_reached: args.min_depth_reached,
+        require_requested_depth_reached: args.require_requested_depth_reached,
     }
 }
 
@@ -1812,6 +1856,13 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
             for (bound, count) in &score_bound_distribution {
                 println!("    {bound:<10} : {count:>6}");
             }
+        }
+        let (requested_depth_total, requested_depth_underreach) = requested_depth_stats(&records);
+        if requested_depth_total > 0 {
+            println!(
+                "  requested-depth underreach: {requested_depth_underreach:>6}  ({:.1}% of {requested_depth_total} observations with a requested_depth)",
+                requested_depth_underreach as f64 / requested_depth_total as f64 * 100.0
+            );
         }
     }
 

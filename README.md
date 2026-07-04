@@ -97,7 +97,10 @@ overwrites an existing observation at the same depth instead of duplicating it, 
 intentionally re-labeling. Both are mutually exclusive, and both key off the depth the engine
 *actually reached*, not the one requested — an engine that stops early (e.g. a forced mate) can
 report a shallower depth than asked for, and these flags account for that rather than silently
-duplicating or failing to skip.
+duplicating or failing to skip. Every observation also records `requested_depth` — the depth that
+was actually asked for on that call — so `--replace-existing` only treats two observations as the
+same slot when both the achieved depth *and* `requested_depth` match (a legacy observation with no
+recorded `requested_depth` still matches on achieved depth alone, for older JSONL).
 
 `--manifest PATH` writes a run manifest (engine/depths/MultiPV config, launch failures, coverage
 stats) — see "Run manifests" further down.
@@ -143,6 +146,14 @@ were actually computed), this requires a margin to exist in the first place.
 below `N`. Mate observations are exempt: an engine stopping short of the requested depth is
 dominantly caused by finding a forced mate (a confirmed, high-confidence result), not a weak
 search — gating on depth without this exemption would penalize the most reliable observations.
+
+`--require-requested-depth-reached` excludes positions where any *non-mate* observation's achieved
+`depth` fell short of its own `requested_depth` (the depth `label` asked for, recorded per
+observation — see `Observation.requested_depth` below). Unlike `--min-depth-reached` (a fixed
+floor you pick), this checks each observation against the depth it was itself asked to reach —
+useful once different observations in the same dataset were requested to different depths. A
+no-op on observations with no recorded `requested_depth` (labeled before this field existed).
+Mate is exempt for the same reason as `--min-depth-reached`.
 
 `--manifest PATH` (also on `balance`/`sample`/`pack`/`label`, below) writes a run manifest — see
 "Run manifests" further down.
@@ -209,11 +220,11 @@ record alongside their normal output: shogiesa version, git sha (embedded at bui
 schema/pack format version, the full command line, the input file's path and a content hash (a
 plain non-cryptographic digest for "did the input change between runs" — not a verifiable
 SHA-256 checksum), records read/kept/dropped, drop-reason counts, labeled/unlabeled record
-counts, MultiPV candidate coverage, `score_bound` distribution, and (for `filter`) the resolved
-quality configuration or (for `label`) the engine name/depths/MultiPV/engine options/job count
-and engine-launch-failure count. It's opt-in and additive — no effect on the command's normal
-output when omitted. `split` doesn't have `--manifest`: it already writes its own tailored
-`manifest.json` (see above).
+counts, MultiPV candidate coverage, `score_bound` distribution, requested-depth total/underreach
+counts, and (for `filter`) the resolved quality configuration or (for `label`) the engine
+name/depths/MultiPV/engine options/job count and engine-launch-failure count. It's opt-in and
+additive — no effect on the command's normal output when omitted. `split` doesn't have
+`--manifest`: it already writes its own tailored `manifest.json` (see above).
 
 ### `report` — dataset statistics
 
@@ -226,9 +237,10 @@ source dominance, balance warnings, and — once positions are labeled — cp/ma
 observation-level `score_bound` (exact/lowerbound/upperbound) distribution (unconditional — this
 reflects `Observation.score_bound`, so it's meaningful even without MultiPV), average score swing
 (plus a histogram), average policy margin, eval-bucket × phase / eval-bucket × side cross-tabs,
-(for positions labeled by 2+ distinct engines) an engine-disagreement rate, and (when
+(for positions labeled by 2+ distinct engines) an engine-disagreement rate, (when
 `label --multipv N` (N≥2) was used) MultiPV-candidate coverage and a separate `score_bound`
-distribution scoped to those candidates.
+distribution scoped to those candidates, and (when any observation has a recorded
+`requested_depth`) a requested-depth underreach rate.
 
 ### `validate` — data integrity
 
@@ -243,7 +255,7 @@ Checks: broken JSON, invalid SFENs, duplicate SFENs, `side_to_move` tag vs SFEN 
 
 ```json
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "sfen": "lnsgkgsnl/1r5b1/p1ppppppp/1p7/9/2P6/PP1PPPPPP/1B5R1/LNSGKGSNL b - 2",
   "source": {
     "kind": "csa",
@@ -261,6 +273,7 @@ Checks: broken JSON, invalid SFENs, duplicate SFENs, `side_to_move` tag vs SFEN 
       "engine": "myengine",
       "engine_version": "0.1.0",
       "depth": 8,
+      "requested_depth": 8,
       "score": { "kind": "cp", "value": 43 },
       "score_bound": "exact",
       "bestmove": "7g7f",
@@ -280,8 +293,10 @@ Checks: broken JSON, invalid SFENs, duplicate SFENs, `side_to_move` tag vs SFEN 
 Score is either `{"kind":"cp","value":N}` or `{"kind":"mate","moves":N}`. `score_bound`
 (`exact`/`lowerbound`/`upperbound`) marks whether the bestmove's own score is a confirmed
 evaluation or a search bound, independent of MultiPV — it defaults to `exact` on older JSONL that
-predates this field. `policy_margin_cp` and `candidates` are only present when `label --multipv 2`
-(or higher) was used.
+predates this field. `requested_depth` is the depth `label` asked the engine to search to
+(`depth` is what it actually reached — they can differ, e.g. a forced mate found short of the
+request); it's absent/`null` on JSONL labeled before this field existed. `policy_margin_cp` and
+`candidates` are only present when `label --multipv 2` (or higher) was used.
 
 ## Pipeline
 

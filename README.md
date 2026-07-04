@@ -119,7 +119,9 @@ requested depth, multipv, schema version)` — no database, just files you can i
 hand. Labeling (running the engine) is the dominant cost of the whole pipeline, so repeated
 experiments over the same positions (tuning a downstream filter config, resuming after a crash,
 sharing a labeling budget across datasets) reuse a cached observation instead of re-running the
-engine. Cache hit/miss counts appear in `--manifest`.
+engine. Cache hit/miss counts appear in `--manifest`. The engine must still be launchable even on
+a run that hits the cache on every position — the cache saves search time, not engine
+availability (the probe launch and each worker's engine start happen regardless of hit rate).
 
 ### `stability` — compute stability scores
 

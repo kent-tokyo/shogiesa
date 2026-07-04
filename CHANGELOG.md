@@ -8,6 +8,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ## [Unreleased]
 
+---
+
+## [0.4.0] — 2026-07-04
+
 ### Fixed
 - KIF: support `同` (same-square) notation; previously truncated extraction of any game containing it
 - KIF: stop cleanly at `変化` (variation) blocks instead of misapplying moves and truncating extraction
@@ -120,7 +124,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 - CLI integration tests (`assert_cmd` / `predicates` / `tempfile`)
 - `LICENSE-MIT` and `LICENSE-APACHE`
 
-[Unreleased]: https://github.com/kent-tokyo/shogiesa/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/kent-tokyo/shogiesa/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/kent-tokyo/shogiesa/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/kent-tokyo/shogiesa/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/kent-tokyo/shogiesa/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/kent-tokyo/shogiesa/releases/tag/v0.1.0

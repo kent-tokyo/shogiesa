@@ -1879,10 +1879,12 @@ fn print_eval_cross_tab(title: &str, table: &BTreeMap<i32, BTreeMap<String, usiz
 }
 
 fn cmd_validate(args: ValidateArgs) -> Result<()> {
-    let content =
-        fs::read_to_string(&args.input).with_context(|| format!("cannot read {:?}", args.input))?;
+    // Why: validate is meant to run against multi-GB JSONL exports, so the input is read one
+    // line at a time instead of buffering the whole file into memory.
+    let file = File::open(&args.input).with_context(|| format!("cannot read {:?}", args.input))?;
+    let reader = BufReader::new(file);
 
-    let total_lines = content.lines().filter(|l| !l.trim().is_empty()).count();
+    let mut total_lines = 0usize;
     let mut valid_json = 0usize;
     let mut valid_records = 0usize;
     let mut tag_mismatches = 0usize;
@@ -1891,8 +1893,14 @@ fn cmd_validate(args: ValidateArgs) -> Result<()> {
     let mut seen_sfens: HashSet<String> = HashSet::new();
     let mut duplicate_sfens = 0usize;
 
-    for line in content.lines().filter(|l| !l.trim().is_empty()) {
-        let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
+    for line in reader.lines() {
+        let line = line.with_context(|| format!("cannot read {:?}", args.input))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        total_lines += 1;
+
+        let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) else {
             continue;
         };
         valid_json += 1;

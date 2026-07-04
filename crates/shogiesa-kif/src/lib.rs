@@ -243,6 +243,11 @@ pub fn extract_from_str(
     let mut checkpoints: Vec<(Board, Option<(u8, u8)>)> = Vec::new();
     let mut current_path = source_path.to_string();
     let mut variation_count: u32 = 0;
+    // Set together with current_path at each 変化 marker; None while still on the mainline.
+    // Carried in SourceInfo so a variation and its mainline can be grouped by root_id without
+    // parsing the '#varN@ply' suffix back out of `path`.
+    let mut current_variation_id: Option<String> = None;
+    let mut current_branch_from_ply: Option<u32> = None;
     // Whether the current block (mainline or a variation) is still accepting move lines. Only
     // mainline parsing may `break` the outer loop; every stop condition inside a variation
     // (terminal marker, parse error, max-ply) just ends that block so scanning can find the
@@ -301,6 +306,8 @@ pub fn extract_from_str(
                     prev_dest = cp_prev_dest;
                     ply = n - 1;
                     current_path = format!("{source_path}#var{variation_count}@{n}");
+                    current_variation_id = Some(format!("var{variation_count}"));
+                    current_branch_from_ply = Some(n);
                     accepting = true;
                 }
                 None => {
@@ -428,6 +435,11 @@ pub fn extract_from_str(
             kind: "kif".to_string(),
             path: current_path.clone(),
             ply,
+            // Shared by the mainline and every variation branching from it, so `split` can
+            // group them without depending on `path`'s '#varN@ply' suffix convention.
+            root_id: Some(source_path.to_string()),
+            variation_id: current_variation_id.clone(),
+            branch_from_ply: current_branch_from_ply,
         };
         out.push(PositionRecord::new(sfen, source, tags));
     }

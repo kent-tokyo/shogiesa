@@ -62,7 +62,10 @@ KIF `変化` (variation/branch) blocks are extracted too, each as its own set of
 `source.path` suffixed `#varN@ply` (e.g. `game.kif#var1@2`) so they never collide with the
 mainline's positions or with each other — `split --by-source` puts them in separate files.
 Variations always branch from the mainline; a variation nested inside another variation isn't
-supported.
+supported. Each such record also carries `source.root_id` (shared with its mainline),
+`source.variation_id` (e.g. `"var1"`), and `source.branch_from_ply` — see "JSONL Schema" below;
+`split --train/--valid/--test` uses `root_id` (falling back to the `path` suffix when absent) to
+keep a mainline and its variations from leaking across train/valid/test.
 
 ### `label` — engine evaluation
 
@@ -244,9 +247,11 @@ version, per-file counts). `split --train/--valid/--test` does a seeded ratio sp
 every position from the same source game is assigned to exactly one of the three splits (no
 same-game leakage across train/valid/test — this includes a KIF `変化` variation's positions,
 which are assigned alongside their mainline rather than independently, since they share a parent
-position), and it writes a `manifest.json` with the seed, requested fractions, and the *actual*
-per-split position/source counts (these naturally deviate from the requested fractions since
-games vary in length). `sample` deterministically selects N positions.
+position), grouped by `source.root_id` when present (falling back to stripping the `path`'s
+`#varN@ply` suffix for JSONL/extractors that never set `root_id`, e.g. CSA), and it writes a
+`manifest.json` with the seed, requested fractions, and the *actual* per-split position/source
+counts (these naturally deviate from the requested fractions since games vary in length).
+`sample` deterministically selects N positions.
 
 ### `pack` / `unpack` — binary format
 
@@ -300,7 +305,7 @@ Checks: broken JSON, invalid SFENs, duplicate SFENs, `side_to_move` tag vs SFEN 
 
 ```json
 {
-  "schema_version": 6,
+  "schema_version": 7,
   "sfen": "lnsgkgsnl/1r5b1/p1ppppppp/1p7/9/2P6/PP1PPPPPP/1B5R1/LNSGKGSNL b - 2",
   "source": {
     "kind": "csa",
@@ -342,6 +347,24 @@ predates this field. `requested_depth` is the depth `label` asked the engine to 
 (`depth` is what it actually reached — they can differ, e.g. a forced mate found short of the
 request); it's absent/`null` on JSONL labeled before this field existed. `policy_margin_cp` and
 `candidates` are only present when `label --multipv 2` (or higher) was used.
+
+`source` also carries optional `root_id`/`variation_id`/`branch_from_ply` fields, e.g. for a KIF
+`変化` branch:
+
+```json
+"source": {
+  "kind": "kif",
+  "path": "games/example.kif#var1@12",
+  "ply": 13,
+  "root_id": "games/example.kif",
+  "variation_id": "var1",
+  "branch_from_ply": 12
+}
+```
+
+`root_id` is shared by the mainline and every variation branching from it (the mainline's own
+`path`); `variation_id`/`branch_from_ply` are `null` on the mainline itself. All three are absent
+on CSA-extracted positions (no variation concept) and on JSONL predating this field.
 
 ## Pipeline
 

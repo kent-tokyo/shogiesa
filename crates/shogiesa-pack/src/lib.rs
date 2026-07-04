@@ -3,13 +3,19 @@
 //! ```text
 //! Header (10 bytes):
 //!   magic[8]  = b"SHOGIESA"
-//!   version   = u16 le  (= 6)
+//!   version   = u16 le  (= 7)
 //!
 //! Record (variable, repeated until EOF):
 //!   sfen              u16le + bytes
 //!   source_kind       u8le  + bytes
 //!   source_path       u16le + bytes
 //!   source_ply        u32le
+//!   root_id_tag       u8 (0/1)
+//!   root_id           u16le + bytes  [if root_id_tag=1]
+//!   variation_id_tag  u8 (0/1)
+//!   variation_id      u8le  + bytes  [if variation_id_tag=1]
+//!   branch_ply_tag    u8 (0/1)
+//!   branch_from_ply   u32le          [if branch_ply_tag=1]
 //!   phase             u8  (0=opening 1=middlegame 2=endgame)
 //!   side_to_move      u8  (0=black 1=white)
 //!   in_check          u8
@@ -63,7 +69,7 @@ use shogiesa_core::{
 };
 
 pub const MAGIC: &[u8; 8] = b"SHOGIESA";
-pub const FORMAT_VERSION: u16 = 6;
+pub const FORMAT_VERSION: u16 = 7;
 
 // ── write helpers ─────────────────────────────────────────────────────────────
 
@@ -171,6 +177,27 @@ pub fn encode_record(rec: &PositionRecord, w: &mut impl Write) -> io::Result<()>
     ws8(w, &rec.source.kind)?;
     ws16(w, &rec.source.path)?;
     wu32(w, rec.source.ply)?;
+    match &rec.source.root_id {
+        None => wu8(w, 0)?,
+        Some(v) => {
+            wu8(w, 1)?;
+            ws16(w, v)?;
+        }
+    }
+    match &rec.source.variation_id {
+        None => wu8(w, 0)?,
+        Some(v) => {
+            wu8(w, 1)?;
+            ws8(w, v)?;
+        }
+    }
+    match rec.source.branch_from_ply {
+        None => wu8(w, 0)?,
+        Some(v) => {
+            wu8(w, 1)?;
+            wu32(w, v)?;
+        }
+    }
 
     wu8(
         w,
@@ -333,6 +360,9 @@ pub fn decode_record(r: &mut impl Read) -> io::Result<PositionRecord> {
         kind: rs8(r)?,
         path: rs16(r)?,
         ply: ru32(r)?,
+        root_id: if ru8(r)? == 0 { None } else { Some(rs16(r)?) },
+        variation_id: if ru8(r)? == 0 { None } else { Some(rs8(r)?) },
+        branch_from_ply: if ru8(r)? == 0 { None } else { Some(ru32(r)?) },
     };
 
     let phase = match ru8(r)? {
@@ -501,6 +531,9 @@ mod tests {
                 kind: "csa".to_string(),
                 path: "test.csa".to_string(),
                 ply: 3,
+                root_id: Some("test.kif".to_string()),
+                variation_id: Some("var1".to_string()),
+                branch_from_ply: Some(5),
             },
             tags: PositionTags {
                 phase: GamePhase::Opening,
@@ -582,6 +615,9 @@ mod tests {
         assert_eq!(got.sfen, original.sfen);
         assert_eq!(got.source.kind, "csa");
         assert_eq!(got.source.ply, 3);
+        assert_eq!(got.source.root_id, Some("test.kif".to_string()));
+        assert_eq!(got.source.variation_id, Some("var1".to_string()));
+        assert_eq!(got.source.branch_from_ply, Some(5));
         assert!(!got.tags.in_check);
         assert!(got.tags.has_capture);
         assert_eq!(got.observations.len(), 2);
@@ -685,5 +721,20 @@ mod tests {
         encode(std::slice::from_ref(&rec), &mut buf).unwrap();
         let got = &decode(&mut buf.as_slice()).unwrap()[0];
         assert!(got.stability.is_none());
+    }
+
+    #[test]
+    fn source_without_root_id_round_trips() {
+        // A mainline (or CSA-extracted) record has no root_id/variation_id/branch_from_ply.
+        let mut rec = sample();
+        rec.source.root_id = None;
+        rec.source.variation_id = None;
+        rec.source.branch_from_ply = None;
+        let mut buf = Vec::new();
+        encode(std::slice::from_ref(&rec), &mut buf).unwrap();
+        let got = &decode(&mut buf.as_slice()).unwrap()[0];
+        assert_eq!(got.source.root_id, None);
+        assert_eq!(got.source.variation_id, None);
+        assert_eq!(got.source.branch_from_ply, None);
     }
 }

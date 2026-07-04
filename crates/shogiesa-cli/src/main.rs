@@ -12,7 +12,8 @@ use std::hash::{Hash, Hasher};
 
 use shogiesa_core::{
     GamePhase, Observation, PositionRecord, QualityConfig, SCHEMA_VERSION, Score, SideToMove,
-    engine_bestmove_agreement, evaluate_quality, score_swing, sfen::Sfen, zobrist_from_sfen,
+    SourceInfo, engine_bestmove_agreement, evaluate_quality, score_swing, sfen::Sfen,
+    zobrist_from_sfen,
 };
 use shogiesa_pack as pack;
 use shogiesa_usi::UsiEngine;
@@ -1077,15 +1078,22 @@ fn split_root_path(source_path: &str) -> &str {
     source_path.split("#var").next().unwrap_or(source_path)
 }
 
-fn assign_split_bucket(
-    seed: u64,
-    source_path: &str,
-    valid_frac: f64,
-    test_frac: f64,
-) -> SplitBucket {
+/// The grouping key used to keep a game's mainline and its variations in the same split bucket.
+/// Prefers `source.root_id` (set by extractors that produce variations, e.g. shogiesa-kif) since
+/// it doesn't depend on parsing a string convention back out of `path`; falls back to
+/// `split_root_path` for JSONL/extractors (CSA, or anything predating this field) that never set
+/// `root_id`, preserving old behavior exactly for that data.
+fn split_root_key(source: &SourceInfo) -> &str {
+    source
+        .root_id
+        .as_deref()
+        .unwrap_or_else(|| split_root_path(&source.path))
+}
+
+fn assign_split_bucket(seed: u64, root_key: &str, valid_frac: f64, test_frac: f64) -> SplitBucket {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     seed.hash(&mut h);
-    split_root_path(source_path).hash(&mut h);
+    root_key.hash(&mut h);
     let unit = h.finish() as f64 / u64::MAX as f64;
     if unit < test_frac {
         SplitBucket::Test
@@ -1137,8 +1145,12 @@ fn cmd_split_train_valid_test(args: SplitArgs) -> Result<()> {
             }
         };
 
-        let bucket =
-            assign_split_bucket(args.seed, &rec.source.path, args.valid_frac, args.test_frac);
+        let bucket = assign_split_bucket(
+            args.seed,
+            split_root_key(&rec.source),
+            args.valid_frac,
+            args.test_frac,
+        );
         let (name, writer) = match bucket {
             SplitBucket::Train => ("train", &mut train_writer),
             SplitBucket::Valid => ("valid", &mut valid_writer),
@@ -2452,6 +2464,9 @@ mod label_pipeline_tests {
                 kind: "test".to_string(),
                 path: tag.to_string(),
                 ply: 1,
+                root_id: None,
+                variation_id: None,
+                branch_from_ply: None,
             },
             PositionTags {
                 phase: GamePhase::Opening,

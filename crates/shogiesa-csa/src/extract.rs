@@ -75,6 +75,11 @@ pub fn extract_from_str(
                 kind: "csa".to_string(),
                 path: source_path.to_string(),
                 ply,
+                // CSA extraction has no variation concept -- split falls back to path-based
+                // grouping for these records (see split_root_path in shogiesa-cli).
+                root_id: None,
+                variation_id: None,
+                branch_from_ply: None,
             };
             out.push(PositionRecord::new(sfen, source, tags));
         }

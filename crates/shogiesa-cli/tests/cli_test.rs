@@ -424,6 +424,22 @@ fn schema_v5_score_bound_round_trips() {
 }
 
 #[test]
+fn schema_v6_source_root_id_round_trips() {
+    // v7: adds SourceInfo.root_id/variation_id/branch_from_ply. No such keys at all in
+    // `source` here -- proves #[serde(default)] still loads them as None.
+    assert_schema_compat(position_with_version(
+        6,
+        serde_json::json!([obs_with_margin("7g7f", 50, 4, 30)]),
+        Some(serde_json::json!({
+            "score_swing_cp": null,
+            "bestmove_agreement": true,
+            "engine_bestmove_agreement": true,
+            "engine_score_swing_cp": 20
+        })),
+    ));
+}
+
+#[test]
 fn validate_broken_json_shows_warn_but_exits_0() {
     let mut f = NamedTempFile::new().unwrap();
     writeln!(f, "{{not valid json}}").unwrap();
@@ -1989,6 +2005,92 @@ fn split_train_valid_test_keeps_variation_with_mainline() {
         assert_eq!(
             mainline_file, variation_file,
             "{src}'s mainline and variation landed in different splits"
+        );
+    }
+}
+
+#[test]
+fn split_train_valid_test_root_id_overrides_unrelated_paths() {
+    use std::io::Write;
+
+    fn source_record_with_root(path: &str, ply: u32, root_id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "schema_version": 7,
+            "sfen": "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+            "source": { "kind": "kif", "path": path, "ply": ply, "root_id": root_id },
+            "tags": { "phase": "opening", "side_to_move": "black", "in_check": false, "has_capture": false },
+            "observations": []
+        })
+    }
+
+    let mut f = NamedTempFile::new().unwrap();
+    // Each pair's two `path` values share nothing in common (so path-suffix grouping would treat
+    // them as unrelated games), but share a root_id -- proving root_id, not path, decides the
+    // bucket when both are present.
+    for i in 0..4 {
+        writeln!(
+            f,
+            "{}",
+            source_record_with_root(
+                &format!("totally_unrelated_path_{i}a"),
+                1,
+                &format!("root_{i}")
+            )
+        )
+        .unwrap();
+        writeln!(
+            f,
+            "{}",
+            source_record_with_root(
+                &format!("totally_unrelated_path_{i}b"),
+                2,
+                &format!("root_{i}")
+            )
+        )
+        .unwrap();
+    }
+    f.flush().unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let train = dir.path().join("train.jsonl");
+    let valid = dir.path().join("valid.jsonl");
+    let test = dir.path().join("test.jsonl");
+    shogiesa()
+        .args([
+            "split",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--train",
+            train.to_str().unwrap(),
+            "--valid",
+            valid.to_str().unwrap(),
+            "--test",
+            test.to_str().unwrap(),
+            "--valid-frac",
+            "0.34",
+            "--test-frac",
+            "0.34",
+            "--seed",
+            "7",
+        ])
+        .assert()
+        .success();
+
+    let mut path_to_file: HashMap<String, &str> = HashMap::new();
+    for (name, path) in [("train", &train), ("valid", &valid), ("test", &test)] {
+        let content = std::fs::read_to_string(path).unwrap();
+        for line in content.lines().filter(|l| !l.trim().is_empty()) {
+            let v: serde_json::Value = serde_json::from_str(line).unwrap();
+            let src = v["source"]["path"].as_str().unwrap().to_string();
+            path_to_file.insert(src, name);
+        }
+    }
+    for i in 0..4 {
+        let a_file = path_to_file[&format!("totally_unrelated_path_{i}a")];
+        let b_file = path_to_file[&format!("totally_unrelated_path_{i}b")];
+        assert_eq!(
+            a_file, b_file,
+            "root_{i}'s two unrelated-path records landed in different splits"
         );
     }
 }

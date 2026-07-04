@@ -3,7 +3,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA_VERSION: u32 = 6;
+pub const SCHEMA_VERSION: u32 = 7;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -71,6 +71,19 @@ pub struct SourceInfo {
     pub kind: String,
     pub path: String,
     pub ply: u32,
+    /// Identifier shared by a game's mainline and every variation branching from it (e.g. the
+    /// mainline's own `path`). `None` on records from extractors that don't produce variations
+    /// (CSA) or on JSONL predating this field. Lets `split` group a mainline with its variations
+    /// without depending on `path`'s `#varN@ply` suffix convention.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_id: Option<String>,
+    /// This branch's identifier (e.g. `"var1"`) among its mainline's variations. `None` on the
+    /// mainline itself and on records with no variation concept at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variation_id: Option<String>,
+    /// The mainline ply this variation branched from. `None` on the mainline itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_from_ply: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -671,6 +684,9 @@ mod tests {
                 kind: "test".to_string(),
                 path: "test".to_string(),
                 ply: 1,
+                root_id: None,
+                variation_id: None,
+                branch_from_ply: None,
             },
             PositionTags {
                 phase,

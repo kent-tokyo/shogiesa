@@ -213,6 +213,33 @@ fn variation_branch_is_extracted() {
 }
 
 #[test]
+fn variation_records_share_root_id_with_mainline() {
+    let kif = "手合割：平手\n先手：A\n後手：B\n手数----指手\n\
+   1 ７六歩(77)   (0:01/0)\n   2 ３四歩(33)   (0:01/0)\n\
+\n変化：2手\n   2 ８四歩(83)   (0:01/0)\n   3 ７八金(69)   (0:01/0)\n";
+    let config = ExtractConfig::default();
+    let mut seen = HashSet::new();
+    let records = extract_from_str(kif, "var.kif", &config, &mut seen).unwrap();
+
+    for rec in &records {
+        assert_eq!(
+            rec.source.root_id.as_deref(),
+            Some("var.kif"),
+            "mainline and variation records share the same root_id"
+        );
+    }
+    let mainline_rec = records.iter().find(|r| r.source.path == "var.kif").unwrap();
+    let variation_rec = records
+        .iter()
+        .find(|r| r.source.path == "var.kif#var1@2")
+        .unwrap();
+    assert_eq!(mainline_rec.source.variation_id, None);
+    assert_eq!(mainline_rec.source.branch_from_ply, None);
+    assert_eq!(variation_rec.source.variation_id.as_deref(), Some("var1"));
+    assert_eq!(variation_rec.source.branch_from_ply, Some(2));
+}
+
+#[test]
 fn multiple_sibling_variations_get_distinct_paths() {
     let kif = "手合割：平手\n手数----指手\n\
    1 ７六歩(77)   (0:01/0)\n   2 ３四歩(33)   (0:01/0)\n   3 ２六歩(27)   (0:01/0)\n\

@@ -18,6 +18,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 - `SCHEMA_VERSION` bumped to 6 and pack `FORMAT_VERSION` bumped to 6 for the new `Observation.requested_depth` field; old `.shgpk` files are not readable by this version
 - `label --replace-existing`'s dedup now also matches on `requested_depth` (treating a legacy `None` as a wildcard), so "requested 12, reached 8" and "requested 8, reached 8" are no longer collapsed into the same entry
 - `validate` now reads its input line-by-line instead of loading the whole file into memory, so it stays memory-flat on multi-GB JSONL
+- `label` now streams its input and output through a bounded reader/worker-pool/writer pipeline instead of loading the whole dataset into memory and collecting the whole labeled result before writing anything; memory now scales with `--jobs`, not with dataset size. Output order matches input order by default; `label --unordered-output` opts out of that for higher throughput. `label` no longer depends on `rayon`.
 
 ---
 

@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use rayon::prelude::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
 
 use std::hash::{Hash, Hasher};
 
@@ -139,6 +139,10 @@ struct LabelArgs {
     /// to this path
     #[arg(long)]
     manifest: Option<PathBuf>,
+    /// Write results as they arrive instead of preserving input order. Drops the reorder
+    /// buffer entirely, so a slow position never delays already-finished ones behind it.
+    #[arg(long)]
+    unordered_output: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -506,6 +510,31 @@ fn analyze_record(
     }
 }
 
+/// One position in flight through the label pipeline, tagged with its input line order so the
+/// writer can restore that order regardless of which worker finishes it first.
+struct Job {
+    id: u64,
+    record: PositionRecord,
+}
+
+/// Feeds one out-of-order arrival into the reorder buffer and returns every record that became
+/// writable as a result, in order. Kept as a pure function, separate from the threading and I/O
+/// around it, so the ordering logic itself can be unit-tested without a real label pipeline.
+fn reorder_push(
+    pending: &mut BTreeMap<u64, PositionRecord>,
+    next_id: &mut u64,
+    id: u64,
+    record: PositionRecord,
+) -> Vec<PositionRecord> {
+    pending.insert(id, record);
+    let mut ready = Vec::new();
+    while let Some(record) = pending.remove(next_id) {
+        ready.push(record);
+        *next_id += 1;
+    }
+    ready
+}
+
 fn cmd_label(args: LabelArgs) -> Result<()> {
     let depths: Vec<u32> = args
         .depths
@@ -516,8 +545,8 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
         anyhow::bail!("--depths must contain at least one valid integer, e.g. '4,6,8'");
     }
 
-    let engine_path = args.engine;
-    let engine_name = args.engine_name.unwrap_or_default();
+    let engine_path = args.engine.clone();
+    let engine_name = args.engine_name.clone().unwrap_or_default();
     let timeout_ms = args.timeout_ms;
     let jobs = args.jobs.max(1);
     let mut engine_options: Vec<(String, String)> = args
@@ -539,32 +568,7 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
         ExistingPolicy::Append
     };
 
-    // Parse and validate all input records (streaming for large files)
-    let content =
-        fs::read_to_string(&args.input).with_context(|| format!("cannot open {:?}", args.input))?;
-    let mut records: Vec<PositionRecord> = Vec::new();
-    let mut skipped = 0usize;
-    for (i, line) in content.lines().enumerate() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        match serde_json::from_str::<PositionRecord>(line) {
-            Ok(rec) if Sfen::parse(&rec.sfen).is_ok() => records.push(rec),
-            Ok(_) => {
-                tracing::warn!(line = i + 1, "invalid SFEN, skipping");
-                skipped += 1;
-            }
-            Err(e) => {
-                tracing::warn!(line = i + 1, "JSON parse error: {e}");
-                skipped += 1;
-            }
-        }
-    }
-
-    let total = records.len();
-    info!(total, jobs, "labeling started");
-
-    // Verify the engine launches before committing to parallel work
+    // Verify the engine launches before committing to any pipeline work.
     let probe = UsiEngine::launch(
         &engine_path,
         engine_name.clone(),
@@ -575,26 +579,93 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
     let engine_display_name = probe.engine_name.clone();
     drop(probe); // cleanly quits via Drop
 
-    // Parallel analysis: each rayon thread owns one UsiEngine via thread_local
-    std::thread_local! {
-        static ENGINE: std::cell::RefCell<Option<UsiEngine>> = const { std::cell::RefCell::new(None) };
+    info!(jobs, "labeling started");
+
+    // Why a permit-based dispatch window, not just a bounded reader→worker queue: once a job is
+    // pulled off that queue by a worker, the queue no longer holds it -- but the job isn't
+    // *retired* until the writer durably outputs it. If job 0 is slow and jobs 1..N are fast,
+    // workers race through 1..N and hand them to the writer, whose reorder buffer (waiting on
+    // job 0) would grow without bound. A fixed pool of permits, released only once the writer
+    // durably outputs a job, bounds "dispatched but not yet written" to a constant regardless of
+    // which job finishes last -- a slow job 0 now stalls the *reader* (out of permits), not the
+    // writer's memory.
+    let queue_depth = jobs * 4;
+    let (permit_tx, permit_rx) = mpsc::sync_channel::<()>(queue_depth);
+    for _ in 0..queue_depth {
+        permit_tx.send(()).expect("permit channel just created");
     }
+    let writer_permit_tx = permit_tx.clone();
+    drop(permit_tx);
 
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(jobs)
-        .build()
-        .context("failed to build thread pool")?;
+    // Small hand-off queue from the reader to the worker pool -- its capacity only smooths
+    // scheduling jitter, since the permit scheme above is what actually bounds memory.
+    let (job_tx, job_rx) = mpsc::sync_channel::<Job>(jobs);
+    let job_rx = Arc::new(Mutex::new(job_rx));
+    let (result_tx, result_rx) = mpsc::channel::<Job>();
 
-    let done = AtomicUsize::new(0);
-    let engine_launch_failures = AtomicUsize::new(0);
-    let print_every = (total / 100).max(1);
-    let labeled_records: Vec<PositionRecord> = pool.install(|| {
-        records
-            .into_par_iter()
-            .map(|mut rec| {
-                ENGINE.with(|cell| {
-                    let mut opt = cell.borrow_mut();
-                    if opt.is_none()
+    let engine_launch_failures = Arc::new(AtomicUsize::new(0));
+    let done = Arc::new(AtomicUsize::new(0));
+
+    // Reader: streams the input line-by-line so the whole dataset is never resident in memory --
+    // only ever `queue_depth` records at a time, enforced by the permit acquire below.
+    let input_path = args.input.clone();
+    let reader_handle = std::thread::spawn(move || -> Result<(u64, usize)> {
+        let file =
+            File::open(&input_path).with_context(|| format!("cannot open {input_path:?}"))?;
+        let reader = BufReader::new(file);
+        let mut job_id = 0u64;
+        let mut skipped = 0usize;
+        for (i, line) in reader.lines().enumerate() {
+            let line = line.with_context(|| format!("cannot read {input_path:?}"))?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<PositionRecord>(&line) {
+                Ok(record) if Sfen::parse(&record.sfen).is_ok() => {
+                    // Blocks here once `queue_depth` jobs are dispatched-but-unwritten.
+                    if permit_rx.recv().is_err() || job_tx.send(Job { id: job_id, record }).is_err()
+                    {
+                        break; // writer/workers gone -- don't hang trying to feed a dead pipeline
+                    }
+                    job_id += 1;
+                }
+                Ok(_) => {
+                    tracing::warn!(line = i + 1, "invalid SFEN, skipping");
+                    skipped += 1;
+                }
+                Err(e) => {
+                    tracing::warn!(line = i + 1, "JSON parse error: {e}");
+                    skipped += 1;
+                }
+            }
+        }
+        Ok((job_id, skipped))
+    });
+
+    // Workers: each owns one long-lived USI engine for its whole lifetime, launched lazily on
+    // its first job and reused across every job it picks up after that -- spawning a fresh
+    // engine per position would hide true search cost behind repeated process-startup overhead.
+    let worker_handles: Vec<_> = (0..jobs)
+        .map(|_| {
+            let job_rx = Arc::clone(&job_rx);
+            let result_tx = result_tx.clone();
+            let engine_path = engine_path.clone();
+            let engine_name = engine_name.clone();
+            let engine_options = engine_options.clone();
+            let engine_launch_failures = Arc::clone(&engine_launch_failures);
+            let done = Arc::clone(&done);
+            let depths = depths.clone();
+            std::thread::spawn(move || {
+                let mut engine: Option<UsiEngine> = None;
+                loop {
+                    let job = {
+                        let rx = job_rx.lock().expect("job queue mutex poisoned");
+                        rx.recv()
+                    };
+                    let Ok(Job { id, mut record }) = job else {
+                        break;
+                    };
+                    if engine.is_none()
                         && let Ok(e) = UsiEngine::launch(
                             &engine_path,
                             engine_name.clone(),
@@ -602,54 +673,100 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
                             &engine_options,
                         )
                     {
-                        *opt = Some(e);
+                        engine = Some(e);
                     }
-                    if let Some(engine) = opt.as_mut() {
-                        analyze_record(&mut rec, engine, &depths, timeout_ms, existing_policy);
+                    if let Some(eng) = engine.as_mut() {
+                        analyze_record(&mut record, eng, &depths, timeout_ms, existing_policy);
                     } else {
                         engine_launch_failures.fetch_add(1, Ordering::Relaxed);
-                        tracing::warn!(sfen = %rec.sfen, "engine unavailable, position left unlabeled");
+                        tracing::warn!(sfen = %record.sfen, "engine unavailable, position left unlabeled");
                     }
-                });
-                let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-                if n.is_multiple_of(print_every) || n == total {
-                    eprint!("\r  {n}/{total}");
+                    let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                    if n.is_multiple_of(200) {
+                        eprint!("\r  {n} done");
+                    }
+                    if result_tx.send(Job { id, record }).is_err() {
+                        break;
+                    }
                 }
-                rec
             })
-            .collect()
-    });
-    eprintln!();
+        })
+        .collect();
+    drop(result_tx); // the loop below ends once every worker's clone is also dropped
 
-    let labeled = labeled_records.len();
-    let engine_launch_failures = engine_launch_failures.load(Ordering::Relaxed);
+    // Writer: runs on this thread. Default mode buffers out-of-order arrivals in `pending`
+    // (bounded to `queue_depth` entries by the permit scheme above) and only flushes the next
+    // contiguous job_id, so output order matches input order regardless of which worker finishes
+    // first. `--unordered-output` skips this and writes on arrival, for throughput when input
+    // order doesn't matter.
     let out_file =
         File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
-    let mut writer = BufWriter::new(out_file);
-    for rec in &labeled_records {
-        serde_json::to_writer(&mut writer, rec)?;
-        writer.write_all(b"\n")?;
+    let mut out_writer = BufWriter::new(out_file);
+    let mut manifest = args
+        .manifest
+        .as_ref()
+        .map(|_| RunManifest::new("label", &args.input));
+    let mut next_id = 0u64;
+    let mut pending: BTreeMap<u64, PositionRecord> = BTreeMap::new();
+    let mut written = 0usize;
+
+    let mut write_one =
+        |record: &PositionRecord, manifest: &mut Option<RunManifest>| -> Result<()> {
+            serde_json::to_writer(&mut out_writer, record)?;
+            out_writer.write_all(b"\n")?;
+            if let Some(m) = manifest.as_mut() {
+                accumulate_coverage(m, std::slice::from_ref(record));
+            }
+            // Release the permit only now that the record is durably written -- this is the other
+            // half of the dispatch window: it caps how far ahead of the writer the pipeline can get.
+            let _ = writer_permit_tx.send(());
+            Ok(())
+        };
+
+    for job in result_rx {
+        if args.unordered_output {
+            write_one(&job.record, &mut manifest)?;
+            written += 1;
+        } else {
+            for record in reorder_push(&mut pending, &mut next_id, job.id, job.record) {
+                write_one(&record, &mut manifest)?;
+                written += 1;
+            }
+            // Guards the permit scheme's whole reason for existing: without it, `pending` could
+            // in principle grow past `queue_depth` and this bounded pipeline would silently
+            // revert to the unbounded memory use it replaced.
+            debug_assert!(pending.len() <= queue_depth);
+        }
     }
-    writer.flush()?;
+    out_writer.flush()?;
+    eprintln!();
+
+    let (total, skipped) = reader_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("label reader thread panicked"))??;
+    for handle in worker_handles {
+        handle
+            .join()
+            .map_err(|_| anyhow::anyhow!("label worker thread panicked"))?;
+    }
+    let engine_launch_failures = engine_launch_failures.load(Ordering::Relaxed);
 
     eprintln!(
-        "done [{engine_display_name}, jobs={jobs}]: {total} in, {labeled} labeled, {skipped} skipped, {engine_launch_failures} engine launch failures → {:?}",
+        "done [{engine_display_name}, jobs={jobs}]: {total} in, {written} labeled, {skipped} skipped, {engine_launch_failures} engine launch failures → {:?}",
         args.out
     );
-    if let Some(manifest_path) = &args.manifest {
-        let mut manifest = RunManifest::new("label", &args.input);
+    if let Some(mut manifest) = manifest {
         manifest.input_hash = hash_file(&args.input)?;
-        manifest.records_read = total;
-        manifest.records_kept = labeled;
+        manifest.records_read = total as usize;
+        manifest.records_kept = written;
         manifest.records_dropped = skipped;
-        accumulate_coverage(&mut manifest, &labeled_records);
         manifest.engine_name = Some(engine_display_name);
         manifest.depths = Some(depths);
         manifest.multipv = (args.multipv > 1).then_some(args.multipv);
         manifest.engine_options = Some(args.engine_options.clone());
         manifest.jobs = Some(jobs);
         manifest.engine_launch_failures = Some(engine_launch_failures);
-        write_manifest(manifest_path, &manifest)?;
+        write_manifest(args.manifest.as_ref().unwrap(), &manifest)?;
     }
     Ok(())
 }
@@ -2009,4 +2126,89 @@ fn cmd_validate(args: ValidateArgs) -> Result<()> {
         println!("OK");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod label_pipeline_tests {
+    use super::*;
+    use shogiesa_core::{PositionTags, SourceInfo};
+
+    fn rec(tag: &str) -> PositionRecord {
+        PositionRecord::new(
+            "startpos".to_string(),
+            SourceInfo {
+                kind: "test".to_string(),
+                path: tag.to_string(),
+                ply: 1,
+            },
+            PositionTags {
+                phase: GamePhase::Opening,
+                side_to_move: SideToMove::Black,
+                in_check: false,
+                has_capture: false,
+            },
+        )
+    }
+
+    fn tag(record: &PositionRecord) -> &str {
+        &record.source.path
+    }
+
+    #[test]
+    fn reorder_push_holds_back_out_of_order_arrivals() {
+        let mut pending = BTreeMap::new();
+        let mut next_id = 0u64;
+
+        // job 1 arrives before job 0 -- nothing is writable yet.
+        let ready = reorder_push(&mut pending, &mut next_id, 1, rec("b"));
+        assert!(ready.is_empty());
+        assert_eq!(pending.len(), 1);
+
+        // job 0 arrives -- both 0 and the already-buffered 1 become writable, in order.
+        let ready = reorder_push(&mut pending, &mut next_id, 0, rec("a"));
+        assert_eq!(ready.iter().map(tag).collect::<Vec<_>>(), vec!["a", "b"]);
+        assert!(pending.is_empty());
+        assert_eq!(next_id, 2);
+    }
+
+    #[test]
+    fn reorder_push_restores_order_from_arbitrary_arrival_order() {
+        let mut pending = BTreeMap::new();
+        let mut next_id = 0u64;
+        let arrivals = [(3, "d"), (1, "b"), (0, "a"), (2, "c")];
+
+        let mut output = Vec::new();
+        for (id, t) in arrivals {
+            output.extend(reorder_push(&mut pending, &mut next_id, id, rec(t)));
+        }
+        assert_eq!(
+            output.iter().map(tag).collect::<Vec<_>>(),
+            vec!["a", "b", "c", "d"]
+        );
+    }
+
+    #[test]
+    fn reorder_push_buffer_size_equals_arrivals_ahead_of_next_id() {
+        // reorder_push itself has no cap -- it will happily buffer every arrival ahead of
+        // next_id, as this test shows by reaching 20. The permit scheme in `cmd_label` is what
+        // bounds this in practice, by capping how many jobs can ever be dispatched-but-unwritten
+        // at once (see the `debug_assert!` in cmd_label's writer loop). This test exists to
+        // pin the exact quantity that scheme has to bound: pending.len() after N out-of-order
+        // arrivals ahead of job 0 is N, not less -- so bounding "jobs in flight" really does
+        // bound the reorder buffer.
+        let mut pending = BTreeMap::new();
+        let mut next_id = 0u64;
+        let mut max_buffered = 0usize;
+
+        for id in (1..=20u64).rev() {
+            let ready = reorder_push(&mut pending, &mut next_id, id, rec("x"));
+            assert!(ready.is_empty(), "job 0 hasn't arrived yet");
+            max_buffered = max_buffered.max(pending.len());
+        }
+        assert_eq!(max_buffered, 20);
+
+        let ready = reorder_push(&mut pending, &mut next_id, 0, rec("a"));
+        assert_eq!(ready.len(), 21, "job 0 unblocks every buffered successor");
+        assert!(pending.is_empty());
+    }
 }

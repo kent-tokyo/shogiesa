@@ -844,6 +844,82 @@ fn label_replace_existing_overwrites() {
 }
 
 #[test]
+fn label_jobs_2_preserves_order_by_default_and_unordered_output_has_same_set() {
+    fn tagged_position(ply: u32) -> serde_json::Value {
+        serde_json::json!({
+            "schema_version": 1,
+            "sfen": "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+            "source": { "kind": "csa", "path": "test.csa", "ply": ply },
+            "tags": { "phase": "opening", "side_to_move": "black", "in_check": false, "has_capture": false },
+            "observations": []
+        })
+    }
+    fn plies_of(path: &std::path::Path) -> Vec<u64> {
+        std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|l| {
+                serde_json::from_str::<serde_json::Value>(l).unwrap()["source"]["ply"]
+                    .as_u64()
+                    .unwrap()
+            })
+            .collect()
+    }
+
+    let positions: Vec<serde_json::Value> = (0..8u32).map(tagged_position).collect();
+    let input = make_labeled_jsonl(&positions);
+
+    let ordered_out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--jobs",
+            "2",
+            "--out",
+            ordered_out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    assert_eq!(
+        plies_of(ordered_out.path()),
+        (0..8u64).collect::<Vec<_>>(),
+        "default output order must match input order"
+    );
+
+    let unordered_out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--jobs",
+            "2",
+            "--unordered-output",
+            "--out",
+            unordered_out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let mut plies = plies_of(unordered_out.path());
+    plies.sort_unstable();
+    assert_eq!(
+        plies,
+        (0..8u64).collect::<Vec<_>>(),
+        "--unordered-output must still produce the same set of records"
+    );
+}
+
+#[test]
 fn label_skip_and_replace_existing_conflict() {
     let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
     let out = NamedTempFile::new().unwrap();

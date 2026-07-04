@@ -88,8 +88,13 @@ gains no extra output. `score_bound` (`exact`/`lowerbound`/`upperbound`) marks w
 candidate's score is a confirmed evaluation or a search bound — a bound-tagged runner-up is
 never trusted for `policy_margin_cp`.
 
-`label` runs on `--jobs` parallel engine processes via a rayon thread pool scoped to that one
-label invocation.
+`label` streams its input line-by-line through a bounded reader / worker-pool / writer pipeline
+instead of loading the whole dataset into memory — memory use scales with `--jobs`, not with
+dataset size. Each of the `--jobs` workers owns one long-lived engine process, launched once and
+reused across every position it processes (not respawned per position). Output preserves input
+order by default (a bounded reorder buffer holds back an out-of-order result until its
+predecessors have been written); `--unordered-output` writes results as they arrive instead,
+trading order for throughput when input order doesn't matter downstream.
 
 `--skip-existing` skips a requested depth if this engine already has an observation reaching at
 least that depth — useful for cheaply resuming a large labeling run. `--replace-existing`

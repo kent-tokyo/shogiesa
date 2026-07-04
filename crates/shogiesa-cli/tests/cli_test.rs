@@ -1791,6 +1791,64 @@ fn filter_manifest_records_drop_reasons_and_config() {
 }
 
 #[test]
+fn filter_dry_run_reports_without_writing_output() {
+    let f = make_labeled_jsonl(&[
+        position("opening", serde_json::json!([obs("7g7f", 50, 4)])),
+        position("opening", serde_json::json!([obs_mate("7g7f", 3, 4)])),
+    ]);
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--exclude-mate",
+            "--dry-run",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "done (dry run): 2 read, 1 passed, 1 filtered",
+        ))
+        .stderr(predicate::str::contains("mate"));
+}
+
+#[test]
+fn filter_requires_out_unless_dry_run() {
+    let f = make_labeled_jsonl(&[position("opening", serde_json::json!([obs("7g7f", 50, 4)]))]);
+    shogiesa()
+        .args(["filter", "--input", f.path().to_str().unwrap()])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn filter_dry_run_with_manifest_writes_manifest_no_output_file() {
+    let f = make_labeled_jsonl(&[
+        position("opening", serde_json::json!([obs("7g7f", 50, 4)])),
+        position("opening", serde_json::json!([obs_mate("7g7f", 3, 4)])),
+    ]);
+    let manifest_path = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--exclude-mate",
+            "--dry-run",
+            "--manifest",
+            manifest_path.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest_path.path()).unwrap()).unwrap();
+    assert_eq!(manifest["records_read"], 2);
+    assert_eq!(manifest["records_kept"], 1);
+    assert_eq!(manifest["records_dropped"], 1);
+}
+
+#[test]
 fn balance_manifest_records_counts() {
     let f = make_labeled_jsonl(&[
         position("opening", serde_json::json!([obs("7g7f", 50, 4)])),

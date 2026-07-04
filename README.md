@@ -133,8 +133,12 @@ Keeps only positions passing the given stability/eval-range/phase criteria. See 
 (a teacher-ensemble disagreement signal) instead of across depths of one engine — both are a
 no-op on positions labeled by only one engine.
 
-`--manifest PATH` (also on `balance`/`sample`/`pack`, below) writes a run manifest — see
+`--manifest PATH` (also on `balance`/`sample`/`pack`/`label`, below) writes a run manifest — see
 "Run manifests" further down.
+
+`--dry-run` reports what would be kept/dropped (and why, via the same drop-reason breakdown) as
+a normal run, without writing `--out` — `--out` isn't required in this mode. Combine with
+`--manifest` to get a structured preview of a filter config's effect with no output file.
 
 ### `mine` — hard-position mining
 

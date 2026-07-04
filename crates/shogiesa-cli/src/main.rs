@@ -274,9 +274,13 @@ struct FilterArgs {
     /// Input labeled positions JSONL
     #[arg(short, long)]
     input: PathBuf,
-    /// Output JSONL file
-    #[arg(short, long)]
-    out: PathBuf,
+    /// Output JSONL file. Not required with --dry-run.
+    #[arg(short, long, required_unless_present = "dry_run")]
+    out: Option<PathBuf>,
+    /// Report what would be kept/dropped (and why) without writing --out. Combine with
+    /// --manifest to get a structured preview of a filter config's effect.
+    #[arg(long)]
+    dry_run: bool,
     /// Require all observations to agree on bestmove
     #[arg(long)]
     require_bestmove_agreement: bool,
@@ -1348,9 +1352,12 @@ fn cmd_filter(args: FilterArgs) -> Result<()> {
     let reader = BufReader::new(
         File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
     );
-    let out_file =
-        File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
-    let mut writer = BufWriter::new(out_file);
+    let mut writer = match &args.out {
+        Some(out) => Some(BufWriter::new(
+            File::create(out).with_context(|| format!("cannot create {out:?}"))?,
+        )),
+        None => None,
+    };
 
     let mut total = 0usize;
     let mut passed = 0usize;
@@ -1386,8 +1393,10 @@ fn cmd_filter(args: FilterArgs) -> Result<()> {
         let decision = evaluate_quality(&rec, &config);
         match decision.reasons.first() {
             None => {
-                serde_json::to_writer(&mut writer, &rec)?;
-                writer.write_all(b"\n")?;
+                if let Some(w) = &mut writer {
+                    serde_json::to_writer(&mut *w, &rec)?;
+                    w.write_all(b"\n")?;
+                }
                 passed += 1;
                 if let Some(m) = &mut manifest {
                     accumulate_coverage(m, std::slice::from_ref(&rec));
@@ -1400,11 +1409,13 @@ fn cmd_filter(args: FilterArgs) -> Result<()> {
         }
     }
 
-    writer.flush()?;
-    eprintln!(
-        "done: {total} read, {passed} passed, {skipped} filtered → {:?}",
-        args.out
-    );
+    if let Some(w) = &mut writer {
+        w.flush()?;
+    }
+    match &args.out {
+        Some(out) => eprintln!("done: {total} read, {passed} passed, {skipped} filtered → {out:?}"),
+        None => eprintln!("done (dry run): {total} read, {passed} passed, {skipped} filtered"),
+    }
     if !drop_reasons.is_empty() {
         eprintln!("drop reasons:");
         for (reason, count) in &drop_reasons {

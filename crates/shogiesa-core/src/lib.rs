@@ -191,7 +191,8 @@ pub fn engine_score_swing(observations: &[Observation]) -> Option<i32> {
 
 /// Reason a position failed one of `QualityConfig`'s gates. `as_str()` values match the
 /// strings `filter`'s stderr drop-reason breakdown has always printed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum QualityReason {
     MinObservations,
     Phase,
@@ -207,6 +208,7 @@ pub enum QualityReason {
     EngineScoreSwing,
     NonExactScore,
     MissingPolicyMargin,
+    LowActualDepth,
 }
 
 impl QualityReason {
@@ -226,6 +228,7 @@ impl QualityReason {
             QualityReason::EngineScoreSwing => "engine_score_swing",
             QualityReason::NonExactScore => "non_exact_score",
             QualityReason::MissingPolicyMargin => "missing_policy_margin",
+            QualityReason::LowActualDepth => "low_actual_depth",
         }
     }
 }
@@ -254,10 +257,15 @@ pub struct QualityConfig {
     /// `min_policy_margin_cp` (a no-op when every margin is `None`), this catches "we never
     /// confirmed a margin" rather than only "the margin we confirmed was too small."
     pub require_policy_margin: bool,
+    /// Reject a record if any *non-mate* observation's achieved `depth` is below this. Mate
+    /// observations are exempt: an engine stopping short of the requested depth is dominantly
+    /// caused by finding a forced mate (a confirmed, high-confidence result), not a weak search
+    /// -- gating on depth without this exemption would penalize the most reliable observations.
+    pub min_depth_reached: Option<u32>,
 }
 
 /// Result of evaluating a `PositionRecord` against a `QualityConfig`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct QualityDecision {
     /// True iff `reasons` is empty (every configured gate passed).
     pub keep: bool,
@@ -380,6 +388,16 @@ pub fn evaluate_quality(rec: &PositionRecord, config: &QualityConfig) -> Quality
         configured_gates += 1;
         if !obs.iter().any(|o| o.policy_margin_cp.is_some()) {
             reasons.push(QualityReason::MissingPolicyMargin);
+        }
+    }
+
+    if let Some(min_depth) = config.min_depth_reached {
+        configured_gates += 1;
+        if obs
+            .iter()
+            .any(|o| o.depth < min_depth && !matches!(o.score, Score::Mate { .. }))
+        {
+            reasons.push(QualityReason::LowActualDepth);
         }
     }
 
@@ -806,6 +824,41 @@ mod tests {
     }
 
     #[test]
+    fn evaluate_quality_min_depth_reached_rejects_shallow_non_mate() {
+        let config = QualityConfig {
+            min_depth_reached: Some(10),
+            ..Default::default()
+        };
+        let observations = vec![obs("a", 6, 10, "7g7f")];
+        let decision = evaluate_quality(&simple_rec(observations), &config);
+        assert_eq!(decision.reasons, vec![QualityReason::LowActualDepth]);
+    }
+
+    #[test]
+    fn evaluate_quality_min_depth_reached_exempts_shallow_mate() {
+        // A shallow depth is dominantly caused by the engine finding a forced mate -- a
+        // confirmed, high-confidence result, not a weak search. This gate must not penalize it.
+        let config = QualityConfig {
+            min_depth_reached: Some(10),
+            ..Default::default()
+        };
+        let observations = vec![obs_mate("a", 6, 3, "7g7f")];
+        let decision = evaluate_quality(&simple_rec(observations), &config);
+        assert!(decision.keep);
+    }
+
+    #[test]
+    fn evaluate_quality_min_depth_reached_passes_deep_enough() {
+        let config = QualityConfig {
+            min_depth_reached: Some(10),
+            ..Default::default()
+        };
+        let observations = vec![obs("a", 10, 10, "7g7f")];
+        let decision = evaluate_quality(&simple_rec(observations), &config);
+        assert!(decision.keep);
+    }
+
+    #[test]
     fn evaluate_quality_bestmove_disagreement_gate() {
         let config = QualityConfig {
             require_bestmove_agreement: true,
@@ -894,5 +947,19 @@ mod tests {
         let decision = evaluate_quality(&simple_rec(vec![]), &QualityConfig::default());
         assert!(decision.keep);
         assert_eq!(decision.score, 1.0);
+    }
+
+    #[test]
+    fn quality_reason_serializes_to_same_string_as_as_str() {
+        for reason in [
+            QualityReason::MinObservations,
+            QualityReason::EngineScoreSwing,
+            QualityReason::NonExactScore,
+            QualityReason::MissingPolicyMargin,
+            QualityReason::LowActualDepth,
+        ] {
+            let serialized = serde_json::to_string(&reason).unwrap();
+            assert_eq!(serialized, format!("\"{}\"", reason.as_str()));
+        }
     }
 }

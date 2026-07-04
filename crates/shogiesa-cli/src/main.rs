@@ -322,6 +322,11 @@ struct FilterArgs {
     /// margin to have been computed in the first place.
     #[arg(long)]
     require_policy_margin: bool,
+    /// Exclude positions where any non-mate observation's achieved depth is below this.
+    /// Mate observations are exempt: an engine stopping short of the requested depth is
+    /// dominantly caused by finding a forced mate, a confirmed result, not a weak search.
+    #[arg(long)]
+    min_depth_reached: Option<u32>,
     /// Require every distinct engine's deepest observation to agree on bestmove. A no-op
     /// unless the position was labeled by 2+ engines (see `label --engine-name`).
     #[arg(long)]
@@ -334,6 +339,12 @@ struct FilterArgs {
     /// coverage stats) to this path
     #[arg(long)]
     manifest: Option<PathBuf>,
+    /// Write rejected records to this JSONL path, each line `{"record": ..., "quality": ...}`
+    /// pairing the dropped record with its full QualityDecision (all failing reasons, not just
+    /// the first). Combine with --dry-run to inspect what a config would drop without writing
+    /// --out.
+    #[arg(long)]
+    explain_out: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -1342,6 +1353,7 @@ fn build_quality_config(
         max_engine_score_swing_cp: args.max_engine_score_swing_cp,
         require_exact_score: args.require_exact_score,
         require_policy_margin: args.require_policy_margin,
+        min_depth_reached: args.min_depth_reached,
     }
 }
 
@@ -1367,6 +1379,12 @@ fn cmd_filter(args: FilterArgs) -> Result<()> {
     let mut writer = match &args.out {
         Some(out) => Some(BufWriter::new(
             File::create(out).with_context(|| format!("cannot create {out:?}"))?,
+        )),
+        None => None,
+    };
+    let mut explain_writer = match &args.explain_out {
+        Some(path) => Some(BufWriter::new(
+            File::create(path).with_context(|| format!("cannot create {path:?}"))?,
         )),
         None => None,
     };
@@ -1417,11 +1435,21 @@ fn cmd_filter(args: FilterArgs) -> Result<()> {
             Some(reason) => {
                 skipped += 1;
                 *drop_reasons.entry(reason.as_str()).or_default() += 1;
+                if let Some(w) = &mut explain_writer {
+                    serde_json::to_writer(
+                        &mut *w,
+                        &serde_json::json!({"record": &rec, "quality": &decision}),
+                    )?;
+                    w.write_all(b"\n")?;
+                }
             }
         }
     }
 
     if let Some(w) = &mut writer {
+        w.flush()?;
+    }
+    if let Some(w) = &mut explain_writer {
         w.flush()?;
     }
     match &args.out {

@@ -139,12 +139,23 @@ positions where no observation has a computed `policy_margin_cp` at all — unli
 `--min-policy-margin-cp` (a no-op when every margin is unset, since it only checks margins that
 were actually computed), this requires a margin to exist in the first place.
 
+`--min-depth-reached N` excludes positions where any *non-mate* observation's achieved `depth` is
+below `N`. Mate observations are exempt: an engine stopping short of the requested depth is
+dominantly caused by finding a forced mate (a confirmed, high-confidence result), not a weak
+search — gating on depth without this exemption would penalize the most reliable observations.
+
 `--manifest PATH` (also on `balance`/`sample`/`pack`/`label`, below) writes a run manifest — see
 "Run manifests" further down.
 
 `--dry-run` reports what would be kept/dropped (and why, via the same drop-reason breakdown) as
 a normal run, without writing `--out` — `--out` isn't required in this mode. Combine with
 `--manifest` to get a structured preview of a filter config's effect with no output file.
+
+`--explain-out PATH` writes every rejected record to a JSONL file, each line
+`{"record": ..., "quality": ...}` pairing the dropped record with its full `QualityDecision`
+(every failing reason, not just the first one used for the stderr breakdown) — useful for
+routing rejected positions to manual review or a future re-labeling pass. Works standalone or
+combined with `--dry-run`/`--manifest`.
 
 ### `mine` — hard-position mining
 

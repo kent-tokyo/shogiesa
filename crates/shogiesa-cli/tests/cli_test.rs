@@ -1225,6 +1225,94 @@ fn filter_require_policy_margin_excludes_missing_margin() {
 }
 
 #[test]
+fn filter_min_depth_reached_excludes_shallow_but_exempts_mate() {
+    let f = make_labeled_jsonl(&[
+        position("middlegame", serde_json::json!([obs("7g7f", 100, 6)])), // shallow, excluded
+        position("middlegame", serde_json::json!([obs("8h2b+", 100, 10)])), // deep enough, kept
+        position("middlegame", serde_json::json!([obs_mate("7g7f", 3, 6)])), // shallow mate, kept
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--min-depth-reached",
+            "10",
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 2);
+}
+
+#[test]
+fn filter_explain_out_records_rejected_with_full_reasons() {
+    let f = make_labeled_jsonl(&[
+        position("opening", serde_json::json!([obs("7g7f", 50, 4)])),
+        position("opening", serde_json::json!([obs_mate("7g7f", 3, 4)])),
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    let explain_out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--exclude-mate",
+            "--explain-out",
+            explain_out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let kept = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(kept.lines().filter(|l| !l.trim().is_empty()).count(), 1);
+
+    let rejected: Vec<serde_json::Value> = std::fs::read_to_string(explain_out.path())
+        .unwrap()
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(rejected.len(), 1);
+    assert_eq!(rejected[0]["quality"]["keep"], false);
+    assert_eq!(
+        rejected[0]["quality"]["reasons"],
+        serde_json::json!(["mate"])
+    );
+    assert!(rejected[0]["record"]["observations"].is_array());
+}
+
+#[test]
+fn filter_explain_out_works_standalone_with_dry_run() {
+    let f = make_labeled_jsonl(&[position(
+        "opening",
+        serde_json::json!([obs_mate("7g7f", 3, 4)]),
+    )]);
+    let explain_out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--exclude-mate",
+            "--dry-run",
+            "--explain-out",
+            explain_out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let rejected = std::fs::read_to_string(explain_out.path()).unwrap();
+    assert_eq!(rejected.lines().filter(|l| !l.trim().is_empty()).count(), 1);
+}
+
+#[test]
 fn filter_exclude_mate() {
     let f = make_labeled_jsonl(&[
         position("middlegame", serde_json::json!([obs("7g7f", 50, 4)])),

@@ -29,6 +29,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 - `label` now runs on a local rayon thread pool instead of a process-global one
 
 ### Added
+- `filter --min-depth-reached N` excludes positions where any non-mate observation's achieved depth is below `N`; mate observations are exempt since an engine stopping short of the requested depth is dominantly caused by finding a forced mate (a confirmed result), not a weak search — gating on depth without this exemption would penalize the most reliable observations
+- `filter --explain-out PATH` writes every rejected record to a JSONL file as `{"record": ..., "quality": ...}`, pairing the dropped record with its full `QualityDecision` (every failing reason, not just the first one used for the stderr breakdown); `QualityDecision`/`QualityReason` gained `Serialize` for this
 - `Observation.score_bound: ScoreBound` — whether the bestmove's own score is a confirmed evaluation or a search bound, populated from the engine's rank-1 `info` line independent of MultiPV. Previously only `CandidateMove.score_bound` carried this, so a plain single-PV label whose score was a lowerbound/upperbound (e.g. an aspiration-window fail-high/low) silently lost the information.
 - `filter --require-exact-score` excludes positions where any observation's score is a search bound rather than a confirmed evaluation
 - `filter --require-policy-margin` excludes positions where no observation has a computed `policy_margin_cp` at all — unlike `--min-policy-margin-cp` (a no-op when every margin is unset), this requires a margin to have been computed in the first place

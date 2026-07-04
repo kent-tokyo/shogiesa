@@ -507,6 +507,13 @@ mod tests {
                             score_bound: ScoreBound::Lowerbound,
                             pv: None,
                         },
+                        CandidateMove {
+                            multipv: 3,
+                            bestmove: "3c3d".to_string(),
+                            score: Score::Cp { value: -50 },
+                            score_bound: ScoreBound::Upperbound,
+                            pv: None,
+                        },
                     ],
                 },
                 Observation {
@@ -556,7 +563,7 @@ mod tests {
             Some(vec!["7g7f".to_string(), "3c3d".to_string()])
         );
         assert_eq!(got.observations[0].policy_margin_cp, Some(310));
-        assert_eq!(got.observations[0].candidates.len(), 2);
+        assert_eq!(got.observations[0].candidates.len(), 3);
         assert_eq!(got.observations[0].candidates[0].multipv, 1);
         assert_eq!(got.observations[0].candidates[0].bestmove, "7g7f");
         assert_eq!(
@@ -578,6 +585,16 @@ mod tests {
             ScoreBound::Lowerbound
         );
         assert_eq!(got.observations[0].candidates[1].pv, None);
+        assert_eq!(got.observations[0].candidates[2].multipv, 3);
+        assert_eq!(got.observations[0].candidates[2].bestmove, "3c3d");
+        assert!(matches!(
+            got.observations[0].candidates[2].score,
+            Score::Cp { value: -50 }
+        ));
+        assert_eq!(
+            got.observations[0].candidates[2].score_bound,
+            ScoreBound::Upperbound
+        );
         assert_eq!(got.observations[1].engine_version, None);
         assert!(matches!(
             got.observations[1].score,

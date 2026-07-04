@@ -281,6 +281,131 @@ fn validate_clean_data_exits_0() {
         .stdout(predicate::str::contains("OK"));
 }
 
+// --- schema backward compatibility ---
+
+fn position_with_version(
+    schema_version: u32,
+    observations: serde_json::Value,
+    stability: Option<serde_json::Value>,
+) -> serde_json::Value {
+    let mut v = serde_json::json!({
+        "schema_version": schema_version,
+        "sfen": "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+        "source": { "kind": "csa", "path": "test.csa", "ply": 1 },
+        "tags": { "phase": "opening", "side_to_move": "black", "in_check": false, "has_capture": false },
+        "observations": observations,
+    });
+    if let Some(s) = stability {
+        v["stability"] = s;
+    }
+    v
+}
+
+/// Runs `validate --strict` / `report` / `pack`→`unpack` against a schema-vN-shaped JSONL
+/// record, asserting every step succeeds and the record survives the pack round-trip. Proves
+/// old (lower-`schema_version`) data — missing fields added in later versions — still works
+/// under current code, i.e. the `#[serde(default)]` contract on those fields holds.
+fn assert_schema_compat(record: serde_json::Value) {
+    let f = make_labeled_jsonl(&[record]);
+
+    shogiesa()
+        .args([
+            "validate",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--strict",
+        ])
+        .assert()
+        .success();
+
+    shogiesa()
+        .args(["report", "--input", f.path().to_str().unwrap()])
+        .assert()
+        .success();
+
+    let packed = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "pack",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            packed.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let unpacked = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "unpack",
+            "--input",
+            packed.path().to_str().unwrap(),
+            "--out",
+            unpacked.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let content = std::fs::read_to_string(unpacked.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 1);
+}
+
+#[test]
+fn schema_v1_minimal_round_trips() {
+    // v1: no policy_margin_cp, no candidates, no stability at all.
+    assert_schema_compat(position_with_version(
+        1,
+        serde_json::json!([obs("7g7f", 50, 4)]),
+        None,
+    ));
+}
+
+#[test]
+fn schema_v2_policy_margin_round_trips() {
+    // v2: adds Observation.policy_margin_cp.
+    assert_schema_compat(position_with_version(
+        2,
+        serde_json::json!([obs_with_margin("7g7f", 50, 4, 30)]),
+        None,
+    ));
+}
+
+#[test]
+fn schema_v3_engine_stability_round_trips() {
+    // v3: adds StabilityInfo.engine_bestmove_agreement / engine_score_swing_cp.
+    assert_schema_compat(position_with_version(
+        3,
+        serde_json::json!([obs_with_margin("7g7f", 50, 4, 30)]),
+        Some(serde_json::json!({
+            "score_swing_cp": null,
+            "bestmove_agreement": true,
+            "engine_bestmove_agreement": true,
+            "engine_score_swing_cp": 20
+        })),
+    ));
+}
+
+#[test]
+fn schema_v4_candidates_round_trips() {
+    // v4: adds Observation.candidates / CandidateMove.score_bound.
+    let mut observation = obs_with_margin("7g7f", 50, 4, 30);
+    observation["candidates"] = serde_json::json!([
+        { "multipv": 1, "bestmove": "7g7f", "score": { "kind": "cp", "value": 50 }, "score_bound": "exact", "pv": null },
+        { "multipv": 2, "bestmove": "2g2f", "score": { "kind": "cp", "value": 20 }, "score_bound": "lowerbound", "pv": null }
+    ]);
+    assert_schema_compat(position_with_version(
+        4,
+        serde_json::json!([observation]),
+        Some(serde_json::json!({
+            "score_swing_cp": null,
+            "bestmove_agreement": true,
+            "engine_bestmove_agreement": true,
+            "engine_score_swing_cp": 20
+        })),
+    ));
+}
+
 #[test]
 fn validate_broken_json_shows_warn_but_exits_0() {
     let mut f = NamedTempFile::new().unwrap();
@@ -1992,4 +2117,149 @@ fn same_input_file_produces_same_manifest_input_hash_across_commands() {
     let sample_json: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(sample_manifest.path()).unwrap()).unwrap();
     assert_eq!(filter_json["input_hash"], sample_json["input_hash"]);
+}
+
+#[test]
+fn manifest_common_keys_present_across_commands() {
+    // Presence, not an exact/closed key set -- filter/label legitimately carry extra fields
+    // (filter_config, engine_name, ...), and score_bound_distribution/drop_reasons are omitted
+    // entirely when empty (no MultiPV candidates / no drops), so neither belongs here.
+    let common_keys = [
+        "shogiesa_version",
+        "git_sha",
+        "schema_version",
+        "pack_format_version",
+        "command",
+        "args",
+        "input_path",
+        "input_hash",
+        "records_read",
+        "records_kept",
+        "records_dropped",
+        "observations_total",
+        "observations_with_candidates",
+    ];
+
+    let f = make_labeled_jsonl(&[
+        position("opening", serde_json::json!([obs("7g7f", 50, 4)])),
+        position("middlegame", serde_json::json!([obs("2g2f", 30, 4)])),
+    ]);
+
+    let mut manifests = Vec::new();
+
+    let label_out = NamedTempFile::new().unwrap();
+    let label_manifest = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--out",
+            label_out.path().to_str().unwrap(),
+            "--manifest",
+            label_manifest.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    manifests.push(("label", label_manifest));
+
+    let filter_out = NamedTempFile::new().unwrap();
+    let filter_manifest = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            filter_out.path().to_str().unwrap(),
+            "--manifest",
+            filter_manifest.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    manifests.push(("filter", filter_manifest));
+
+    let sample_out = NamedTempFile::new().unwrap();
+    let sample_manifest = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "sample",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            sample_out.path().to_str().unwrap(),
+            "--count",
+            "1",
+            "--manifest",
+            sample_manifest.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    manifests.push(("sample", sample_manifest));
+
+    let balance_out = NamedTempFile::new().unwrap();
+    let balance_manifest = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "balance",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            balance_out.path().to_str().unwrap(),
+            "--by",
+            "phase",
+            "--manifest",
+            balance_manifest.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    manifests.push(("balance", balance_manifest));
+
+    let pack_out = NamedTempFile::new().unwrap();
+    let pack_manifest = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "pack",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            pack_out.path().to_str().unwrap(),
+            "--manifest",
+            pack_manifest.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    manifests.push(("pack", pack_manifest));
+
+    for (command, manifest_file) in manifests {
+        let manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(manifest_file.path()).unwrap()).unwrap();
+        for key in common_keys {
+            assert!(
+                manifest.get(key).is_some(),
+                "{command} manifest missing common key {key:?}: {manifest}"
+            );
+        }
+    }
+}
+
+// --- help smoke test ---
+
+#[test]
+fn help_lists_manifest_and_dry_run_flags() {
+    shogiesa()
+        .args(["label", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--manifest"));
+
+    shogiesa()
+        .args(["filter", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--dry-run"));
 }

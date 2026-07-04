@@ -203,7 +203,9 @@ shogiesa report --input observations.jsonl
 Outputs: position count, ply range, phase/side distribution, duplicate SFENs, tag mismatches,
 source dominance, balance warnings, and — once positions are labeled — cp/mate ratio, average
 score swing (plus a histogram), average policy margin, eval-bucket × phase / eval-bucket ×
-side cross-tabs, and (for positions labeled by 2+ distinct engines) an engine-disagreement rate.
+side cross-tabs, (for positions labeled by 2+ distinct engines) an engine-disagreement rate, and
+(when `label --multipv N` (N≥2) was used) MultiPV-candidate coverage and a `score_bound`
+(exact/lowerbound/upperbound) distribution.
 
 ### `validate` — data integrity
 

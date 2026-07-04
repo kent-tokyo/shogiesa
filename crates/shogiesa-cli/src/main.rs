@@ -973,6 +973,34 @@ fn hash_file(path: &Path) -> Result<String> {
 /// across a batch of records — the same descriptive stats `report` computes ad hoc, shared here
 /// for `RunManifest`. Not a quality *decision* (no pass/fail judgment), so it lives in the CLI
 /// rather than `shogiesa_core::evaluate_quality`.
+/// Tally MultiPV-candidate coverage and score-bound distribution across a batch of
+/// observations. Shared by `accumulate_coverage` (manifests) and `cmd_report` (stdout) so the
+/// `match c.score_bound { ... }` logic isn't duplicated.
+fn candidate_coverage_stats(
+    records: &[PositionRecord],
+) -> (usize, usize, BTreeMap<&'static str, usize>) {
+    let mut with_candidates = 0;
+    let mut total = 0;
+    let mut score_bound_distribution: BTreeMap<&'static str, usize> = BTreeMap::new();
+    for rec in records {
+        for obs in &rec.observations {
+            total += 1;
+            if !obs.candidates.is_empty() {
+                with_candidates += 1;
+                for c in &obs.candidates {
+                    let key = match c.score_bound {
+                        shogiesa_core::ScoreBound::Exact => "exact",
+                        shogiesa_core::ScoreBound::Lowerbound => "lowerbound",
+                        shogiesa_core::ScoreBound::Upperbound => "upperbound",
+                    };
+                    *score_bound_distribution.entry(key).or_default() += 1;
+                }
+            }
+        }
+    }
+    (with_candidates, total, score_bound_distribution)
+}
+
 fn accumulate_coverage(manifest: &mut RunManifest, records: &[PositionRecord]) {
     for rec in records {
         if rec.observations.is_empty() {
@@ -980,20 +1008,12 @@ fn accumulate_coverage(manifest: &mut RunManifest, records: &[PositionRecord]) {
         } else {
             manifest.labeled_records += 1;
         }
-        for obs in &rec.observations {
-            manifest.observations_total += 1;
-            if !obs.candidates.is_empty() {
-                manifest.observations_with_candidates += 1;
-                for c in &obs.candidates {
-                    let key = match c.score_bound {
-                        shogiesa_core::ScoreBound::Exact => "exact",
-                        shogiesa_core::ScoreBound::Lowerbound => "lowerbound",
-                        shogiesa_core::ScoreBound::Upperbound => "upperbound",
-                    };
-                    *manifest.score_bound_distribution.entry(key).or_default() += 1;
-                }
-            }
-        }
+    }
+    let (with_candidates, total, distribution) = candidate_coverage_stats(records);
+    manifest.observations_with_candidates += with_candidates;
+    manifest.observations_total += total;
+    for (key, count) in distribution {
+        *manifest.score_bound_distribution.entry(key).or_default() += count;
     }
 }
 
@@ -1718,6 +1738,18 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
                 "  avg policy margin: {:.1}cp  (over {margin_count} observations)",
                 margin_sum / margin_count as f64
             );
+        }
+        let (obs_with_candidates, obs_total, score_bound_distribution) =
+            candidate_coverage_stats(&records);
+        if obs_with_candidates > 0 {
+            println!(
+                "  multipv coverage: {obs_with_candidates:>6}  ({:.1}% of {obs_total} observations)",
+                obs_with_candidates as f64 / obs_total as f64 * 100.0
+            );
+            println!("  score bound distribution:");
+            for (bound, count) in &score_bound_distribution {
+                println!("    {bound:<10} : {count:>6}");
+            }
         }
     }
 

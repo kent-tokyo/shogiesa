@@ -149,7 +149,48 @@ fn report_shows_labeled_diagnostics() {
         .stdout(predicate::str::contains("avg policy margin"))
         .stdout(predicate::str::contains("score swing distribution"))
         .stdout(predicate::str::contains("eval bucket x phase"))
-        .stdout(predicate::str::contains("eval bucket x side"));
+        .stdout(predicate::str::contains("eval bucket x side"))
+        .stdout(predicate::str::contains("multipv coverage"))
+        .stdout(predicate::str::contains("score bound distribution"))
+        .stdout(predicate::str::contains("exact"));
+}
+
+#[test]
+fn report_hides_multipv_coverage_without_multipv() {
+    let pos = NamedTempFile::new().unwrap();
+    let obs = NamedTempFile::new().unwrap();
+
+    shogiesa()
+        .args([
+            "extract",
+            "--input",
+            fixture("sample.csa").to_str().unwrap(),
+            "--out",
+            pos.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            pos.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--out",
+            obs.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    shogiesa()
+        .args(["report", "--input", obs.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("multipv coverage").not());
 }
 
 #[test]

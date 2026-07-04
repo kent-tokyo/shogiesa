@@ -682,6 +682,42 @@ fn label_skip_and_replace_existing_conflict() {
         .failure();
 }
 
+#[test]
+fn label_manifest_records_engine_and_depths() {
+    let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
+    let out = NamedTempFile::new().unwrap();
+    let manifest_path = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4,6",
+            "--multipv",
+            "2",
+            "--out",
+            out.path().to_str().unwrap(),
+            "--manifest",
+            manifest_path.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest_path.path()).unwrap()).unwrap();
+    assert_eq!(manifest["command"], "label");
+    assert_eq!(manifest["engine_name"], "FakeUsiEngine");
+    assert_eq!(manifest["depths"], serde_json::json!([4, 6]));
+    assert_eq!(manifest["multipv"], 2);
+    assert_eq!(manifest["records_read"], 1);
+    assert_eq!(manifest["records_kept"], 1);
+    assert_eq!(manifest["records_dropped"], 0);
+    assert_eq!(manifest["engine_launch_failures"], 0);
+}
+
 // --- filter ---
 
 /// Build a labeled JSONL string with custom observations inline.

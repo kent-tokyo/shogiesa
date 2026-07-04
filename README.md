@@ -99,6 +99,9 @@ intentionally re-labeling. Both are mutually exclusive, and both key off the dep
 report a shallower depth than asked for, and these flags account for that rather than silently
 duplicating or failing to skip.
 
+`--manifest PATH` writes a run manifest (engine/depths/MultiPV config, launch failures, coverage
+stats) — see "Run manifests" further down.
+
 ### `stability` — compute stability scores
 
 ```bash
@@ -180,16 +183,16 @@ Compact binary encoding of the JSONL schema for faster loading by trainers.
 
 ### Run manifests
 
-`filter`/`balance`/`sample`/`pack` accept `--manifest PATH` to write a JSON provenance record
-alongside their normal output: shogiesa version, git sha (embedded at build time), schema/pack
-format version, the full command line, the input file's path and a content hash (a plain
-non-cryptographic digest for "did the input change between runs" — not a verifiable SHA-256
-checksum), records read/kept/dropped, drop-reason counts, labeled/unlabeled record counts, MultiPV
-candidate coverage, `score_bound` distribution, and (for `filter`) the resolved quality
-configuration. It's opt-in and additive — no effect on the command's normal output when omitted.
-`label` and `split` don't have `--manifest`: `split` already writes its own tailored
-`manifest.json` (see above), and `label`'s natural manifest fields (per-engine/per-worker) don't
-fit this shape.
+`filter`/`balance`/`sample`/`pack`/`label` accept `--manifest PATH` to write a JSON provenance
+record alongside their normal output: shogiesa version, git sha (embedded at build time),
+schema/pack format version, the full command line, the input file's path and a content hash (a
+plain non-cryptographic digest for "did the input change between runs" — not a verifiable
+SHA-256 checksum), records read/kept/dropped, drop-reason counts, labeled/unlabeled record
+counts, MultiPV candidate coverage, `score_bound` distribution, and (for `filter`) the resolved
+quality configuration or (for `label`) the engine name/depths/MultiPV/engine options/job count
+and engine-launch-failure count. It's opt-in and additive — no effect on the command's normal
+output when omitted. `split` doesn't have `--manifest`: it already writes its own tailored
+`manifest.json` (see above).
 
 ### `report` — dataset statistics
 

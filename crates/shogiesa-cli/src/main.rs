@@ -135,6 +135,10 @@ struct LabelArgs {
     /// Output JSONL file
     #[arg(short, long)]
     out: PathBuf,
+    /// Write a run manifest (git sha, input hash, counts, engine/depth config, coverage stats)
+    /// to this path
+    #[arg(long)]
+    manifest: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy)]
@@ -594,6 +598,21 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
         "done [{engine_display_name}, jobs={jobs}]: {total} in, {labeled} labeled, {skipped} skipped, {engine_launch_failures} engine launch failures → {:?}",
         args.out
     );
+    if let Some(manifest_path) = &args.manifest {
+        let mut manifest = RunManifest::new("label", &args.input);
+        manifest.input_hash = hash_file(&args.input)?;
+        manifest.records_read = total;
+        manifest.records_kept = labeled;
+        manifest.records_dropped = skipped;
+        accumulate_coverage(&mut manifest, &labeled_records);
+        manifest.engine_name = Some(engine_display_name);
+        manifest.depths = Some(depths);
+        manifest.multipv = (args.multipv > 1).then_some(args.multipv);
+        manifest.engine_options = Some(args.engine_options.clone());
+        manifest.jobs = Some(jobs);
+        manifest.engine_launch_failures = Some(engine_launch_failures);
+        write_manifest(manifest_path, &manifest)?;
+    }
     Ok(())
 }
 
@@ -884,6 +903,18 @@ struct RunManifest {
     score_bound_distribution: BTreeMap<&'static str, usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     filter_config: Option<QualityConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    engine_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    depths: Option<Vec<u32>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    multipv: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    engine_options: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    jobs: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    engine_launch_failures: Option<usize>,
 }
 
 impl RunManifest {
@@ -907,6 +938,12 @@ impl RunManifest {
             observations_total: 0,
             score_bound_distribution: BTreeMap::new(),
             filter_config: None,
+            engine_name: None,
+            depths: None,
+            multipv: None,
+            engine_options: None,
+            jobs: None,
+            engine_launch_failures: None,
         }
     }
 }

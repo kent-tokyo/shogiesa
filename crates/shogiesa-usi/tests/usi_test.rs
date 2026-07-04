@@ -103,6 +103,19 @@ fn analyse_ignores_bound_tagged_runner_up() {
 }
 
 #[test]
+fn analyse_ignores_bound_tagged_bestmove() {
+    // fake-usi-engine --bestmove-bound tags rank 1 (the bestmove) itself as "lowerbound" --
+    // a bound-tagged bestmove score must not be trusted for margin purposes either, even
+    // though the runner-up (rank 2) is a confirmed exact score.
+    let mut cmd = Command::new(fake_usi_engine_bin());
+    cmd.args(["--bestmove-bound", "--multipv-margin", "10"]);
+    let mut engine = UsiEngine::launch_command(cmd, String::new(), TIMEOUT, &[]).unwrap();
+    let result = engine.analyse(STARTPOS, 4, TIMEOUT).unwrap();
+    assert_eq!(result.policy_margin_cp, None);
+    engine.quit();
+}
+
+#[test]
 fn analyse_without_multipv_has_no_margin() {
     let mut engine = fake_engine();
     let result = engine.analyse(STARTPOS, 4, TIMEOUT).unwrap();

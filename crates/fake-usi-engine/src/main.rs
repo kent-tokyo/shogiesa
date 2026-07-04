@@ -10,6 +10,8 @@
 ///                          simulating a MultiPV≥2 engine (used to test policy_margin_cp)
 ///   --multipv-bound      : tags rank 2 as "lowerbound" (used to test that bound-tagged
 ///                          runner-ups are ignored)
+///   --bestmove-bound     : tags rank 1 (the bestmove) as "lowerbound" (used to test that a
+///                          bound-tagged bestmove score is never trusted for policy_margin_cp)
 ///   --multipv-count N    : emit N multipv-tagged ranks instead of the default 2 (used to test
 ///                          Observation.candidates capturing every rank, not just top-2)
 ///   --bestmove MOVE      : report MOVE instead of the default "7g7f" (used to simulate two
@@ -41,6 +43,7 @@ fn main() {
         .and_then(|i| args.get(i + 1))
         .and_then(|s| s.parse().ok());
     let multipv_bound = args.iter().any(|a| a == "--multipv-bound");
+    let bestmove_bound = args.iter().any(|a| a == "--bestmove-bound");
     let mut multipv_count: u32 = args
         .iter()
         .position(|a| a == "--multipv-count")
@@ -111,7 +114,7 @@ fn main() {
                 });
                 let effective_count = if multipv_count >= 2 {
                     multipv_count
-                } else if multipv_margin.is_some() || multipv_bound {
+                } else if multipv_margin.is_some() || multipv_bound || bestmove_bound {
                     2
                 } else {
                     0
@@ -131,11 +134,12 @@ fn main() {
                         } else {
                             format!("{rank}g{rank}f")
                         };
-                        let bound_suffix = if rank == 2 && multipv_bound {
-                            " lowerbound"
-                        } else {
-                            ""
-                        };
+                        let bound_suffix =
+                            if (rank == 2 && multipv_bound) || (rank == 1 && bestmove_bound) {
+                                " lowerbound"
+                            } else {
+                                ""
+                            };
                         writeln!(
                             out,
                             "info depth {depth} multipv {rank} score cp {score}{bound_suffix} nodes 1000 time 50 pv {mv} 8h7g"

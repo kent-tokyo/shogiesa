@@ -31,7 +31,7 @@ pub struct AnalysisResult {
     pub pv: Option<Vec<String>>,
     /// `score_cp(bestmove) - score_cp(runner_up)` when the engine was run with
     /// MultiPV≥2. `None` if MultiPV wasn't used, either score was a mate score,
-    /// or the runner-up's score was a lowerbound/upperbound.
+    /// or either score was a lowerbound/upperbound rather than a confirmed evaluation.
     pub policy_margin_cp: Option<i32>,
     /// Every MultiPV rank observed, populated only when the engine was run with MultiPV≥2.
     pub candidates: Vec<CandidateMove>,
@@ -249,7 +249,8 @@ impl UsiEngine {
                 let info = candidates_by_rank.get(&1).ok_or(UsiError::NoBestmove)?;
                 let policy_margin_cp = match (&info.score, candidates_by_rank.get(&2)) {
                     (Some(Score::Cp { value: best }), Some(runner_up))
-                        if runner_up.bound == ScoreBound::Exact =>
+                        if info.bound == ScoreBound::Exact
+                            && runner_up.bound == ScoreBound::Exact =>
                     {
                         match runner_up.score {
                             Some(Score::Cp { value: second }) => Some(best - second),

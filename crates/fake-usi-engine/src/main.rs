@@ -10,11 +10,14 @@
 ///                          simulating a MultiPV≥2 engine (used to test policy_margin_cp)
 ///   --multipv-bound      : like --multipv-margin, but the runner-up line is tagged
 ///                          "lowerbound" (used to test that bound-tagged runner-ups are ignored)
+///   --bestmove MOVE      : report MOVE instead of the default "7g7f" (used to simulate two
+///                          engines disagreeing)
 ///
 /// Also honors, sent over stdin (as the real `label` command does via `--engine-option`,
 /// since `label` never passes extra argv to the spawned engine):
 ///   setoption name MultiPV value N        : N>=2 has the same effect as --multipv-margin 310
 ///   setoption name EarlyStopDepth value N : same effect as --early-stop-depth N
+///   setoption name Bestmove value MOVE    : same effect as --bestmove MOVE
 use std::io::{self, BufRead, Write};
 use std::thread;
 use std::time::Duration;
@@ -36,6 +39,12 @@ fn main() {
         .and_then(|i| args.get(i + 1))
         .and_then(|s| s.parse().ok());
     let multipv_bound = args.iter().any(|a| a == "--multipv-bound");
+    let mut bestmove: String = args
+        .iter()
+        .position(|a| a == "--bestmove")
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+        .unwrap_or_else(|| "7g7f".to_string());
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut out = io::BufWriter::new(stdout.lock());
@@ -67,6 +76,11 @@ fn main() {
             }
             s if s.starts_with("setoption name EarlyStopDepth value ") => {
                 early_stop_depth = s.rsplit(' ').next().and_then(|v| v.parse().ok());
+            }
+            s if s.starts_with("setoption name Bestmove value ") => {
+                if let Some(mv) = s.rsplit(' ').next() {
+                    bestmove = mv.to_string();
+                }
             }
             s if s.starts_with("position") => {}
             s if s.starts_with("go") => {
@@ -111,7 +125,7 @@ fn main() {
                     )
                     .unwrap();
                 }
-                writeln!(out, "bestmove 7g7f").unwrap();
+                writeln!(out, "bestmove {bestmove}").unwrap();
                 out.flush().unwrap();
             }
             "quit" => break,

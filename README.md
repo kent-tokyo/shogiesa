@@ -91,7 +91,12 @@ duplicating or failing to skip.
 shogiesa stability --input observations.jsonl --out observations.jsonl
 ```
 
-Adds `stability.score_swing_cp` (max − min cp across observations) and `stability.bestmove_agreement` to each record.
+Adds `stability.score_swing_cp` (max − min cp across observations) and `stability.bestmove_agreement`
+to each record. If the record was labeled by 2+ distinct engines (see `label --engine-name`),
+also adds `stability.engine_bestmove_agreement` and `stability.engine_score_swing_cp` — computed
+from each engine's *deepest* observation, so a depth mismatch between engines can itself surface
+as disagreement (intentional: it's each engine's best-available answer). `None` with fewer than
+2 engines represented.
 
 ### `filter` — stability-based filtering
 
@@ -101,10 +106,15 @@ shogiesa filter \
   --max-score-swing-cp 150 \
   --exclude-mate \
   --require-bestmove-agreement \
+  --require-engine-agreement \
   --out train.jsonl
 ```
 
 Keeps only positions passing the given stability/eval-range/phase criteria. See `shogiesa filter --help` for the full flag list.
+`--require-engine-agreement` / `--max-engine-score-swing-cp` mirror
+`--require-bestmove-agreement` / `--max-score-swing-cp` but compare across distinct *engines*
+(a teacher-ensemble disagreement signal) instead of across depths of one engine — both are a
+no-op on positions labeled by only one engine.
 
 ### `mine` — hard-position mining
 
@@ -158,8 +168,8 @@ shogiesa report --input observations.jsonl
 
 Outputs: position count, ply range, phase/side distribution, duplicate SFENs, tag mismatches,
 source dominance, balance warnings, and — once positions are labeled — cp/mate ratio, average
-score swing (plus a histogram), average policy margin, and eval-bucket × phase / eval-bucket ×
-side cross-tabs.
+score swing (plus a histogram), average policy margin, eval-bucket × phase / eval-bucket ×
+side cross-tabs, and (for positions labeled by 2+ distinct engines) an engine-disagreement rate.
 
 ### `validate` — data integrity
 
@@ -174,7 +184,7 @@ Checks: broken JSON, invalid SFENs, duplicate SFENs, `side_to_move` tag vs SFEN 
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "sfen": "lnsgkgsnl/1r5b1/p1ppppppp/1p7/9/2P6/PP1PPPPPP/1B5R1/LNSGKGSNL b - 2",
   "source": {
     "kind": "csa",

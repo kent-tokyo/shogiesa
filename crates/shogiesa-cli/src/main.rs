@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::hash::{Hash, Hasher};
 
 use shogiesa_core::{
-    GamePhase, Observation, PositionRecord, SCHEMA_VERSION, Score, SideToMove, score_swing,
-    sfen::Sfen, zobrist_from_sfen,
+    GamePhase, Observation, PositionRecord, SCHEMA_VERSION, Score, SideToMove,
+    engine_bestmove_agreement, engine_score_swing, score_swing, sfen::Sfen, zobrist_from_sfen,
 };
 use shogiesa_pack as pack;
 use shogiesa_usi::UsiEngine;
@@ -296,6 +296,14 @@ struct FilterArgs {
     /// margin never trigger this gate.
     #[arg(long, allow_hyphen_values = true)]
     min_policy_margin_cp: Option<i32>,
+    /// Require every distinct engine's deepest observation to agree on bestmove. A no-op
+    /// unless the position was labeled by 2+ engines (see `label --engine-name`).
+    #[arg(long)]
+    require_engine_agreement: bool,
+    /// Maximum allowed cp swing across engines' deepest observations (like
+    /// --max-score-swing-cp, but grouped by engine first). A no-op with fewer than 2 engines.
+    #[arg(long)]
+    max_engine_score_swing_cp: Option<i32>,
 }
 
 fn main() -> Result<()> {
@@ -1140,6 +1148,16 @@ fn filter_reason(
         }
     }
 
+    if args.require_engine_agreement && engine_bestmove_agreement(obs) == Some(false) {
+        return Some("engine_disagreement");
+    }
+
+    if let Some(max_swing) = args.max_engine_score_swing_cp
+        && engine_score_swing(obs).is_some_and(|swing| swing > max_swing)
+    {
+        return Some("engine_score_swing");
+    }
+
     None
 }
 
@@ -1276,6 +1294,8 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
     let mut in_check = 0usize;
     let mut has_capture = 0usize;
     let mut depth_disagree = 0usize;
+    let mut multi_engine = 0usize;
+    let mut engine_disagree = 0usize;
     let mut depth_counts: BTreeMap<u32, usize> = BTreeMap::new();
     // eval buckets: key = floor(cp / 200) * 200; special keys: i32::MIN = unlabeled, i32::MAX = mate
     let mut eval_buckets: BTreeMap<i32, usize> = BTreeMap::new();
@@ -1336,6 +1356,12 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
             let first = &rec.observations[0].bestmove;
             if rec.observations.iter().any(|o| &o.bestmove != first) {
                 depth_disagree += 1;
+            }
+            if let Some(agree) = engine_bestmove_agreement(&rec.observations) {
+                multi_engine += 1;
+                if !agree {
+                    engine_disagree += 1;
+                }
             }
             let mut cp_scores = Vec::new();
             for obs in &rec.observations {
@@ -1495,6 +1521,12 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
             "  depth disagree : {depth_disagree:>6}  ({:.1}% of labeled)",
             depth_disagree as f64 / labeled as f64 * 100.0
         );
+        if multi_engine > 0 {
+            println!(
+                "  engine disagree: {engine_disagree:>6}  ({:.1}% of {multi_engine} multi-engine positions)",
+                engine_disagree as f64 / multi_engine as f64 * 100.0
+            );
+        }
         println!("  depth counts:");
         for (&depth, &count) in &depth_counts {
             println!("    depth {depth:>2}     : {count:>6}");

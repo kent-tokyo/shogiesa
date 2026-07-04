@@ -3,37 +3,43 @@
 //! ```text
 //! Header (10 bytes):
 //!   magic[8]  = b"SHOGIESA"
-//!   version   = u16 le  (= 1)
+//!   version   = u16 le  (= 3)
 //!
 //! Record (variable, repeated until EOF):
-//!   sfen            u16le + bytes
-//!   source_kind     u8le  + bytes
-//!   source_path     u16le + bytes
-//!   source_ply      u32le
-//!   phase           u8  (0=opening 1=middlegame 2=endgame)
-//!   side_to_move    u8  (0=black 1=white)
-//!   in_check        u8
-//!   has_capture     u8
-//!   stability_tag   u8  (0=absent 1=present)
-//!     swing_tag     u8  (0=none 1=some)  [if stability_tag=1]
-//!     swing_cp      i32le               [if swing_tag=1]
-//!     agreement     u8                  [if stability_tag=1]
-//!   obs_count       u16le
+//!   sfen              u16le + bytes
+//!   source_kind       u8le  + bytes
+//!   source_path       u16le + bytes
+//!   source_ply        u32le
+//!   phase             u8  (0=opening 1=middlegame 2=endgame)
+//!   side_to_move      u8  (0=black 1=white)
+//!   in_check          u8
+//!   has_capture       u8
+//!   stability_tag     u8  (0=absent 1=present)
+//!     swing_tag       u8  (0=none 1=some)  [if stability_tag=1]
+//!     swing_cp        i32le               [if swing_tag=1]
+//!     agreement       u8                  [if stability_tag=1]
+//!     eng_agree_tag   u8  (0=none 1=some) [if stability_tag=1]
+//!     eng_agree       u8                  [if eng_agree_tag=1]
+//!     eng_swing_tag   u8  (0=none 1=some) [if stability_tag=1]
+//!     eng_swing_cp    i32le               [if eng_swing_tag=1]
+//!   obs_count         u16le
 //!   per observation:
-//!     engine        u8le  + bytes
-//!     ver_tag       u8 (0/1)
-//!     version       u8le  + bytes  [if ver_tag=1]
-//!     depth         u32le
-//!     score_kind    u8 (0=cp 1=mate)
-//!     score_val     i32le
-//!     bestmove      u8le  + bytes
-//!     nodes_tag     u8 (0/1)
-//!     nodes         u64le          [if nodes_tag=1]
-//!     time_tag      u8 (0/1)
-//!     time_ms       u64le          [if time_tag=1]
-//!     pv_tag        u8 (0/1)
-//!     pv_count      u16le          [if pv_tag=1]
-//!     pv[i]         u8le  + bytes
+//!     engine          u8le  + bytes
+//!     ver_tag         u8 (0/1)
+//!     version         u8le  + bytes  [if ver_tag=1]
+//!     depth           u32le
+//!     score_kind      u8 (0=cp 1=mate)
+//!     score_val       i32le
+//!     bestmove        u8le  + bytes
+//!     nodes_tag       u8 (0/1)
+//!     nodes           u64le          [if nodes_tag=1]
+//!     time_tag        u8 (0/1)
+//!     time_ms         u64le          [if time_tag=1]
+//!     pv_tag          u8 (0/1)
+//!     pv_count        u16le          [if pv_tag=1]
+//!     pv[i]           u8le  + bytes
+//!     margin_tag      u8 (0/1)
+//!     policy_margin   i32le          [if margin_tag=1]
 //! ```
 
 use std::io::{self, Read, Write};
@@ -44,7 +50,7 @@ use shogiesa_core::{
 };
 
 pub const MAGIC: &[u8; 8] = b"SHOGIESA";
-pub const FORMAT_VERSION: u16 = 2;
+pub const FORMAT_VERSION: u16 = 3;
 
 // ── write helpers ─────────────────────────────────────────────────────────────
 
@@ -183,6 +189,20 @@ pub fn encode_record(rec: &PositionRecord, w: &mut impl Write) -> io::Result<()>
                 }
             }
             wu8(w, s.bestmove_agreement as u8)?;
+            match s.engine_bestmove_agreement {
+                None => wu8(w, 0)?,
+                Some(v) => {
+                    wu8(w, 1)?;
+                    wu8(w, v as u8)?;
+                }
+            }
+            match s.engine_score_swing_cp {
+                None => wu8(w, 0)?,
+                Some(v) => {
+                    wu8(w, 1)?;
+                    wi32(w, v)?;
+                }
+            }
         }
     }
 
@@ -279,9 +299,17 @@ pub fn decode_record(r: &mut impl Read) -> io::Result<PositionRecord> {
     } else {
         let score_swing_cp = if ru8(r)? == 0 { None } else { Some(ri32(r)?) };
         let bestmove_agreement = ru8(r)? != 0;
+        let engine_bestmove_agreement = if ru8(r)? == 0 {
+            None
+        } else {
+            Some(ru8(r)? != 0)
+        };
+        let engine_score_swing_cp = if ru8(r)? == 0 { None } else { Some(ri32(r)?) };
         Some(StabilityInfo {
             score_swing_cp,
             bestmove_agreement,
+            engine_bestmove_agreement,
+            engine_score_swing_cp,
         })
     };
 
@@ -402,6 +430,8 @@ mod tests {
             stability: Some(StabilityInfo {
                 score_swing_cp: Some(100),
                 bestmove_agreement: false,
+                engine_bestmove_agreement: Some(false),
+                engine_score_swing_cp: Some(60),
             }),
         }
     }
@@ -440,6 +470,27 @@ mod tests {
         let stab = got.stability.as_ref().unwrap();
         assert_eq!(stab.score_swing_cp, Some(100));
         assert!(!stab.bestmove_agreement);
+        assert_eq!(stab.engine_bestmove_agreement, Some(false));
+        assert_eq!(stab.engine_score_swing_cp, Some(60));
+    }
+
+    #[test]
+    fn stability_with_no_engine_fields_round_trips() {
+        let mut rec = sample();
+        rec.stability = Some(StabilityInfo {
+            score_swing_cp: None,
+            bestmove_agreement: true,
+            engine_bestmove_agreement: None,
+            engine_score_swing_cp: None,
+        });
+        let mut buf = Vec::new();
+        encode(std::slice::from_ref(&rec), &mut buf).unwrap();
+        let got = &decode(&mut buf.as_slice()).unwrap()[0];
+        let stab = got.stability.as_ref().unwrap();
+        assert_eq!(stab.score_swing_cp, None);
+        assert!(stab.bestmove_agreement);
+        assert_eq!(stab.engine_bestmove_agreement, None);
+        assert_eq!(stab.engine_score_swing_cp, None);
     }
 
     #[test]

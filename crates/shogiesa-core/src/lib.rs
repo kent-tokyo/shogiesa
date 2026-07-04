@@ -1,8 +1,9 @@
+use std::collections::HashMap;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -44,6 +45,14 @@ pub struct StabilityInfo {
     pub score_swing_cp: Option<i32>,
     /// True when all observations agree on the same bestmove.
     pub bestmove_agreement: bool,
+    /// True when every distinct engine's deepest observation agrees on bestmove.
+    /// `None` if fewer than 2 distinct engines are represented.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_bestmove_agreement: Option<bool>,
+    /// Cp swing across each distinct engine's deepest observation.
+    /// `None` if fewer than 2 engines have a cp-scored observation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_score_swing_cp: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,6 +115,50 @@ pub fn score_swing(cp_scores: &[i32]) -> Option<i32> {
     Some(hi - lo)
 }
 
+/// Each distinct engine's deepest observation, taken as that engine's "vote". Engines
+/// searched to different depths are compared at their respective best-available answers, so a
+/// depth mismatch between engines can itself surface as disagreement — that's intentional, not
+/// a limitation to fix.
+fn deepest_per_engine(observations: &[Observation]) -> Vec<&Observation> {
+    let mut by_engine: HashMap<&str, &Observation> = HashMap::new();
+    for obs in observations {
+        by_engine
+            .entry(obs.engine.as_str())
+            .and_modify(|existing| {
+                if obs.depth > existing.depth {
+                    *existing = obs;
+                }
+            })
+            .or_insert(obs);
+    }
+    by_engine.into_values().collect()
+}
+
+/// Whether every distinct engine's deepest observation agrees on bestmove.
+/// `None` if fewer than 2 distinct engines are represented in `observations`.
+pub fn engine_bestmove_agreement(observations: &[Observation]) -> Option<bool> {
+    let deepest = deepest_per_engine(observations);
+    if deepest.len() < 2 {
+        return None;
+    }
+    let first = deepest[0].bestmove.as_str();
+    Some(deepest.iter().all(|o| o.bestmove == first))
+}
+
+/// Cp swing across each distinct engine's deepest observation.
+/// `None` if fewer than 2 engines have a cp-scored observation.
+pub fn engine_score_swing(observations: &[Observation]) -> Option<i32> {
+    let deepest = deepest_per_engine(observations);
+    let cp: Vec<i32> = deepest
+        .iter()
+        .filter_map(|o| match o.score {
+            Score::Cp { value } => Some(value),
+            Score::Mate { .. } => None,
+        })
+        .collect();
+    score_swing(&cp)
+}
+
 impl PositionRecord {
     pub fn new(sfen: String, source: SourceInfo, tags: PositionTags) -> Self {
         Self {
@@ -136,6 +189,8 @@ impl PositionRecord {
         self.stability = Some(StabilityInfo {
             score_swing_cp: score_swing(&cp_scores),
             bestmove_agreement,
+            engine_bestmove_agreement: engine_bestmove_agreement(&self.observations),
+            engine_score_swing_cp: engine_score_swing(&self.observations),
         });
     }
 }
@@ -170,5 +225,72 @@ impl Default for ExtractConfig {
             every_n: 1,
             dedup: false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn obs(engine: &str, depth: u32, cp: i32, bestmove: &str) -> Observation {
+        Observation {
+            engine: engine.to_string(),
+            engine_version: None,
+            depth,
+            score: Score::Cp { value: cp },
+            bestmove: bestmove.to_string(),
+            nodes: None,
+            time_ms: None,
+            pv: None,
+            policy_margin_cp: None,
+        }
+    }
+
+    #[test]
+    fn engine_bestmove_agreement_none_with_one_engine() {
+        let observations = vec![obs("a", 4, 10, "7g7f"), obs("a", 6, 12, "7g7f")];
+        assert_eq!(engine_bestmove_agreement(&observations), None);
+    }
+
+    #[test]
+    fn engine_bestmove_agreement_true_when_engines_agree() {
+        let observations = vec![obs("a", 4, 10, "7g7f"), obs("b", 4, 12, "7g7f")];
+        assert_eq!(engine_bestmove_agreement(&observations), Some(true));
+    }
+
+    #[test]
+    fn engine_bestmove_agreement_false_when_engines_disagree() {
+        let observations = vec![obs("a", 4, 10, "7g7f"), obs("b", 4, 12, "2g2f")];
+        assert_eq!(engine_bestmove_agreement(&observations), Some(false));
+    }
+
+    #[test]
+    fn engine_bestmove_agreement_uses_deepest_observation_per_engine() {
+        // engine "a"'s deepest observation (depth 6) disagrees with "b", even though its
+        // shallower depth-4 observation happened to agree.
+        let observations = vec![
+            obs("a", 4, 10, "7g7f"),
+            obs("a", 6, 15, "2g2f"),
+            obs("b", 4, 12, "7g7f"),
+        ];
+        assert_eq!(engine_bestmove_agreement(&observations), Some(false));
+    }
+
+    #[test]
+    fn engine_score_swing_uses_deepest_observation_per_engine() {
+        let observations = vec![
+            obs("a", 4, 0, "7g7f"),
+            obs("a", 6, 100, "7g7f"),
+            obs("b", 4, 40, "7g7f"),
+        ];
+        // swing should be computed from a's depth-6 score (100) and b's depth-4 score (40),
+        // not a's shallower depth-4 score (0).
+        assert_eq!(engine_score_swing(&observations), Some(60));
+    }
+
+    #[test]
+    fn engine_score_swing_none_with_one_engine() {
+        let observations = vec![obs("a", 4, 10, "7g7f"), obs("a", 6, 20, "7g7f")];
+        assert_eq!(engine_score_swing(&observations), None);
     }
 }

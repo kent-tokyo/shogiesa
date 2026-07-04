@@ -152,6 +152,71 @@ fn report_shows_labeled_diagnostics() {
         .stdout(predicate::str::contains("eval bucket x side"));
 }
 
+#[test]
+fn report_shows_engine_disagreement() {
+    let pos = NamedTempFile::new().unwrap();
+    let obs1 = NamedTempFile::new().unwrap();
+    let obs2 = NamedTempFile::new().unwrap();
+
+    shogiesa()
+        .args([
+            "extract",
+            "--input",
+            fixture("sample.csa").to_str().unwrap(),
+            "--out",
+            pos.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    // engineA's default bestmove (7g7f)
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            pos.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--engine-name",
+            "engineA",
+            "--depths",
+            "4",
+            "--out",
+            obs1.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    // engineB, forced to disagree via `setoption name Bestmove value 2g2f` (sent through
+    // --engine-option, since label never passes extra argv to the spawned engine)
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            obs1.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--engine-name",
+            "engineB",
+            "--engine-option",
+            "Bestmove=2g2f",
+            "--depths",
+            "4",
+            "--out",
+            obs2.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    shogiesa()
+        .args(["report", "--input", obs2.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "engine disagree:      5  (100.0% of 5 multi-engine positions)",
+        ));
+}
+
 // --- validate (normal mode) ---
 
 #[test]
@@ -642,6 +707,19 @@ fn obs(bestmove: &str, score_cp: i32, depth: u32) -> serde_json::Value {
     })
 }
 
+fn obs_with_engine(engine: &str, bestmove: &str, score_cp: i32, depth: u32) -> serde_json::Value {
+    serde_json::json!({
+        "engine": engine,
+        "engine_version": null,
+        "depth": depth,
+        "score": { "kind": "cp", "value": score_cp },
+        "bestmove": bestmove,
+        "nodes": null,
+        "time_ms": null,
+        "pv": null
+    })
+}
+
 fn obs_mate(bestmove: &str, moves: i32, depth: u32) -> serde_json::Value {
     serde_json::json!({
         "engine": "test",
@@ -762,6 +840,84 @@ fn filter_score_swing_excluded() {
             "--out",
             out.path().to_str().unwrap(),
             "--max-score-swing-cp",
+            "150",
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 0);
+}
+
+#[test]
+fn filter_require_engine_agreement_single_engine_passes() {
+    // Only one engine represented — engine_bestmove_agreement is None, so the gate is a no-op
+    // even though these two observations (from the same engine, different depths) disagree.
+    let f = make_labeled_jsonl(&[position(
+        "middlegame",
+        serde_json::json!([
+            obs_with_engine("engineA", "7g7f", 50, 4),
+            obs_with_engine("engineA", "2g2f", 55, 6),
+        ]),
+    )]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--require-engine-agreement",
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 1);
+}
+
+#[test]
+fn filter_require_engine_agreement_excludes_disagreement() {
+    let f = make_labeled_jsonl(&[position(
+        "middlegame",
+        serde_json::json!([
+            obs_with_engine("engineA", "7g7f", 50, 4),
+            obs_with_engine("engineB", "2g2f", 55, 4), // different engine, different bestmove
+        ]),
+    )]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--require-engine-agreement",
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 0);
+}
+
+#[test]
+fn filter_max_engine_score_swing_cp_excludes_large_cross_engine_swing() {
+    let f = make_labeled_jsonl(&[position(
+        "middlegame",
+        serde_json::json!([
+            obs_with_engine("engineA", "7g7f", 50, 4),
+            obs_with_engine("engineB", "7g7f", 300, 4), // agrees on bestmove, swing = 250cp
+        ]),
+    )]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--max-engine-score-swing-cp",
             "150",
         ])
         .assert()

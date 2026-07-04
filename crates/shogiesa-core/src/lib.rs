@@ -159,6 +159,215 @@ pub fn engine_score_swing(observations: &[Observation]) -> Option<i32> {
     score_swing(&cp)
 }
 
+/// Reason a position failed one of `QualityConfig`'s gates. `as_str()` values match the
+/// strings `filter`'s stderr drop-reason breakdown has always printed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QualityReason {
+    MinObservations,
+    Phase,
+    Mate,
+    InCheck,
+    Capture,
+    EvalMin,
+    EvalMax,
+    ScoreSwing,
+    PolicyMargin,
+    BestmoveDisagreement,
+    EngineDisagreement,
+    EngineScoreSwing,
+}
+
+impl QualityReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            QualityReason::MinObservations => "min_observations",
+            QualityReason::Phase => "phase",
+            QualityReason::Mate => "mate",
+            QualityReason::InCheck => "in_check",
+            QualityReason::Capture => "capture",
+            QualityReason::EvalMin => "eval_min",
+            QualityReason::EvalMax => "eval_max",
+            QualityReason::ScoreSwing => "score_swing",
+            QualityReason::PolicyMargin => "policy_margin",
+            QualityReason::BestmoveDisagreement => "bestmove_disagreement",
+            QualityReason::EngineDisagreement => "engine_disagreement",
+            QualityReason::EngineScoreSwing => "engine_score_swing",
+        }
+    }
+}
+
+/// Configuration for `evaluate_quality`'s gates — the single place `filter`'s pass/fail logic
+/// lives, so other consumers can reuse the exact same decision instead of reimplementing it.
+#[derive(Debug, Clone, Default)]
+pub struct QualityConfig {
+    pub min_observations: u32,
+    pub allowed_phases: Option<Vec<GamePhase>>,
+    pub exclude_mate: bool,
+    pub exclude_in_check: bool,
+    pub exclude_capture: bool,
+    pub eval_min: Option<i32>,
+    pub eval_max: Option<i32>,
+    pub max_score_swing_cp: Option<i32>,
+    pub min_policy_margin_cp: Option<i32>,
+    pub require_bestmove_agreement: bool,
+    pub require_engine_agreement: bool,
+    pub max_engine_score_swing_cp: Option<i32>,
+}
+
+/// Result of evaluating a `PositionRecord` against a `QualityConfig`.
+#[derive(Debug, Clone)]
+pub struct QualityDecision {
+    /// True iff `reasons` is empty (every configured gate passed).
+    pub keep: bool,
+    /// Fraction of the *configured* gates this record passed — a plain, transparent readout of
+    /// `reasons`/the gates, not an independently weighted score. `1.0` if nothing was configured.
+    pub score: f32,
+    /// Every gate this record failed, in the same order the gates are checked below.
+    pub reasons: Vec<QualityReason>,
+    pub score_swing_cp: Option<i32>,
+    /// Vacuously true for 0 or 1 observations, matching `StabilityInfo::fill_stability()`.
+    pub bestmove_agreement: bool,
+    pub cp_count: usize,
+    pub mate_count: usize,
+}
+
+/// Evaluate every gate in `config` against `rec`, collecting *all* failing reasons (does not
+/// short-circuit on the first failure) so callers can see the complete picture, not just one
+/// reason. `filter` takes `reasons.first()` to keep its existing first-reason-only stderr tally.
+pub fn evaluate_quality(rec: &PositionRecord, config: &QualityConfig) -> QualityDecision {
+    let obs = &rec.observations;
+    let mut reasons = Vec::new();
+    let mut configured_gates = 0u32;
+
+    if config.min_observations > 0 {
+        configured_gates += 1;
+        if (obs.len() as u32) < config.min_observations {
+            reasons.push(QualityReason::MinObservations);
+        }
+    }
+
+    if config.allowed_phases.is_some() {
+        configured_gates += 1;
+        if config
+            .allowed_phases
+            .as_ref()
+            .is_some_and(|p| !p.contains(&rec.tags.phase))
+        {
+            reasons.push(QualityReason::Phase);
+        }
+    }
+
+    if config.exclude_mate {
+        configured_gates += 1;
+        if obs.iter().any(|o| matches!(o.score, Score::Mate { .. })) {
+            reasons.push(QualityReason::Mate);
+        }
+    }
+
+    if config.exclude_in_check {
+        configured_gates += 1;
+        if rec.tags.in_check {
+            reasons.push(QualityReason::InCheck);
+        }
+    }
+
+    if config.exclude_capture {
+        configured_gates += 1;
+        if rec.tags.has_capture {
+            reasons.push(QualityReason::Capture);
+        }
+    }
+
+    let cp_scores: Vec<i32> = obs
+        .iter()
+        .filter_map(|o| match o.score {
+            Score::Cp { value } => Some(value),
+            Score::Mate { .. } => None,
+        })
+        .collect();
+    let cp_count = cp_scores.len();
+    let mate_count = obs.len() - cp_count;
+
+    if config.eval_min.is_some() {
+        configured_gates += 1;
+        if config
+            .eval_min
+            .is_some_and(|min| cp_scores.iter().any(|&v| v < min))
+        {
+            reasons.push(QualityReason::EvalMin);
+        }
+    }
+    if config.eval_max.is_some() {
+        configured_gates += 1;
+        if config
+            .eval_max
+            .is_some_and(|max| cp_scores.iter().any(|&v| v > max))
+        {
+            reasons.push(QualityReason::EvalMax);
+        }
+    }
+
+    let score_swing_cp = score_swing(&cp_scores);
+    if config.max_score_swing_cp.is_some() {
+        configured_gates += 1;
+        if let Some(max_swing) = config.max_score_swing_cp
+            && score_swing_cp.is_some_and(|swing| swing > max_swing)
+        {
+            reasons.push(QualityReason::ScoreSwing);
+        }
+    }
+
+    if config.min_policy_margin_cp.is_some() {
+        configured_gates += 1;
+        if config.min_policy_margin_cp.is_some_and(|min| {
+            obs.iter()
+                .any(|o| o.policy_margin_cp.is_some_and(|m| m < min))
+        }) {
+            reasons.push(QualityReason::PolicyMargin);
+        }
+    }
+
+    let bestmove_agreement = obs.is_empty() || obs.iter().all(|o| o.bestmove == obs[0].bestmove);
+    if config.require_bestmove_agreement {
+        configured_gates += 1;
+        if obs.len() >= 2 && !bestmove_agreement {
+            reasons.push(QualityReason::BestmoveDisagreement);
+        }
+    }
+
+    if config.require_engine_agreement {
+        configured_gates += 1;
+        if engine_bestmove_agreement(obs) == Some(false) {
+            reasons.push(QualityReason::EngineDisagreement);
+        }
+    }
+
+    if config.max_engine_score_swing_cp.is_some() {
+        configured_gates += 1;
+        if let Some(max_swing) = config.max_engine_score_swing_cp
+            && engine_score_swing(obs).is_some_and(|swing| swing > max_swing)
+        {
+            reasons.push(QualityReason::EngineScoreSwing);
+        }
+    }
+
+    let score = if configured_gates == 0 {
+        1.0
+    } else {
+        1.0 - reasons.len() as f32 / configured_gates as f32
+    };
+
+    QualityDecision {
+        keep: reasons.is_empty(),
+        score,
+        reasons,
+        score_swing_cp,
+        bestmove_agreement,
+        cp_count,
+        mate_count,
+    }
+}
+
 impl PositionRecord {
     pub fn new(sfen: String, source: SourceInfo, tags: PositionTags) -> Self {
         Self {
@@ -292,5 +501,268 @@ mod tests {
     fn engine_score_swing_none_with_one_engine() {
         let observations = vec![obs("a", 4, 10, "7g7f"), obs("a", 6, 20, "7g7f")];
         assert_eq!(engine_score_swing(&observations), None);
+    }
+
+    fn obs_mate(engine: &str, depth: u32, moves: i32, bestmove: &str) -> Observation {
+        Observation {
+            engine: engine.to_string(),
+            engine_version: None,
+            depth,
+            score: Score::Mate { moves },
+            bestmove: bestmove.to_string(),
+            nodes: None,
+            time_ms: None,
+            pv: None,
+            policy_margin_cp: None,
+        }
+    }
+
+    fn obs_with_margin(
+        engine: &str,
+        depth: u32,
+        cp: i32,
+        bestmove: &str,
+        margin: i32,
+    ) -> Observation {
+        let mut o = obs(engine, depth, cp, bestmove);
+        o.policy_margin_cp = Some(margin);
+        o
+    }
+
+    fn rec_with(
+        phase: GamePhase,
+        in_check: bool,
+        has_capture: bool,
+        observations: Vec<Observation>,
+    ) -> PositionRecord {
+        let mut r = PositionRecord::new(
+            "startpos".to_string(),
+            SourceInfo {
+                kind: "test".to_string(),
+                path: "test".to_string(),
+                ply: 1,
+            },
+            PositionTags {
+                phase,
+                side_to_move: SideToMove::Black,
+                in_check,
+                has_capture,
+            },
+        );
+        r.observations = observations;
+        r
+    }
+
+    fn simple_rec(observations: Vec<Observation>) -> PositionRecord {
+        rec_with(GamePhase::Middlegame, false, false, observations)
+    }
+
+    #[test]
+    fn evaluate_quality_min_observations_gate() {
+        let config = QualityConfig {
+            min_observations: 2,
+            ..Default::default()
+        };
+        let decision = evaluate_quality(&simple_rec(vec![obs("a", 4, 10, "7g7f")]), &config);
+        assert!(!decision.keep);
+        assert_eq!(decision.reasons, vec![QualityReason::MinObservations]);
+    }
+
+    #[test]
+    fn evaluate_quality_phase_gate() {
+        let config = QualityConfig {
+            allowed_phases: Some(vec![GamePhase::Opening]),
+            ..Default::default()
+        };
+        let rec = rec_with(
+            GamePhase::Endgame,
+            false,
+            false,
+            vec![obs("a", 4, 10, "7g7f")],
+        );
+        let decision = evaluate_quality(&rec, &config);
+        assert_eq!(decision.reasons, vec![QualityReason::Phase]);
+    }
+
+    #[test]
+    fn evaluate_quality_mate_gate() {
+        let config = QualityConfig {
+            exclude_mate: true,
+            ..Default::default()
+        };
+        let decision = evaluate_quality(&simple_rec(vec![obs_mate("a", 4, 3, "7g7f")]), &config);
+        assert_eq!(decision.reasons, vec![QualityReason::Mate]);
+        assert_eq!(decision.mate_count, 1);
+        assert_eq!(decision.cp_count, 0);
+    }
+
+    #[test]
+    fn evaluate_quality_in_check_gate() {
+        let config = QualityConfig {
+            exclude_in_check: true,
+            ..Default::default()
+        };
+        let rec = rec_with(
+            GamePhase::Middlegame,
+            true,
+            false,
+            vec![obs("a", 4, 10, "7g7f")],
+        );
+        assert_eq!(
+            evaluate_quality(&rec, &config).reasons,
+            vec![QualityReason::InCheck]
+        );
+    }
+
+    #[test]
+    fn evaluate_quality_capture_gate() {
+        let config = QualityConfig {
+            exclude_capture: true,
+            ..Default::default()
+        };
+        let rec = rec_with(
+            GamePhase::Middlegame,
+            false,
+            true,
+            vec![obs("a", 4, 10, "7g7f")],
+        );
+        assert_eq!(
+            evaluate_quality(&rec, &config).reasons,
+            vec![QualityReason::Capture]
+        );
+    }
+
+    #[test]
+    fn evaluate_quality_eval_min_gate() {
+        let config = QualityConfig {
+            eval_min: Some(-100),
+            ..Default::default()
+        };
+        let decision = evaluate_quality(&simple_rec(vec![obs("a", 4, -200, "7g7f")]), &config);
+        assert_eq!(decision.reasons, vec![QualityReason::EvalMin]);
+    }
+
+    #[test]
+    fn evaluate_quality_eval_max_gate() {
+        let config = QualityConfig {
+            eval_max: Some(100),
+            ..Default::default()
+        };
+        let decision = evaluate_quality(&simple_rec(vec![obs("a", 4, 200, "7g7f")]), &config);
+        assert_eq!(decision.reasons, vec![QualityReason::EvalMax]);
+    }
+
+    #[test]
+    fn evaluate_quality_score_swing_gate() {
+        let config = QualityConfig {
+            max_score_swing_cp: Some(50),
+            ..Default::default()
+        };
+        let observations = vec![obs("a", 4, 0, "7g7f"), obs("a", 6, 100, "7g7f")];
+        let decision = evaluate_quality(&simple_rec(observations), &config);
+        assert_eq!(decision.reasons, vec![QualityReason::ScoreSwing]);
+        assert_eq!(decision.score_swing_cp, Some(100));
+    }
+
+    #[test]
+    fn evaluate_quality_policy_margin_gate() {
+        let config = QualityConfig {
+            min_policy_margin_cp: Some(100),
+            ..Default::default()
+        };
+        let observations = vec![obs_with_margin("a", 4, 10, "7g7f", 20)];
+        let decision = evaluate_quality(&simple_rec(observations), &config);
+        assert_eq!(decision.reasons, vec![QualityReason::PolicyMargin]);
+    }
+
+    #[test]
+    fn evaluate_quality_bestmove_disagreement_gate() {
+        let config = QualityConfig {
+            require_bestmove_agreement: true,
+            ..Default::default()
+        };
+        let observations = vec![obs("a", 4, 10, "7g7f"), obs("a", 6, 12, "2g2f")];
+        let decision = evaluate_quality(&simple_rec(observations), &config);
+        assert_eq!(decision.reasons, vec![QualityReason::BestmoveDisagreement]);
+        assert!(!decision.bestmove_agreement);
+    }
+
+    #[test]
+    fn evaluate_quality_engine_disagreement_gate() {
+        let config = QualityConfig {
+            require_engine_agreement: true,
+            ..Default::default()
+        };
+        let observations = vec![obs("a", 4, 10, "7g7f"), obs("b", 4, 12, "2g2f")];
+        let decision = evaluate_quality(&simple_rec(observations), &config);
+        assert_eq!(decision.reasons, vec![QualityReason::EngineDisagreement]);
+    }
+
+    #[test]
+    fn evaluate_quality_engine_score_swing_gate() {
+        let config = QualityConfig {
+            max_engine_score_swing_cp: Some(50),
+            ..Default::default()
+        };
+        let observations = vec![obs("a", 4, 0, "7g7f"), obs("b", 4, 100, "7g7f")];
+        let decision = evaluate_quality(&simple_rec(observations), &config);
+        assert_eq!(decision.reasons, vec![QualityReason::EngineScoreSwing]);
+    }
+
+    #[test]
+    fn evaluate_quality_multi_gate_failure_keeps_first_reason_order() {
+        // Fails both min_observations (needs 2, has 1) and exclude_mate — min_observations
+        // must appear first, matching filter_reason's existing check order, since `filter`
+        // takes reasons.first() for its stderr tally.
+        let config = QualityConfig {
+            min_observations: 2,
+            exclude_mate: true,
+            ..Default::default()
+        };
+        let decision = evaluate_quality(&simple_rec(vec![obs_mate("a", 4, 3, "7g7f")]), &config);
+        assert_eq!(
+            decision.reasons,
+            vec![QualityReason::MinObservations, QualityReason::Mate]
+        );
+    }
+
+    #[test]
+    fn evaluate_quality_zero_observations_is_safe() {
+        // With nothing short-circuiting anymore, every gate runs against empty `observations` —
+        // must not panic (e.g. indexing obs[0]) and must report vacuous/empty stats.
+        let config = QualityConfig {
+            require_bestmove_agreement: true,
+            require_engine_agreement: true,
+            exclude_mate: true,
+            max_score_swing_cp: Some(10),
+            ..Default::default()
+        };
+        let decision = evaluate_quality(&simple_rec(vec![]), &config);
+        assert!(decision.bestmove_agreement);
+        assert_eq!(decision.cp_count, 0);
+        assert_eq!(decision.mate_count, 0);
+        assert_eq!(decision.score_swing_cp, None);
+    }
+
+    #[test]
+    fn evaluate_quality_score_formula() {
+        // 3 gates configured (min_observations, exclude_mate, max_score_swing_cp), 1 fails
+        // (exclude_mate) -> score == 2/3.
+        let config = QualityConfig {
+            min_observations: 1,
+            exclude_mate: true,
+            max_score_swing_cp: Some(1000),
+            ..Default::default()
+        };
+        let decision = evaluate_quality(&simple_rec(vec![obs_mate("a", 4, 3, "7g7f")]), &config);
+        assert_eq!(decision.reasons, vec![QualityReason::Mate]);
+        assert!((decision.score - 2.0 / 3.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn evaluate_quality_no_configured_gates_scores_perfect() {
+        let decision = evaluate_quality(&simple_rec(vec![]), &QualityConfig::default());
+        assert!(decision.keep);
+        assert_eq!(decision.score, 1.0);
     }
 }

@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::hash::{Hash, Hasher};
 
 use shogiesa_core::{
-    GamePhase, Observation, PositionRecord, SCHEMA_VERSION, Score, SideToMove,
-    engine_bestmove_agreement, engine_score_swing, score_swing, sfen::Sfen, zobrist_from_sfen,
+    GamePhase, Observation, PositionRecord, QualityConfig, SCHEMA_VERSION, Score, SideToMove,
+    engine_bestmove_agreement, evaluate_quality, score_swing, sfen::Sfen, zobrist_from_sfen,
 };
 use shogiesa_pack as pack;
 use shogiesa_usi::UsiEngine;
@@ -1077,90 +1077,24 @@ fn cmd_unpack(args: UnpackArgs) -> Result<()> {
     Ok(())
 }
 
-fn cp_value(s: &Score) -> Option<i32> {
-    match s {
-        Score::Cp { value } => Some(*value),
-        Score::Mate { .. } => None,
-    }
-}
-
-/// Returns the reason the record was dropped, or `None` if it passes every gate.
-fn filter_reason(
-    rec: &PositionRecord,
+fn build_quality_config(
     args: &FilterArgs,
-    allowed_phases: &Option<Vec<GamePhase>>,
-) -> Option<&'static str> {
-    let obs = &rec.observations;
-
-    if (obs.len() as u32) < args.min_observations {
-        return Some("min_observations");
+    allowed_phases: Option<Vec<GamePhase>>,
+) -> QualityConfig {
+    QualityConfig {
+        min_observations: args.min_observations,
+        allowed_phases,
+        exclude_mate: args.exclude_mate,
+        exclude_in_check: args.exclude_in_check,
+        exclude_capture: args.exclude_capture,
+        eval_min: args.eval_min,
+        eval_max: args.eval_max,
+        max_score_swing_cp: args.max_score_swing_cp,
+        min_policy_margin_cp: args.min_policy_margin_cp,
+        require_bestmove_agreement: args.require_bestmove_agreement,
+        require_engine_agreement: args.require_engine_agreement,
+        max_engine_score_swing_cp: args.max_engine_score_swing_cp,
     }
-
-    if allowed_phases
-        .as_ref()
-        .is_some_and(|p| !p.contains(&rec.tags.phase))
-    {
-        return Some("phase");
-    }
-
-    if args.exclude_mate && obs.iter().any(|o| matches!(o.score, Score::Mate { .. })) {
-        return Some("mate");
-    }
-
-    if args.exclude_in_check && rec.tags.in_check {
-        return Some("in_check");
-    }
-
-    if args.exclude_capture && rec.tags.has_capture {
-        return Some("capture");
-    }
-
-    let cp_scores: Vec<i32> = obs.iter().filter_map(|o| cp_value(&o.score)).collect();
-
-    if args
-        .eval_min
-        .is_some_and(|min| cp_scores.iter().any(|&v| v < min))
-    {
-        return Some("eval_min");
-    }
-    if args
-        .eval_max
-        .is_some_and(|max| cp_scores.iter().any(|&v| v > max))
-    {
-        return Some("eval_max");
-    }
-
-    if let Some(max_swing) = args.max_score_swing_cp
-        && score_swing(&cp_scores).is_some_and(|swing| swing > max_swing)
-    {
-        return Some("score_swing");
-    }
-
-    if args.min_policy_margin_cp.is_some_and(|min| {
-        obs.iter()
-            .any(|o| o.policy_margin_cp.is_some_and(|m| m < min))
-    }) {
-        return Some("policy_margin");
-    }
-
-    if args.require_bestmove_agreement && obs.len() >= 2 {
-        let first = &obs[0].bestmove;
-        if obs.iter().any(|o| &o.bestmove != first) {
-            return Some("bestmove_disagreement");
-        }
-    }
-
-    if args.require_engine_agreement && engine_bestmove_agreement(obs) == Some(false) {
-        return Some("engine_disagreement");
-    }
-
-    if let Some(max_swing) = args.max_engine_score_swing_cp
-        && engine_score_swing(obs).is_some_and(|swing| swing > max_swing)
-    {
-        return Some("engine_score_swing");
-    }
-
-    None
 }
 
 fn cmd_filter(args: FilterArgs) -> Result<()> {
@@ -1177,6 +1111,7 @@ fn cmd_filter(args: FilterArgs) -> Result<()> {
             })
             .collect()
     });
+    let config = build_quality_config(&args, allowed_phases);
 
     let reader = BufReader::new(
         File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
@@ -1207,7 +1142,8 @@ fn cmd_filter(args: FilterArgs) -> Result<()> {
             }
         };
 
-        match filter_reason(&rec, &args, &allowed_phases) {
+        let decision = evaluate_quality(&rec, &config);
+        match decision.reasons.first() {
             None => {
                 serde_json::to_writer(&mut writer, &rec)?;
                 writer.write_all(b"\n")?;
@@ -1215,7 +1151,7 @@ fn cmd_filter(args: FilterArgs) -> Result<()> {
             }
             Some(reason) => {
                 skipped += 1;
-                *drop_reasons.entry(reason).or_default() += 1;
+                *drop_reasons.entry(reason.as_str()).or_default() += 1;
             }
         }
     }

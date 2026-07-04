@@ -110,6 +110,7 @@ pub enum BoardError {
 /// file_idx = 9 - file   (0 = file9/leftmost in SFEN, 8 = file1/rightmost)
 type Grid = [[Option<(SideToMove, PieceType)>; 9]; 9];
 
+#[derive(Clone)]
 pub struct Board {
     pub grid: Grid,
     /// hand[color_idx][piece_idx]: R=0,B=1,G=2,S=3,N=4,L=5,P=6

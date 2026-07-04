@@ -65,6 +65,15 @@ fn fullwidth_col(c: char) -> Option<u8> {
     }
 }
 
+/// Parse the `N` in a `変化：N手` (variation/branch) marker line.
+/// Returns `None` if the line isn't a well-formed variation marker.
+fn parse_henka_ply(line: &str) -> Option<u32> {
+    let rest = line.strip_prefix("変化")?;
+    let rest = rest.trim_start_matches(['：', ':']);
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok()
+}
+
 /// Convert a KIF kanji rank (一..九) to rank number (1..9).
 fn kanji_rank(c: char) -> Option<u8> {
     match c {
@@ -228,6 +237,18 @@ pub fn extract_from_str(
     let mut in_moves = false;
     let mut prev_dest: Option<(u8, u8)> = None;
 
+    // Mainline board/prev_dest snapshot after `k` mainline moves, indexed by `k`. A `変化：N手`
+    // marker branches from `checkpoints[N-1]`; branches never extend this (they only ever
+    // resolve against the mainline, not against each other — nested variations are out of scope).
+    let mut checkpoints: Vec<(Board, Option<(u8, u8)>)> = Vec::new();
+    let mut current_path = source_path.to_string();
+    let mut variation_count: u32 = 0;
+    // Whether the current block (mainline or a variation) is still accepting move lines. Only
+    // mainline parsing may `break` the outer loop; every stop condition inside a variation
+    // (terminal marker, parse error, max-ply) just ends that block so scanning can find the
+    // next `変化` marker instead of abandoning the rest of the file.
+    let mut accepting = false;
+
     for line in content.lines() {
         let line = line.trim();
 
@@ -255,6 +276,8 @@ pub fn extract_from_str(
         // Move section header
         if line.starts_with("手数") {
             in_moves = true;
+            accepting = true;
+            checkpoints.push((board.clone(), prev_dest));
             continue;
         }
 
@@ -262,11 +285,43 @@ pub fn extract_from_str(
             continue;
         }
 
-        // Terminal markers
-        // ponytail: 変化(分岐)は本譜のみ抽出し、分岐そのものは追わない。分岐木の完全パースは別スコープ
-        if line.starts_with("まで") || line == "中断" || line == "投了" || line.starts_with("変化")
-        {
-            break;
+        // Variation/branch marker: jump back to the mainline checkpoint at ply N-1 and start
+        // extracting the branch's moves under a distinct source path.
+        if line.starts_with("変化") {
+            let branch = parse_henka_ply(line).and_then(|n| {
+                if n == 0 {
+                    return None;
+                }
+                checkpoints.get((n - 1) as usize).map(|cp| (n, cp.clone()))
+            });
+            match branch {
+                Some((n, (cp_board, cp_prev_dest))) => {
+                    variation_count += 1;
+                    board = cp_board;
+                    prev_dest = cp_prev_dest;
+                    ply = n - 1;
+                    current_path = format!("{source_path}#var{variation_count}@{n}");
+                    accepting = true;
+                }
+                None => {
+                    warn!(
+                        path = source_path,
+                        line, "malformed or out-of-range 変化 marker, skipping"
+                    );
+                    accepting = false;
+                }
+            }
+            continue;
+        }
+
+        // Terminal markers end the current block only; scanning continues for more 変化 blocks.
+        if line.starts_with("まで") || line == "中断" || line == "投了" {
+            accepting = false;
+            continue;
+        }
+
+        if !accepting {
+            continue;
         }
 
         // Move line: starts with a ply number
@@ -284,15 +339,22 @@ pub fn extract_from_str(
             || move_token.starts_with("中断")
             || move_token.starts_with("まで")
         {
-            break;
+            accepting = false;
+            continue;
         }
+
+        let is_mainline = current_path == source_path;
 
         let Some(kif_move) = parse_kif_move(move_token, prev_dest) else {
             warn!(
                 path = source_path,
                 ply, "unsupported move syntax {move_token:?}, stopping game"
             );
-            break;
+            if is_mainline {
+                break;
+            }
+            accepting = false;
+            continue;
         };
 
         let color = board.side;
@@ -319,7 +381,11 @@ pub fn extract_from_str(
 
         if let Err(e) = result {
             warn!(path = source_path, ply, "board error: {e}");
-            break;
+            if is_mainline {
+                break;
+            }
+            accepting = false;
+            continue;
         }
 
         // Updated for every played move (even ones later filtered out below),
@@ -328,8 +394,16 @@ pub fn extract_from_str(
 
         ply += 1;
 
+        if is_mainline {
+            checkpoints.push((board.clone(), prev_dest));
+        }
+
         if config.max_ply.is_some_and(|max| ply > max) {
-            break;
+            if is_mainline {
+                break;
+            }
+            accepting = false;
+            continue;
         }
         if ply < config.min_ply {
             continue;
@@ -352,7 +426,7 @@ pub fn extract_from_str(
         };
         let source = SourceInfo {
             kind: "kif".to_string(),
-            path: source_path.to_string(),
+            path: current_path.clone(),
             ply,
         };
         out.push(PositionRecord::new(sfen, source, tags));

@@ -58,6 +58,12 @@ shogiesa extract \
   --dedup                    # deduplicate by SFEN
 ```
 
+KIF `変化` (variation/branch) blocks are extracted too, each as its own set of positions with a
+`source.path` suffixed `#varN@ply` (e.g. `game.kif#var1@2`) so they never collide with the
+mainline's positions or with each other — `split --by-source` puts them in separate files.
+Variations always branch from the mainline; a variation nested inside another variation isn't
+supported.
+
 ### `label` — engine evaluation
 
 ```bash
@@ -241,7 +247,7 @@ shogiesa connects to engines via SFEN, JSONL, and USI — no engine-internal dep
 
 | Item | Status |
 |---|---|
-| KIF `変化` (variation/branch) moves | not extracted — only the mainline is parsed |
+| KIF `変化` (variation/branch) moves | extracted as separate positions (`source.path` suffixed `#varN@ply`), but only relative to the mainline — a variation nested inside another variation is not supported |
 | `Sfen`/`Board` legality checking | syntactic only, no full legal-move generation (by design) |
 
 ## License

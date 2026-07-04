@@ -163,19 +163,125 @@ fn same_square_notation_extracts_correctly() {
 }
 
 #[test]
-fn variation_marker_stops_mainline_extraction() {
+fn variation_branch_is_extracted() {
     let kif = "手合割：平手\n先手：A\n後手：B\n手数----指手\n\
    1 ７六歩(77)   (0:01/0)\n   2 ３四歩(33)   (0:01/0)\n\
 \n変化：2手\n   2 ８四歩(83)   (0:01/0)\n   3 ７八金(69)   (0:01/0)\n";
     let config = ExtractConfig::default();
     let mut seen = HashSet::new();
     let records = extract_from_str(kif, "var.kif", &config, &mut seen).unwrap();
-    // Only the two mainline moves are extracted; the variation's move 2
-    // (a different move than the mainline's) must not be applied to the board.
-    assert_eq!(records.len(), 2);
+
+    // Mainline (2 moves) + variation (2 moves) = 4 records total.
+    assert_eq!(records.len(), 4);
+
+    let mainline: Vec<_> = records
+        .iter()
+        .filter(|r| r.source.path == "var.kif")
+        .collect();
+    let variation: Vec<_> = records
+        .iter()
+        .filter(|r| r.source.path == "var.kif#var1@2")
+        .collect();
+    assert_eq!(mainline.len(), 2);
+    assert_eq!(variation.len(), 2);
     assert_eq!(
-        records.iter().map(|r| r.source.ply).collect::<Vec<_>>(),
+        mainline.iter().map(|r| r.source.ply).collect::<Vec<_>>(),
         vec![1, 2]
+    );
+    assert_eq!(
+        variation.iter().map(|r| r.source.ply).collect::<Vec<_>>(),
+        vec![2, 3]
+    );
+
+    // The variation must branch from the mainline's move-1 state, not from scratch: replaying
+    // "7g7f, 8d8e" directly as its own 2-move game must produce the same ply-2 SFEN as the
+    // variation's first record — proving it branched from the correct checkpoint.
+    let standalone_kif = "手合割：平手\n手数----指手\n\
+   1 ７六歩(77)   (0:01/0)\n   2 ８四歩(83)   (0:01/0)\n";
+    let mut seen2 = HashSet::new();
+    let standalone = extract_from_str(
+        standalone_kif,
+        "standalone.kif",
+        &ExtractConfig::default(),
+        &mut seen2,
+    )
+    .unwrap();
+    assert_eq!(variation[0].sfen, standalone[1].sfen);
+
+    // And it must differ from the mainline's own move-2 SFEN (a different move was played).
+    assert_ne!(variation[0].sfen, mainline[1].sfen);
+}
+
+#[test]
+fn multiple_sibling_variations_get_distinct_paths() {
+    let kif = "手合割：平手\n手数----指手\n\
+   1 ７六歩(77)   (0:01/0)\n   2 ３四歩(33)   (0:01/0)\n   3 ２六歩(27)   (0:01/0)\n\
+\n変化：2手\n   2 ８四歩(83)   (0:01/0)\n\
+\n変化：3手\n   3 ４四歩(43)   (0:01/0)\n";
+    let config = ExtractConfig::default();
+    let mut seen = HashSet::new();
+    let records = extract_from_str(kif, "multi.kif", &config, &mut seen).unwrap();
+
+    let mainline_count = records
+        .iter()
+        .filter(|r| r.source.path == "multi.kif")
+        .count();
+    let var1_count = records
+        .iter()
+        .filter(|r| r.source.path == "multi.kif#var1@2")
+        .count();
+    let var2_count = records
+        .iter()
+        .filter(|r| r.source.path == "multi.kif#var2@3")
+        .count();
+    assert_eq!(mainline_count, 3);
+    assert_eq!(var1_count, 1);
+    assert_eq!(var2_count, 1);
+}
+
+#[test]
+fn malformed_variation_reference_is_skipped_not_fatal() {
+    let kif = "手合割：平手\n手数----指手\n\
+   1 ７六歩(77)   (0:01/0)\n   2 ３四歩(33)   (0:01/0)\n\
+\n変化：99手\n   99 ８四歩(83)   (0:01/0)\n";
+    let config = ExtractConfig::default();
+    let mut seen = HashSet::new();
+    let records = extract_from_str(kif, "bad.kif", &config, &mut seen).unwrap();
+    // Mainline still extracts fully despite the out-of-range variation reference.
+    assert_eq!(records.len(), 2);
+    assert!(records.iter().all(|r| r.source.path == "bad.kif"));
+}
+
+#[test]
+fn variation_past_max_ply_does_not_abort_later_siblings() {
+    let kif = "手合割：平手\n手数----指手\n\
+   1 ７六歩(77)   (0:01/0)\n   2 ３四歩(33)   (0:01/0)\n\
+\n変化：2手\n   2 ８四歩(83)   (0:01/0)\n   3 ７八金(69)   (0:01/0)\n\
+\n変化：2手\n   2 ２六歩(27)   (0:01/0)\n";
+    let config = ExtractConfig {
+        min_ply: 1,
+        max_ply: Some(2),
+        every_n: 1,
+        dedup: false,
+    };
+    let mut seen = HashSet::new();
+    let records = extract_from_str(kif, "game.kif", &config, &mut seen).unwrap();
+
+    let var1: Vec<_> = records
+        .iter()
+        .filter(|r| r.source.path == "game.kif#var1@2")
+        .collect();
+    let var2: Vec<_> = records
+        .iter()
+        .filter(|r| r.source.path == "game.kif#var2@2")
+        .collect();
+    // var1's second move (ply 3) exceeds max_ply and must not extract, but must also not abort
+    // scanning for var2, which comes after it in the file.
+    assert_eq!(var1.len(), 1);
+    assert_eq!(
+        var2.len(),
+        1,
+        "sibling variation after a max-ply-truncated variation must still extract"
     );
 }
 

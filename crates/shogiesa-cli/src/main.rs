@@ -24,6 +24,7 @@ use tracing::info;
 #[derive(Parser)]
 #[command(
     name = "shogiesa",
+    version,
     about = "Shogi training data feed for NNUE engines."
 )]
 struct Cli {
@@ -217,10 +218,14 @@ struct LabelArgs {
     /// to this path
     #[arg(long)]
     manifest: Option<PathBuf>,
-    /// Write results as they arrive instead of preserving input order. Drops the reorder
-    /// buffer entirely, so a slow position never delays already-finished ones behind it.
+    /// Write results in strict input order (the pre-existing default before this flag existed).
+    /// Trades interrupt-safety for order: a slow-to-label position holds every already-finished
+    /// position behind it in memory, unwritten, until it catches up -- killing `label` (Ctrl-C,
+    /// SIGTERM, SIGKILL; no signal handler exists here) loses all of that already-completed work.
+    /// Omit this flag unless you specifically need output order to match input order (e.g. for
+    /// diffing against a prior run).
     #[arg(long)]
-    unordered_output: bool,
+    preserve_order: bool,
     /// Cache observations under this directory, keyed by (sfen, engine, engine version, engine
     /// options, requested depth, multipv, schema version) — repeated experiments over the same
     /// positions reuse a cached observation instead of re-running the engine
@@ -1839,11 +1844,12 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
         .collect();
     drop(result_tx); // the loop below ends once every worker's clone is also dropped
 
-    // Writer: runs on this thread. Default mode buffers out-of-order arrivals in `pending`
-    // (bounded to `queue_depth` entries by the permit scheme above) and only flushes the next
-    // contiguous job_id, so output order matches input order regardless of which worker finishes
-    // first. `--unordered-output` skips this and writes on arrival, for throughput when input
-    // order doesn't matter.
+    // Writer: runs on this thread. Default mode writes each job on arrival, in whatever order
+    // workers finish -- interrupt-safe, since nothing is ever held unwritten waiting on a
+    // straggler. `--preserve-order` instead buffers out-of-order arrivals in `pending` (bounded to
+    // `queue_depth` entries by the permit scheme above) and only flushes the next contiguous
+    // job_id, so output order matches input order -- at the cost of losing every already-finished
+    // job still buffered behind a slow one if the process is killed before it catches up.
     let out_file =
         File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
     let mut out_writer = BufWriter::new(out_file);
@@ -1863,6 +1869,12 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
         |record: &PositionRecord, manifest: &mut Option<RunManifest>| -> Result<()> {
             serde_json::to_writer(&mut out_writer, record)?;
             out_writer.write_all(b"\n")?;
+            // Flush per record (not just once at the very end of the whole run): engine search
+            // time dominates I/O time by orders of magnitude here, so this costs nothing
+            // measurable, but it shrinks the window where a killed process loses writes still
+            // sitting in this BufWriter -- independent of (and much smaller than) the
+            // preserve_order/reorder-buffer loss window below.
+            out_writer.flush()?;
             if let Some(m) = manifest.as_mut() {
                 accumulate_coverage(m, std::slice::from_ref(record));
             }
@@ -1879,10 +1891,7 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
         };
 
     for job in result_rx {
-        if args.unordered_output {
-            write_one(&job.record, &mut manifest)?;
-            written += 1;
-        } else {
+        if args.preserve_order {
             for record in reorder_push(&mut pending, &mut next_id, job.id, job.record) {
                 write_one(&record, &mut manifest)?;
                 written += 1;
@@ -1891,6 +1900,9 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
             // in principle grow past `queue_depth` and this bounded pipeline would silently
             // revert to the unbounded memory use it replaced.
             debug_assert!(pending.len() <= queue_depth);
+        } else {
+            write_one(&job.record, &mut manifest)?;
+            written += 1;
         }
     }
     out_writer.flush()?;
@@ -1943,7 +1955,7 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
         manifest.engine_launch_failures = Some(engine_launch_failures);
         manifest.records_per_sec = records_per_sec;
         manifest.average_engine_time_ms = average_engine_time_ms;
-        manifest.unordered_output = Some(args.unordered_output);
+        manifest.preserve_order = Some(args.preserve_order);
         if let Some((hits, misses)) = cache_counts {
             manifest.cache_hits = Some(hits);
             manifest.cache_hit_rate = cache_hit_rate;
@@ -2378,7 +2390,7 @@ struct RunManifest {
     #[serde(skip_serializing_if = "Option::is_none")]
     average_engine_time_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    unordered_output: Option<bool>,
+    preserve_order: Option<bool>,
 }
 
 impl RunManifest {
@@ -2417,7 +2429,7 @@ impl RunManifest {
             records_per_sec: None,
             cache_hit_rate: None,
             average_engine_time_ms: None,
-            unordered_output: None,
+            preserve_order: None,
         }
     }
 }

@@ -6,6 +6,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ---
 
+## [Unreleased]
+
+### Added
+- `shogiesa --version`/`-V` now works (previously `error: unexpected argument '--version' found` — clap's auto-generated version flag was never opted into via `#[command(version)]` on the top-level `Cli` struct, even though every crate already sets `version.workspace = true`).
+
+### Changed
+- **`label`'s default output ordering flipped from order-preserving to unordered/write-on-completion.** Real production incident: killing a long `--jobs N` run (no signal handler exists anywhere in `label`, so any Ctrl-C/SIGTERM/SIGKILL just terminates the process) previously discarded every already-completed observation still sitting in the writer's in-memory reorder buffer, waiting for a slower straggler position to catch up — up to `jobs * 4` fully-finished records, held indefinitely if that straggler never finishes before the kill. The old `--unordered-output` flag already fully avoided this (skip the buffer, write on arrival) but was opt-in, so the fragile-to-interruption mode was the default despite `--skip-existing` being specifically designed to support resuming an interrupted run. **Breaking**: the flag is renamed and inverted — `--unordered-output` (opt-in to safe/unordered) is now the default with no flag needed; `--preserve-order` (opt-in to the old default) trades that safety back for strict input-order output. `RunManifest`'s `unordered_output: Option<bool>` field is similarly renamed to `preserve_order: Option<bool>`. Also added an explicit per-record `flush()` in the writer (previously only flushed once at the very end of the whole run) to shrink the smaller, secondary loss window of writes still sitting in Rust's own `BufWriter` — negligible cost, since engine search time dominates I/O time by orders of magnitude.
+
 ## [0.6.0] — 2026-07-05
 
 ### Added

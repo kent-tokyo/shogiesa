@@ -99,15 +99,23 @@ never trusted for `policy_margin_cp`.
 `label` streams its input line-by-line through a bounded reader / worker-pool / writer pipeline
 instead of loading the whole dataset into memory — memory use scales with `--jobs`, not with
 dataset size. Each of the `--jobs` workers owns one long-lived engine process, launched once and
-reused across every position it processes (not respawned per position). Output preserves input
-order by default (a bounded reorder buffer holds back an out-of-order result until its
-predecessors have been written); `--unordered-output` writes results as they arrive instead,
-trading order for throughput when input order doesn't matter downstream.
+reused across every position it processes (not respawned per position). **Output is unordered by
+default — each result is written the instant it arrives, in whatever order workers finish.** This
+is deliberately the safe default for interruption: `label` installs no signal handler, so killing
+it (Ctrl-C, SIGTERM, SIGKILL) always loses whatever hasn't been durably written yet. `--preserve-
+order` opts into strict input-order output instead (a bounded reorder buffer holds back an
+out-of-order result until its predecessors have been written) — but this means a single
+slow-to-label position can hold *every already-finished* position behind it in memory, unwritten,
+for as long as that position takes; killing `label` while that's happening discards all of that
+completed work, not just whatever was still mid-search. Only use `--preserve-order` when you
+specifically need output order to match input order (e.g. diffing against a prior run).
 
 `--skip-existing` skips a requested depth if this engine already has an observation reaching at
-least that depth — useful for cheaply resuming a large labeling run. `--replace-existing`
-overwrites an existing observation at the same depth instead of duplicating it, for
-intentionally re-labeling. Both are mutually exclusive, and both key off the depth the engine
+least that depth — useful for cheaply resuming a large labeling run after a kill, though it can
+only rebuild a worklist from whatever the output file actually contains; it can't recover work
+that a `--preserve-order` run lost from its own in-memory buffer before being killed.
+`--replace-existing` overwrites an existing observation at the same depth instead of duplicating
+it, for intentionally re-labeling. Both are mutually exclusive, and both key off the depth the engine
 *actually reached*, not the one requested — an engine that stops early (e.g. a forced mate) can
 report a shallower depth than asked for, and these flags account for that rather than silently
 duplicating or failing to skip. Every observation also records `requested_depth` — the depth that
@@ -534,7 +542,7 @@ would inflate the rate with skipped/unparseable rows that never reached the engi
 `average_engine_time_ms` (averaged from `Observation.time_ms` across each written record; under
 `--skip-existing`/`--replace-existing`/the default append policy this includes any observations
 inherited from a prior `label` run on the same file, not purely this invocation's own engine
-calls — use `records_per_sec` to judge this run's actual throughput), `unordered_output`, and
+calls — use `records_per_sec` to judge this run's actual throughput), `preserve_order`, and
 (when `--cache-dir` is used) cache hit/miss counts, `cache_hit_rate`, and
 `engine_fingerprint_mode`. There's no separate `worker_count` field — `jobs` already is that
 value. It's opt-in and additive — no effect on the command's normal output when omitted. `split`

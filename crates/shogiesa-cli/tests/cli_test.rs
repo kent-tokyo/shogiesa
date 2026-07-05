@@ -895,7 +895,7 @@ fn label_replace_existing_overwrites() {
 }
 
 #[test]
-fn label_jobs_2_preserves_order_by_default_and_unordered_output_has_same_set() {
+fn label_jobs_2_is_unordered_by_default_and_preserve_order_matches_input_order() {
     fn tagged_position(ply: u32) -> serde_json::Value {
         serde_json::json!({
             "schema_version": 1,
@@ -920,29 +920,8 @@ fn label_jobs_2_preserves_order_by_default_and_unordered_output_has_same_set() {
     let positions: Vec<serde_json::Value> = (0..8u32).map(tagged_position).collect();
     let input = make_labeled_jsonl(&positions);
 
-    let ordered_out = NamedTempFile::new().unwrap();
-    shogiesa()
-        .args([
-            "label",
-            "--input",
-            input.path().to_str().unwrap(),
-            "--engine",
-            fake_usi_engine_bin().to_str().unwrap(),
-            "--depths",
-            "4",
-            "--jobs",
-            "2",
-            "--out",
-            ordered_out.path().to_str().unwrap(),
-        ])
-        .assert()
-        .success();
-    assert_eq!(
-        plies_of(ordered_out.path()),
-        (0..8u64).collect::<Vec<_>>(),
-        "default output order must match input order"
-    );
-
+    // Default (no flag): interrupt-safe, write-as-completed -- same set of records, but order is
+    // not guaranteed to match input order.
     let unordered_out = NamedTempFile::new().unwrap();
     shogiesa()
         .args([
@@ -955,7 +934,6 @@ fn label_jobs_2_preserves_order_by_default_and_unordered_output_has_same_set() {
             "4",
             "--jobs",
             "2",
-            "--unordered-output",
             "--out",
             unordered_out.path().to_str().unwrap(),
         ])
@@ -966,7 +944,32 @@ fn label_jobs_2_preserves_order_by_default_and_unordered_output_has_same_set() {
     assert_eq!(
         plies,
         (0..8u64).collect::<Vec<_>>(),
-        "--unordered-output must still produce the same set of records"
+        "default output must still produce the same set of records"
+    );
+
+    // --preserve-order: opt-in to strict input-order output (trades interrupt-safety for order).
+    let ordered_out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--jobs",
+            "2",
+            "--preserve-order",
+            "--out",
+            ordered_out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    assert_eq!(
+        plies_of(ordered_out.path()),
+        (0..8u64).collect::<Vec<_>>(),
+        "--preserve-order must produce output order matching input order"
     );
 }
 
@@ -1130,7 +1133,6 @@ fn label_manifest_reports_throughput_metrics() {
             fake_usi_engine_bin().to_str().unwrap(),
             "--depths",
             "4,6",
-            "--unordered-output",
             "--out",
             out.path().to_str().unwrap(),
             "--manifest",
@@ -1149,7 +1151,8 @@ fn label_manifest_reports_throughput_metrics() {
     // fake-usi-engine always reports a fixed time_ms -- confirms the average is computed from
     // real Observation.time_ms values, not a placeholder.
     assert_eq!(manifest["average_engine_time_ms"], 50.0);
-    assert_eq!(manifest["unordered_output"], true);
+    // No --preserve-order passed -> the (now default) unordered/interrupt-safe mode.
+    assert_eq!(manifest["preserve_order"], false);
     assert!(
         manifest.get("cache_hit_rate").is_none(),
         "cache_hit_rate must be absent without --cache-dir"
@@ -1159,6 +1162,44 @@ fn label_manifest_reports_throughput_metrics() {
         "worker_count would duplicate the existing jobs field -- must not exist"
     );
     assert_eq!(manifest["jobs"], 1);
+}
+
+#[test]
+fn label_manifest_preserve_order_flag_is_reported_true_when_passed() {
+    let pos = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "extract",
+            "--input",
+            fixture("sample.csa").to_str().unwrap(),
+            "--out",
+            pos.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let out = NamedTempFile::new().unwrap();
+    let manifest = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            pos.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--preserve-order",
+            "--out",
+            out.path().to_str().unwrap(),
+            "--manifest",
+            manifest.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest.path()).unwrap()).unwrap();
+    assert_eq!(manifest["preserve_order"], true);
 }
 
 #[test]
@@ -5470,4 +5511,19 @@ fn help_lists_manifest_and_dry_run_flags() {
         .assert()
         .success()
         .stdout(predicate::str::contains("--dry-run"));
+}
+
+#[test]
+fn version_flag_reports_crate_version() {
+    shogiesa()
+        .args(["--version"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(env!("CARGO_PKG_VERSION")));
+
+    shogiesa()
+        .args(["-V"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(env!("CARGO_PKG_VERSION")));
 }

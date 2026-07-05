@@ -222,7 +222,10 @@ shogiesa balance --input positions.jsonl --by phase --by side --out balanced.jso
 
 Buckets by `phase`/`side`/`eval-bucket` and takes an equal number from each bucket. `eval-bucket`
 buckets on Black-perspective cp, so the same absolute outcome (e.g. "Black is winning by 300")
-lands in the same bucket regardless of whose turn the position was.
+lands in the same bucket regardless of whose turn the position was. Reads its input twice (once to
+tally each bucket's size, since `--target` defaults to the smallest bucket's size; once to rank)
+and keeps a bounded top-`--target` heap per bucket instead of materializing the whole dataset, so
+memory scales with `(bucket count × target)`, not with dataset size.
 
 ### `select` — re-labeling candidates
 

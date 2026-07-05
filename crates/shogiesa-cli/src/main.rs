@@ -1880,58 +1880,84 @@ fn cmd_balance(args: BalanceArgs) -> Result<()> {
     let by_side = args.by.iter().any(|s| s == "side");
     let by_eval = args.by.iter().any(|s| s == "eval-bucket");
 
-    let (records, _) = load_records(&args.input)?;
-    let total = records.len();
-
-    // Build composite bucket key for each record
-    let mut buckets: HashMap<String, Vec<usize>> = HashMap::new();
-    for (i, rec) in records.iter().enumerate() {
-        buckets
-            .entry(bucket_key(rec, by_phase, by_side, by_eval))
-            .or_default()
-            .push(i);
-    }
-
-    let min_size = buckets.values().map(|v| v.len()).min().unwrap_or(0);
-    let target = args.target.unwrap_or(min_size);
-
-    // Select `target` entries from each bucket sorted by SFEN (deterministic)
-    let mut keep = HashSet::<usize>::new();
-    for indices in buckets.values() {
-        let mut sorted = indices.clone();
-        sorted.sort_by(|&a, &b| records[a].sfen.cmp(&records[b].sfen));
-        for &idx in sorted.iter().take(target) {
-            keep.insert(idx);
+    // Pass 1: tally each bucket's size -- needed before any record can be ranked, since `target`
+    // defaults to the smallest bucket's size, which can't be known until every bucket has been
+    // seen at least once.
+    let mut bucket_sizes: HashMap<String, usize> = HashMap::new();
+    let pass1 = BufReader::new(
+        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
+    );
+    for line in pass1.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        // parse errors are warned once, in pass 2 below -- not duplicated here
+        if let Ok(record) = serde_json::from_str::<PositionRecord>(&line) {
+            *bucket_sizes
+                .entry(bucket_key(&record, by_phase, by_side, by_eval))
+                .or_default() += 1;
         }
     }
+    let min_size = bucket_sizes.values().copied().min().unwrap_or(0);
+    let target = args.target.unwrap_or(min_size);
+
+    // Pass 2: re-stream, keeping a bounded top-`target` heap per bucket, keyed by SFEN (matching
+    // today's "sort by SFEN, take first N" exactly) -- memory O(bucket count x target) instead of
+    // O(n).
+    let pass2 = BufReader::new(
+        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
+    );
+    let mut total = 0usize;
+    let mut heaps: HashMap<String, BinaryHeap<HeapEntry<String>>> = HashMap::new();
+    for (i, line) in pass2.lines().enumerate() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let record: PositionRecord = match serde_json::from_str(&line) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(line = i + 1, "parse error: {e}");
+                continue;
+            }
+        };
+        let bucket = bucket_key(&record, by_phase, by_side, by_eval);
+        let key = record.sfen.clone();
+        let index = total;
+        total += 1;
+        push_bounded(
+            heaps.entry(bucket).or_default(),
+            target,
+            HeapEntry { key, index, record },
+        );
+    }
+
+    // Restore original file order (unlike `select`, which outputs in ranked order)
+    let mut kept: Vec<HeapEntry<String>> = heaps.into_values().flat_map(|h| h.into_vec()).collect();
+    kept.sort_by_key(|e| e.index);
 
     let out_file =
         File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
     let mut writer = BufWriter::new(out_file);
-    let mut kept = 0usize;
-    let mut kept_records = Vec::new();
-    for (i, rec) in records.iter().enumerate() {
-        if keep.contains(&i) {
-            serde_json::to_writer(&mut writer, rec)?;
-            writer.write_all(b"\n")?;
-            kept += 1;
-            if args.manifest.is_some() {
-                kept_records.push(rec.clone());
-            }
-        }
+    for entry in &kept {
+        serde_json::to_writer(&mut writer, &entry.record)?;
+        writer.write_all(b"\n")?;
     }
     writer.flush()?;
     eprintln!(
-        "done: {kept}/{total} selected (target {target}/bucket, {} buckets) → {:?}",
-        buckets.len(),
+        "done: {}/{total} selected (target {target}/bucket, {} buckets) → {:?}",
+        kept.len(),
+        bucket_sizes.len(),
         args.out
     );
     if let Some(manifest_path) = &args.manifest {
         let mut manifest = RunManifest::new("balance", &args.input);
         manifest.input_hash = hash_file(&args.input)?;
         manifest.records_read = total;
-        manifest.records_kept = kept;
-        manifest.records_dropped = total - kept;
+        manifest.records_kept = kept.len();
+        manifest.records_dropped = total - kept.len();
+        let kept_records: Vec<PositionRecord> = kept.iter().map(|e| e.record.clone()).collect();
         accumulate_coverage(&mut manifest, &kept_records);
         write_manifest(manifest_path, &manifest)?;
     }

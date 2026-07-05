@@ -1202,11 +1202,22 @@ fn position_with_path(
     path: &str,
     observations: serde_json::Value,
 ) -> serde_json::Value {
+    position_with_path_and_phase(sfen, path, "middlegame", observations)
+}
+
+/// Like `position_with_path`, but with a caller-chosen `phase` too -- needed for `balance`'s
+/// golden-output tests, which must vary `phase` (its default bucket key) across records.
+fn position_with_path_and_phase(
+    sfen: &str,
+    path: &str,
+    phase: &str,
+    observations: serde_json::Value,
+) -> serde_json::Value {
     serde_json::json!({
         "schema_version": 1,
         "sfen": sfen,
         "source": { "kind": "csa", "path": path, "ply": 1 },
-        "tags": { "phase": "middlegame", "side_to_move": "black", "in_check": false, "has_capture": false },
+        "tags": { "phase": phase, "side_to_move": "black", "in_check": false, "has_capture": false },
         "observations": observations
     })
 }
@@ -2082,6 +2093,76 @@ fn balance_target_override() {
         .success();
     let content = std::fs::read_to_string(out.path()).unwrap();
     assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 5);
+}
+
+// --- PR8 golden baseline: balance's two-pass per-bucket bounded heap rewrite must produce
+// byte-identical selection and order to the full-materialize-sort-truncate code it replaces.
+// This fixture ties 4 records on the same sfen ("posA") within one bucket, well over any
+// plausible target, so a real eviction contest happens and the earliest-index tiebreak (matching
+// `sort_by`'s stability) is the only thing that decides the outcome. Captured against the
+// pre-refactor binary; must still pass after.
+fn pr8_heap_fixture() -> NamedTempFile {
+    make_labeled_jsonl(&[
+        position_with_path("posA", "b1.csa", serde_json::json!([])),
+        position_with_path("posA", "b2.csa", serde_json::json!([])),
+        position_with_path("posA", "b3.csa", serde_json::json!([])),
+        position_with_path("posA", "b4.csa", serde_json::json!([])),
+        position_with_path("posB", "b5.csa", serde_json::json!([])),
+        position_with_path("posC", "b6.csa", serde_json::json!([])),
+    ])
+}
+
+#[test]
+fn balance_bounded_heap_resolves_tie_contest_by_earliest_index() {
+    let f = pr8_heap_fixture();
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "balance",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--by",
+            "phase",
+            "--target",
+            "2",
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(source_paths_in_order(&content), vec!["b1.csa", "b2.csa"]);
+}
+
+#[test]
+fn balance_bounded_heap_auto_target_matches_pre_refactor_golden_output() {
+    let f = make_labeled_jsonl(&[
+        position_with_path_and_phase("posA", "b1.csa", "opening", serde_json::json!([])),
+        position_with_path_and_phase("posA", "b2.csa", "opening", serde_json::json!([])),
+        position_with_path_and_phase("posA", "b3.csa", "opening", serde_json::json!([])),
+        position_with_path_and_phase("posA", "b4.csa", "opening", serde_json::json!([])),
+        position_with_path_and_phase("posB", "b5.csa", "opening", serde_json::json!([])),
+        position_with_path_and_phase("posM1", "b6.csa", "middlegame", serde_json::json!([])),
+        position_with_path_and_phase("posM2", "b7.csa", "middlegame", serde_json::json!([])),
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "balance",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--by",
+            "phase",
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(
+        source_paths_in_order(&content),
+        vec!["b1.csa", "b2.csa", "b6.csa", "b7.csa"]
+    );
 }
 
 #[test]

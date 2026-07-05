@@ -206,6 +206,31 @@ supported — the game is skipped with a warning, not crashed. No SFEN→Board r
 anywhere in shogiesa, and this form was never observed in real match-runner output sampled while
 building this command; only `position startpos moves ...` is replayed.
 
+### `merge-observations` — combine a shallow pass with a deeper relabel
+
+```bash
+shogiesa merge-observations --primary observations.jsonl --secondary deep_observations.jsonl \
+  --out merged.jsonl --on-collision keep-both
+```
+
+Merges two labeled JSONL files record-by-record, matched on `(sfen, source.path, source.ply)` —
+not bare `sfen` alone, since two different games/plies can reach an identical position (common in
+early openings). Positions present in only one file pass through unchanged (a union, not an
+intersection); positions in both have their observation lists combined per `--on-collision`, keyed
+on `(engine, engine_version, depth, requested_depth)` — deliberately including `engine_version`
+(unlike `label`'s own narrower in-place dedup key), since this command is explicitly merging data
+whose provenance might differ, and conflating two different engine versions at the same nominal
+depth would be a real bug here.
+
+- `keep-both` (default) — both observations survive, no data loss. Matches `label`'s own
+  `ExistingPolicy::Append`-is-default convention.
+- `prefer-primary` — the `--primary` file's observation wins on a collision.
+- `prefer-secondary` — the `--secondary` file's observation wins (e.g. "the deeper relabel pass
+  should win").
+
+A merged record's `stability` is cleared — it was computed from only one side's observations and
+would otherwise silently misrepresent the combined set. Re-run `stability` after merging.
+
 ### `stability` — compute stability scores
 
 ```bash

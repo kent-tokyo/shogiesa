@@ -76,6 +76,9 @@ enum Commands {
     /// extractor -- does not label. Feed the output through the existing `label`/`select`/
     /// `filter` commands, same as any other extracted dataset.
     FromMatch(FromMatchArgs),
+    /// Merge two labeled positions JSONL files' observations (e.g. a shallow pass and a deeper
+    /// relabel pass), with configurable duplicate-observation resolution
+    MergeObservations(MergeObservationsArgs),
 }
 
 #[derive(clap::Args)]
@@ -130,6 +133,30 @@ struct FromMatchArgs {
     /// Deduplicate positions by SFEN string
     #[arg(long)]
     dedup: bool,
+}
+
+#[derive(clap::Args)]
+struct MergeObservationsArgs {
+    /// First labeled positions JSONL (e.g. a shallow labeling pass) -- wins ties under
+    /// --on-collision prefer-primary
+    #[arg(long)]
+    primary: PathBuf,
+    /// Second labeled positions JSONL (e.g. a deeper relabel pass) -- wins ties under
+    /// --on-collision prefer-secondary
+    #[arg(long)]
+    secondary: PathBuf,
+    /// Output JSONL file
+    #[arg(short, long)]
+    out: PathBuf,
+    /// What happens when both files have an observation with the same (engine, engine_version,
+    /// depth, requested_depth): keep-both (default -- no data loss, matches `label`'s own
+    /// ExistingPolicy::Append-is-default convention), prefer-primary, or prefer-secondary
+    #[arg(
+        long,
+        default_value = "keep-both",
+        value_parser = ["keep-both", "prefer-primary", "prefer-secondary"]
+    )]
+    on_collision: String,
 }
 
 #[derive(clap::Args)]
@@ -713,6 +740,7 @@ fn main() -> Result<()> {
             CacheAction::Prune(a) => cmd_cache_prune(a),
         },
         Commands::FromMatch(args) => cmd_from_match(args),
+        Commands::MergeObservations(args) => cmd_merge_observations(args),
     }
 }
 
@@ -1019,6 +1047,134 @@ fn cmd_from_match(args: FromMatchArgs) -> Result<()> {
     writer.flush()?;
     eprintln!(
         "done: {total_games} games read, {total_positions} positions extracted → {:?}",
+        args.out
+    );
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum MergeObservationPolicy {
+    KeepBoth,
+    PreferPrimary,
+    PreferSecondary,
+}
+
+/// Merges `incoming` into `base` per `policy`, keyed on `(engine, engine_version, depth,
+/// requested_depth)` -- deliberately broader than `label`'s own in-place dedup key (which omits
+/// `engine_version`): that narrower key is safe there because `label` already knows it's
+/// re-running the same engine binary, but `merge-observations` is explicitly merging data whose
+/// provenance might differ, so conflating two different engine versions at the same nominal
+/// depth would be a real bug this command must guard against that `label` doesn't need to.
+/// Returns how many keys collided.
+fn merge_observations_into(
+    base: &mut Vec<Observation>,
+    incoming: Vec<Observation>,
+    policy: MergeObservationPolicy,
+) -> usize {
+    let key = |o: &Observation| {
+        (
+            o.engine.clone(),
+            o.engine_version.clone(),
+            o.depth,
+            o.requested_depth,
+        )
+    };
+    let mut collisions = 0usize;
+    match policy {
+        MergeObservationPolicy::KeepBoth => base.extend(incoming),
+        MergeObservationPolicy::PreferPrimary => {
+            for obs in incoming {
+                let k = key(&obs);
+                if base.iter().any(|o| key(o) == k) {
+                    collisions += 1;
+                    continue;
+                }
+                base.push(obs);
+            }
+        }
+        MergeObservationPolicy::PreferSecondary => {
+            for obs in incoming {
+                let k = key(&obs);
+                if base.iter().any(|o| key(o) == k) {
+                    collisions += 1;
+                    base.retain(|o| key(o) != k);
+                }
+                base.push(obs);
+            }
+        }
+    }
+    collisions
+}
+
+/// Which record in `--primary` a record in `--secondary` corresponds to: `(sfen, source.path,
+/// source.ply)`, not bare `sfen` alone -- bare `sfen` would wrongly conflate two different
+/// games/plies that happen to reach an identical position (common in early openings). This
+/// triple already uniquely identifies a specific extracted occurrence for every extractor in
+/// this codebase and survives unchanged through `label`/`select`/`filter`.
+fn merge_alignment_key(rec: &PositionRecord) -> (String, String, u32) {
+    (rec.sfen.clone(), rec.source.path.clone(), rec.source.ply)
+}
+
+fn cmd_merge_observations(args: MergeObservationsArgs) -> Result<()> {
+    let policy = match args.on_collision.as_str() {
+        "keep-both" => MergeObservationPolicy::KeepBoth,
+        "prefer-primary" => MergeObservationPolicy::PreferPrimary,
+        "prefer-secondary" => MergeObservationPolicy::PreferSecondary,
+        _ => unreachable!("clap's value_parser already restricts --on-collision"),
+    };
+
+    let (secondary_records, _) = load_records(&args.secondary)?;
+    // Last-wins on an internally-duplicated secondary key -- a documented limitation, not worth
+    // extra bookkeeping for an edge case the real "aligned relabel pass" use case won't hit.
+    let secondary_by_key: HashMap<(String, String, u32), usize> = secondary_records
+        .iter()
+        .enumerate()
+        .map(|(i, r)| (merge_alignment_key(r), i))
+        .collect();
+    let mut consumed = vec![false; secondary_records.len()];
+
+    let (primary_records, _) = load_records(&args.primary)?;
+    let out_file =
+        File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
+    let mut writer = BufWriter::new(out_file);
+    let (mut both, mut primary_only, mut collisions) = (0usize, 0usize, 0usize);
+
+    for mut rec in primary_records {
+        if let Some(&idx) = secondary_by_key.get(&merge_alignment_key(&rec)) {
+            consumed[idx] = true;
+            both += 1;
+            collisions += merge_observations_into(
+                &mut rec.observations,
+                secondary_records[idx].observations.clone(),
+                policy,
+            );
+            // Stale after merging in observations the pre-merge stability wasn't computed from --
+            // a stability score reflecting only one side's observations would silently
+            // misrepresent the merged set. Re-run `stability` after merging if wanted.
+            rec.stability = None;
+        } else {
+            primary_only += 1;
+        }
+        serde_json::to_writer(&mut writer, &rec)?;
+        writer.write_all(b"\n")?;
+    }
+
+    let mut secondary_only = 0usize;
+    for (idx, rec) in secondary_records.into_iter().enumerate() {
+        if !consumed[idx] {
+            serde_json::to_writer(&mut writer, &rec)?;
+            writer.write_all(b"\n")?;
+            secondary_only += 1;
+        }
+    }
+    writer.flush()?;
+
+    eprintln!(
+        "done: {} written ({both} merged, {primary_only} primary-only, {secondary_only} \
+         secondary-only, {collisions} colliding observation keys resolved by --on-collision {}) \
+         → {:?}",
+        both + primary_only + secondary_only,
+        args.on_collision,
         args.out
     );
     Ok(())
@@ -5578,5 +5734,105 @@ mod tune_pareto_tests {
         let frontier = pareto_frontier_indices(&cells);
         assert_eq!(pick_broad(&cells, &frontier), 0);
         assert_eq!(pick_strict(&cells, &frontier), 1);
+    }
+}
+
+#[cfg(test)]
+mod merge_observations_tests {
+    use super::*;
+
+    fn obs(engine: &str, depth: u32, requested_depth: Option<u32>, bestmove: &str) -> Observation {
+        Observation {
+            engine: engine.to_string(),
+            engine_version: None,
+            depth,
+            requested_depth,
+            score: Score::Cp { value: 0 },
+            score_perspective: ScorePerspective::default(),
+            score_bound: shogiesa_core::ScoreBound::default(),
+            bestmove: bestmove.to_string(),
+            bestmove_kind: None,
+            nodes: None,
+            time_ms: None,
+            pv: None,
+            policy_margin_cp: None,
+            candidates: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn no_collision_appends_both() {
+        let mut base = vec![obs("e1", 4, Some(4), "7g7f")];
+        let incoming = vec![obs("e2", 4, Some(4), "3c3d")];
+        let collisions =
+            merge_observations_into(&mut base, incoming, MergeObservationPolicy::KeepBoth);
+        assert_eq!(collisions, 0);
+        assert_eq!(base.len(), 2);
+    }
+
+    #[test]
+    fn keep_both_on_collision_keeps_both() {
+        let mut base = vec![obs("e1", 4, Some(4), "7g7f")];
+        let incoming = vec![obs("e1", 4, Some(4), "3c3d")]; // same (engine, depth, requested_depth)
+        let collisions =
+            merge_observations_into(&mut base, incoming, MergeObservationPolicy::KeepBoth);
+        assert_eq!(collisions, 0); // KeepBoth never even checks for a collision
+        assert_eq!(base.len(), 2);
+    }
+
+    #[test]
+    fn prefer_primary_on_collision_drops_secondary() {
+        let mut base = vec![obs("e1", 4, Some(4), "7g7f")];
+        let incoming = vec![obs("e1", 4, Some(4), "3c3d")];
+        let collisions =
+            merge_observations_into(&mut base, incoming, MergeObservationPolicy::PreferPrimary);
+        assert_eq!(collisions, 1);
+        assert_eq!(base.len(), 1);
+        assert_eq!(base[0].bestmove, "7g7f"); // primary's survives
+    }
+
+    #[test]
+    fn prefer_secondary_on_collision_replaces_primary() {
+        let mut base = vec![obs("e1", 4, Some(4), "7g7f")];
+        let incoming = vec![obs("e1", 4, Some(4), "3c3d")];
+        let collisions =
+            merge_observations_into(&mut base, incoming, MergeObservationPolicy::PreferSecondary);
+        assert_eq!(collisions, 1);
+        assert_eq!(base.len(), 1);
+        assert_eq!(base[0].bestmove, "3c3d"); // secondary's replaces primary's
+    }
+
+    #[test]
+    fn multiple_simultaneous_collisions_all_resolved() {
+        let mut base = vec![obs("e1", 4, Some(4), "7g7f"), obs("e2", 6, Some(6), "3c3d")];
+        let incoming = vec![
+            obs("e1", 4, Some(4), "aaaa"), // collides with base[0]
+            obs("e2", 6, Some(6), "bbbb"), // collides with base[1]
+            obs("e3", 8, Some(8), "cccc"), // no collision
+        ];
+        let collisions =
+            merge_observations_into(&mut base, incoming, MergeObservationPolicy::PreferSecondary);
+        assert_eq!(collisions, 2);
+        assert_eq!(base.len(), 3);
+        assert!(base.iter().any(|o| o.bestmove == "aaaa"));
+        assert!(base.iter().any(|o| o.bestmove == "bbbb"));
+        assert!(base.iter().any(|o| o.bestmove == "cccc"));
+    }
+
+    #[test]
+    fn engine_version_mismatch_is_not_a_collision() {
+        // merge-observations' key includes engine_version (unlike label's own narrower in-place
+        // dedup key) precisely so two different engine versions at the same nominal depth are
+        // never silently conflated.
+        let mut base = vec![obs("e1", 4, Some(4), "7g7f")];
+        let mut versioned = obs("e1", 4, Some(4), "3c3d");
+        versioned.engine_version = Some("2.0".to_string());
+        let collisions = merge_observations_into(
+            &mut base,
+            vec![versioned],
+            MergeObservationPolicy::PreferPrimary,
+        );
+        assert_eq!(collisions, 0);
+        assert_eq!(base.len(), 2);
     }
 }

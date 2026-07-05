@@ -5324,6 +5324,137 @@ fn from_match_output_feeds_into_label_and_filter() {
     assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 3);
 }
 
+// --- merge-observations ---
+
+/// A position record at a distinct `ply` (and hence a distinct merge-alignment key even though
+/// every fixture in this file shares the same SFEN/path), with the given `observations`.
+fn position_at_ply(ply: u32, observations: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 8,
+        "sfen": "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+        "source": { "kind": "csa", "path": "test.csa", "ply": ply },
+        "tags": { "phase": "opening", "side_to_move": "black", "in_check": false, "has_capture": false },
+        "observations": observations
+    })
+}
+
+#[test]
+fn merge_observations_keep_both_keeps_all_colliding_observations() {
+    let primary = make_labeled_jsonl(&[
+        position_at_ply(1, serde_json::json!([obs("7g7f", 50, 4)])), // shared, collides
+        position_at_ply(2, serde_json::json!([obs("2g2f", 10, 4)])), // primary-only
+    ]);
+    let secondary = make_labeled_jsonl(&[
+        position_at_ply(1, serde_json::json!([obs("3c3d", 60, 4)])), // shared, collides with above
+        position_at_ply(3, serde_json::json!([obs("8c8d", 20, 4)])), // secondary-only
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "merge-observations",
+            "--primary",
+            primary.path().to_str().unwrap(),
+            "--secondary",
+            secondary.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("1 merged"))
+        .stderr(predicate::str::contains("1 primary-only"))
+        .stderr(predicate::str::contains("1 secondary-only"))
+        // KeepBoth appends unconditionally without ever checking for a collision (see
+        // merge_observations_into) -- "0 colliding" is correct, not a bug.
+        .stderr(predicate::str::contains("0 colliding"));
+
+    let records: Vec<serde_json::Value> = std::fs::read_to_string(out.path())
+        .unwrap()
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(records.len(), 3);
+    let by_ply = |ply: u64| records.iter().find(|r| r["source"]["ply"] == ply).unwrap();
+    // keep-both (default): both colliding observations survive on the shared ply=1 record
+    let bestmoves: HashSet<String> = by_ply(1)["observations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["bestmove"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        bestmoves,
+        HashSet::from(["7g7f".to_string(), "3c3d".to_string()])
+    );
+    assert!(by_ply(1)["stability"].is_null());
+    // primary-only and secondary-only records pass through unchanged
+    assert_eq!(
+        by_ply(2)["observations"][0]["bestmove"],
+        serde_json::json!("2g2f")
+    );
+    assert_eq!(
+        by_ply(3)["observations"][0]["bestmove"],
+        serde_json::json!("8c8d")
+    );
+}
+
+#[test]
+fn merge_observations_prefer_primary_drops_secondary_on_collision() {
+    let primary =
+        make_labeled_jsonl(&[position_at_ply(1, serde_json::json!([obs("7g7f", 50, 4)]))]);
+    let secondary =
+        make_labeled_jsonl(&[position_at_ply(1, serde_json::json!([obs("3c3d", 60, 4)]))]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "merge-observations",
+            "--primary",
+            primary.path().to_str().unwrap(),
+            "--secondary",
+            secondary.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--on-collision",
+            "prefer-primary",
+        ])
+        .assert()
+        .success();
+    let record: serde_json::Value =
+        serde_json::from_str(std::fs::read_to_string(out.path()).unwrap().trim()).unwrap();
+    let observations = record["observations"].as_array().unwrap();
+    assert_eq!(observations.len(), 1);
+    assert_eq!(observations[0]["bestmove"], serde_json::json!("7g7f"));
+}
+
+#[test]
+fn merge_observations_prefer_secondary_replaces_primary_on_collision() {
+    let primary =
+        make_labeled_jsonl(&[position_at_ply(1, serde_json::json!([obs("7g7f", 50, 4)]))]);
+    let secondary =
+        make_labeled_jsonl(&[position_at_ply(1, serde_json::json!([obs("3c3d", 60, 4)]))]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "merge-observations",
+            "--primary",
+            primary.path().to_str().unwrap(),
+            "--secondary",
+            secondary.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--on-collision",
+            "prefer-secondary",
+        ])
+        .assert()
+        .success();
+    let record: serde_json::Value =
+        serde_json::from_str(std::fs::read_to_string(out.path()).unwrap().trim()).unwrap();
+    let observations = record["observations"].as_array().unwrap();
+    assert_eq!(observations.len(), 1);
+    assert_eq!(observations[0]["bestmove"], serde_json::json!("3c3d"));
+}
+
 // --- help smoke test ---
 
 #[test]

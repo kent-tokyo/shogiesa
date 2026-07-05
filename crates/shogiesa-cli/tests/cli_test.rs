@@ -5069,6 +5069,261 @@ fn manifest_common_keys_present_across_commands() {
     }
 }
 
+// --- from-match ---
+
+#[test]
+fn from_match_extracts_positions_from_startpos_kifu() {
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "from-match",
+            "--input",
+            fixture("match_engine2_wins.txt").to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    let records: Vec<serde_json::Value> = content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    // "7g7f 3c3d 2g2f" -> 3 plies
+    assert_eq!(records.len(), 3);
+    assert_eq!(records[0]["source"]["ply"], 1);
+    assert_eq!(records[0]["source"]["kind"], "from_match");
+    assert_eq!(
+        records[0]["source"]["path"],
+        fixture("match_engine2_wins.txt").to_str().unwrap()
+    );
+    assert_eq!(records[0]["tags"]["side_to_move"], "white"); // Black just moved
+    assert_eq!(records[1]["tags"]["side_to_move"], "black");
+    assert_eq!(records[2]["source"]["ply"], 3);
+    assert!(records[0]["observations"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn from_match_losing_side_engine1_keeps_only_engine2_win_games() {
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "from-match",
+            "--input",
+            fixture("match_engine1_wins.txt").to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--losing-side",
+            "engine1",
+        ])
+        .assert()
+        .success();
+    // match_engine1_wins.txt has "# Result: Engine1 Win" -> Engine1 did NOT lose -> excluded
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 0);
+}
+
+#[test]
+fn from_match_losing_side_engine2_keeps_only_engine1_win_games() {
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "from-match",
+            "--input",
+            fixture("match_engine1_wins.txt").to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--losing-side",
+            "engine2",
+        ])
+        .assert()
+        .success();
+    // "# Result: Engine1 Win" -> Engine2 lost -> included
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 2);
+}
+
+#[test]
+fn from_match_no_losing_side_keeps_all_games() {
+    let dir = TempDir::new().unwrap();
+    std::fs::copy(
+        fixture("match_engine1_wins.txt"),
+        dir.path().join("match_engine1_wins.txt"),
+    )
+    .unwrap();
+    std::fs::copy(
+        fixture("match_engine2_wins.txt"),
+        dir.path().join("match_engine2_wins.txt"),
+    )
+    .unwrap();
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "from-match",
+            "--input",
+            dir.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    // 2 plies + 3 plies from the two games, regardless of who won
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 5);
+}
+
+#[test]
+fn from_match_handles_directory_of_kifu_files() {
+    let dir = TempDir::new().unwrap();
+    std::fs::copy(
+        fixture("match_engine1_wins.txt"),
+        dir.path().join("match_engine1_wins.txt"),
+    )
+    .unwrap();
+    std::fs::copy(
+        fixture("match_engine2_wins.txt"),
+        dir.path().join("match_engine2_wins.txt"),
+    )
+    .unwrap();
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "from-match",
+            "--input",
+            dir.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("2 games read"));
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    let paths: HashSet<String> = content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            serde_json::from_str::<serde_json::Value>(l).unwrap()["source"]["path"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(paths.len(), 2);
+}
+
+#[test]
+fn from_match_promotion_and_drop_tokens_apply_correctly() {
+    // The exact real kifu line verified during planning (34 move tokens, including a promotion
+    // "9g5c+" and several drops "B*7e"/"P*9i"/"L*5d"/"S*6h"/"N*5g"). If any token failed to parse
+    // or apply, extraction would stop early (fewer than 34 records).
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "from-match",
+            "--input",
+            fixture("match_promotions_and_drops.txt").to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    let records: Vec<serde_json::Value> = content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(records.len(), 34);
+    assert_eq!(records.last().unwrap()["source"]["ply"], 34);
+}
+
+#[test]
+fn from_match_position_sfen_line_warns_and_skips() {
+    // `position sfen ...` isn't supported (no SFEN->Board reconstructor exists) -- the game is
+    // skipped without error, not crashed. (tracing::warn!'s actual text isn't observable here
+    // without RUST_LOG set, so this only asserts the documented skip behavior, not the message.)
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "from-match",
+            "--input",
+            fixture("match_position_sfen_unsupported.txt")
+                .to_str()
+                .unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 0);
+}
+
+#[test]
+fn from_match_no_txt_files_found_errors() {
+    let dir = TempDir::new().unwrap();
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "from-match",
+            "--input",
+            dir.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no .txt kifu files found"));
+}
+
+#[test]
+fn from_match_output_feeds_into_label_and_filter() {
+    // Proves from-match's PositionRecord output is fully compatible with the existing pipeline,
+    // end to end: from-match -> label -> filter.
+    let extracted = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "from-match",
+            "--input",
+            fixture("match_engine2_wins.txt").to_str().unwrap(),
+            "--out",
+            extracted.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let labeled = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            extracted.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--out",
+            labeled.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let filtered = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            labeled.path().to_str().unwrap(),
+            "--out",
+            filtered.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(filtered.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 3);
+}
+
 // --- help smoke test ---
 
 #[test]

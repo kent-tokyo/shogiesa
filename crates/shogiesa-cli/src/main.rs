@@ -11,9 +11,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 
 use shogiesa_core::{
-    GamePhase, Observation, PositionRecord, QualityConfig, QualityDecision, SCHEMA_VERSION, Score,
-    ScorePerspective, SideToMove, SourceInfo, bestmove_agreement, cp_from_black_perspective,
-    effective_bestmove_kind, engine_bestmove_agreement, evaluate_quality, has_special_bestmove,
+    Board, GamePhase, Observation, PositionRecord, PositionTags, QualityConfig, QualityDecision,
+    SCHEMA_VERSION, Score, ScorePerspective, SideToMove, SourceInfo, UsiMove, bestmove_agreement,
+    cp_from_black_perspective, effective_bestmove_kind, engine_bestmove_agreement,
+    evaluate_quality, has_special_bestmove, parse_usi_move, phase_from_ply,
     requested_depth_underreached, score_swing, sfen::Sfen, zobrist_from_sfen,
 };
 use shogiesa_pack as pack;
@@ -71,6 +72,10 @@ enum Commands {
     Validate(ValidateArgs),
     /// Inspect/maintain a `label --cache-dir` cache
     Cache(CacheArgs),
+    /// Extract positions from a Sekirei match-runner's per-game kifu .txt files. A pure
+    /// extractor -- does not label. Feed the output through the existing `label`/`select`/
+    /// `filter` commands, same as any other extracted dataset.
+    FromMatch(FromMatchArgs),
 }
 
 #[derive(clap::Args)]
@@ -96,6 +101,35 @@ struct ExtractArgs {
     /// Deduplicate using Zobrist hash (faster/less memory; ~1/2^64 collision chance)
     #[arg(long)]
     dedup_zobrist: bool,
+}
+
+#[derive(clap::Args)]
+struct FromMatchArgs {
+    /// A per-game kifu .txt file, or a directory of them (e.g. a Sekirei match-runner's
+    /// `--output <dir>` kifu directory)
+    #[arg(short, long)]
+    input: PathBuf,
+    /// Output JSONL file
+    #[arg(short, long)]
+    out: PathBuf,
+    /// Only extract from games where this literal kifu-file label lost, per its own
+    /// "# Result: Engine1 Win"/"Engine2 Win" line -- not an inferred candidate/baseline mapping
+    /// (match-runner doesn't guarantee which is which). Omit to extract from every game
+    /// regardless of result.
+    #[arg(long, value_parser = ["engine1", "engine2"])]
+    losing_side: Option<String>,
+    /// Minimum ply to extract (1 = after first move)
+    #[arg(long, default_value = "1")]
+    min_ply: u32,
+    /// Maximum ply to extract
+    #[arg(long)]
+    max_ply: Option<u32>,
+    /// Extract every N plies
+    #[arg(long, default_value = "1", name = "every-n-plies")]
+    every_n_plies: u32,
+    /// Deduplicate positions by SFEN string
+    #[arg(long)]
+    dedup: bool,
 }
 
 #[derive(clap::Args)]
@@ -678,6 +712,7 @@ fn main() -> Result<()> {
             CacheAction::Verify(a) => cmd_cache_verify(a),
             CacheAction::Prune(a) => cmd_cache_prune(a),
         },
+        Commands::FromMatch(args) => cmd_from_match(args),
     }
 }
 
@@ -769,6 +804,222 @@ fn cmd_extract(args: ExtractArgs) -> Result<()> {
     eprintln!(
         "done: {} games, {} positions extracted, {} skipped → {:?}",
         total_games, total_positions, skipped, args.out
+    );
+    Ok(())
+}
+
+/// Which literal kifu-file label ("Engine1"/"Engine2") won a match-runner game, per its own
+/// "# Result: ..." header line. Kept distinct from any candidate/baseline naming convention --
+/// match-runner's own source doesn't guarantee which physical engine slot is "the candidate"
+/// under test, so `from-match` only ever reasons about the labels the kifu file itself states.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MatchResult {
+    Engine1Win,
+    Engine2Win,
+    Draw,
+}
+
+/// Every `.txt` file directly inside `input` if it's a directory, or `input` itself if it's a
+/// single file -- mirrors `collect_game_paths`'s file-or-directory convention but filters on the
+/// match-runner's own kifu extension instead of game-record formats.
+fn collect_match_kifu_paths(input: &Path) -> Result<Vec<PathBuf>> {
+    if input.is_file() {
+        return Ok(vec![input.to_path_buf()]);
+    }
+    let mut paths = Vec::new();
+    for entry in fs::read_dir(input).with_context(|| format!("cannot read directory {input:?}"))? {
+        let p = entry?.path();
+        if p.extension().and_then(|e| e.to_str()) == Some("txt") {
+            paths.push(p);
+        }
+    }
+    paths.sort();
+    Ok(paths)
+}
+
+/// Parses one Sekirei match-runner kifu `.txt` file's header lines (everything before the
+/// `position ...` line). Unrecognized lines are ignored, not errors -- forward-compatible with
+/// extra headers the match-runner might add later.
+fn parse_match_kifu_header(line: &str, result: &mut Option<MatchResult>) {
+    match line.trim() {
+        "# Result: Engine1 Win" => *result = Some(MatchResult::Engine1Win),
+        "# Result: Engine2 Win" => *result = Some(MatchResult::Engine2Win),
+        "# Result: Draw" => *result = Some(MatchResult::Draw),
+        _ => {}
+    }
+}
+
+/// Whether `--losing-side` (if given) selects this game, per the kifu's own literal Result line.
+/// A Draw or missing/unparseable Result is never "a loss for either side" -- skipped entirely
+/// under an explicit `--losing-side`, matching the plain English reading of the flag.
+fn match_qualifies(losing_side: Option<&str>, result: Option<MatchResult>) -> bool {
+    match losing_side {
+        None => true,
+        Some("engine1") => result == Some(MatchResult::Engine2Win),
+        Some("engine2") => result == Some(MatchResult::Engine1Win),
+        Some(_) => false, // unreachable: clap's value_parser restricts this already
+    }
+}
+
+/// Extracts positions from one match-runner kifu file's content. Mirrors
+/// `shogiesa_csa::extract_from_str`'s structure (stop-this-game-on-error resilience, same
+/// `ExtractConfig` gates, same dedup set) but replays a `position startpos moves ...` USI move
+/// list instead of a CSA/KIF game record.
+fn extract_from_match_kifu(
+    content: &str,
+    source_path: &str,
+    losing_side: Option<&str>,
+    config: &shogiesa_core::ExtractConfig,
+    seen: &mut HashSet<String>,
+) -> Vec<PositionRecord> {
+    let mut result = None;
+    let mut position_line = None;
+    for line in content.lines() {
+        if line.starts_with("position ") {
+            position_line = Some(line);
+            break;
+        }
+        parse_match_kifu_header(line, &mut result);
+    }
+    if !match_qualifies(losing_side, result) {
+        return Vec::new();
+    }
+    let Some(position_line) = position_line else {
+        tracing::warn!(
+            path = source_path,
+            "no `position ...` line found, skipping game"
+        );
+        return Vec::new();
+    };
+
+    let tokens: Vec<&str> = position_line.split_whitespace().collect();
+    let (mut board, move_tokens): (Board, &[&str]) = match tokens.as_slice() {
+        ["position", "startpos", "moves", rest @ ..] => (Board::initial(SideToMove::Black), rest),
+        ["position", "startpos"] => (Board::initial(SideToMove::Black), &[]),
+        ["position", "sfen", ..] => {
+            // No SFEN -> Board reconstructor exists anywhere in shogiesa today (verified during
+            // planning) and this form was never observed in real match-runner output -- warn and
+            // skip rather than build an unexercised subsystem for a form that hasn't occurred.
+            tracing::warn!(
+                path = source_path,
+                "`position sfen ...` not supported, skipping game"
+            );
+            return Vec::new();
+        }
+        _ => {
+            tracing::warn!(
+                path = source_path,
+                "unrecognized `position` line, skipping game"
+            );
+            return Vec::new();
+        }
+    };
+
+    let mut out = Vec::new();
+    let mut ply: u32 = 0;
+    for token in move_tokens {
+        let mv = match parse_usi_move(token) {
+            Ok(mv) => mv,
+            Err(e) => {
+                tracing::warn!(path = source_path, ply, "malformed move {token:?}: {e}");
+                break;
+            }
+        };
+        let mover = board.side;
+        let has_capture = match mv {
+            UsiMove::Normal {
+                to_file, to_rank, ..
+            } => board.is_capture(to_file, to_rank, mover),
+            UsiMove::Drop { .. } => false,
+        };
+        if let Err(e) = board.apply_usi_move(mover, &mv) {
+            tracing::warn!(path = source_path, ply, "board error: {e}");
+            break;
+        }
+        ply += 1;
+
+        if config.max_ply.is_some_and(|max| ply > max) {
+            break;
+        }
+        if ply < config.min_ply {
+            continue;
+        }
+        if !(ply - config.min_ply).is_multiple_of(config.every_n) {
+            continue;
+        }
+
+        let sfen = board.to_sfen();
+        if config.dedup && !seen.insert(sfen.clone()) {
+            continue;
+        }
+
+        let tags = PositionTags {
+            phase: phase_from_ply(ply),
+            side_to_move: board.side,
+            in_check: board.is_in_check(),
+            has_capture,
+        };
+        // A match-runner game is strictly linear (no variation/branch concept) -- the kifu
+        // file's own path already carries unambiguous run+game identity, exactly how CSA
+        // extraction already relies on bare `path` with `root_id: None` today. No stamped
+        // win/loss "outcome" field either: `--losing-side` selection above already IS the
+        // filter, so by the time a record exists here its qualifying-game status is a fact
+        // about which file it came from, not something downstream code needs to re-check.
+        let source = SourceInfo {
+            kind: "from_match".to_string(),
+            path: source_path.to_string(),
+            ply,
+            root_id: None,
+            variation_id: None,
+            branch_from_ply: None,
+        };
+        out.push(PositionRecord::new(sfen, source, tags));
+    }
+    out
+}
+
+fn cmd_from_match(args: FromMatchArgs) -> Result<()> {
+    let config = shogiesa_core::ExtractConfig {
+        min_ply: args.min_ply,
+        max_ply: args.max_ply,
+        every_n: args.every_n_plies,
+        dedup: args.dedup,
+    };
+
+    let paths = collect_match_kifu_paths(&args.input)?;
+    if paths.is_empty() {
+        anyhow::bail!("no .txt kifu files found in {:?}", args.input);
+    }
+
+    let out_file =
+        File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
+    let mut writer = BufWriter::new(out_file);
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut total_games = 0usize;
+    let mut total_positions = 0usize;
+
+    for path in &paths {
+        total_games += 1;
+        let content = fs::read_to_string(path).with_context(|| format!("cannot read {path:?}"))?;
+        let source = path.to_string_lossy().into_owned();
+        let records = extract_from_match_kifu(
+            &content,
+            &source,
+            args.losing_side.as_deref(),
+            &config,
+            &mut seen,
+        );
+        for rec in &records {
+            serde_json::to_writer(&mut writer, rec)?;
+            writer.write_all(b"\n")?;
+            total_positions += 1;
+        }
+    }
+
+    writer.flush()?;
+    eprintln!(
+        "done: {total_games} games read, {total_positions} positions extracted → {:?}",
+        args.out
     );
     Ok(())
 }

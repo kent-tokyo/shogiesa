@@ -341,6 +341,41 @@ impl Board {
         Ok(())
     }
 
+    /// Applies an already-parsed USI move-list token. Unlike CSA/KIF (whose own notations state
+    /// the post-move piece type directly), USI notation doesn't repeat it -- so for a normal move
+    /// this looks up whatever piece is currently on `from`, promotes it if the token had a
+    /// trailing '+', then delegates to `apply_normal`/`apply_drop` exactly like the CSA/KIF
+    /// extractors already do.
+    pub fn apply_usi_move(&mut self, color: SideToMove, mv: &UsiMove) -> Result<(), BoardError> {
+        match *mv {
+            UsiMove::Drop {
+                piece,
+                to_file,
+                to_rank,
+            } => self.apply_drop(color, to_file, to_rank, piece),
+            UsiMove::Normal {
+                from_file,
+                from_rank,
+                to_file,
+                to_rank,
+                promote,
+            } => {
+                let (from_ri, from_fi) = sq(from_file, from_rank);
+                let (_, base_piece) =
+                    self.grid[from_ri][from_fi].ok_or(BoardError::NoPieceAtSquare {
+                        file: from_file,
+                        rank: from_rank,
+                    })?;
+                let to_piece = if promote {
+                    base_piece.promote()
+                } else {
+                    base_piece
+                };
+                self.apply_normal(color, from_file, from_rank, to_file, to_rank, to_piece)
+            }
+        }
+    }
+
     fn advance_turn(&mut self) {
         self.side = match self.side {
             SideToMove::Black => SideToMove::White,
@@ -506,6 +541,90 @@ impl Board {
     }
 }
 
+/// One parsed USI move-list token: a plain move ("9i9h"), a promotion ("9g5c+"), or a drop
+/// ("B*7e"). Pure text parsing only -- doesn't touch a `Board`, doesn't know the pre-move piece
+/// type for a normal move (USI notation doesn't encode it, unlike CSA/KIF); see
+/// `Board::apply_usi_move` for that.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsiMove {
+    Normal {
+        from_file: u8,
+        from_rank: u8,
+        to_file: u8,
+        to_rank: u8,
+        promote: bool,
+    },
+    Drop {
+        piece: PieceType,
+        to_file: u8,
+        to_rank: u8,
+    },
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum UsiMoveError {
+    #[error("malformed USI move token {token:?}")]
+    Malformed { token: String },
+    #[error("unknown drop piece letter {ch:?}")]
+    UnknownDropPiece { ch: char },
+}
+
+/// Parses one USI move-list token. USI square notation is `<file 1-9><rank a-i>` (a=rank1 ...
+/// i=rank9); a drop is `<PIECE>*<square>`; a promotion is a plain move with a trailing `+`.
+pub fn parse_usi_move(token: &str) -> Result<UsiMove, UsiMoveError> {
+    let fail = || UsiMoveError::Malformed {
+        token: token.to_string(),
+    };
+    let bytes = token.as_bytes();
+    let file = |b: u8| -> Result<u8, UsiMoveError> {
+        if (b'1'..=b'9').contains(&b) {
+            Ok(b - b'0')
+        } else {
+            Err(fail())
+        }
+    };
+    let rank = |b: u8| -> Result<u8, UsiMoveError> {
+        if (b'a'..=b'i').contains(&b) {
+            Ok(b - b'a' + 1)
+        } else {
+            Err(fail())
+        }
+    };
+
+    if bytes.len() == 4 && bytes[1] == b'*' {
+        let piece = match bytes[0] {
+            b'P' => PieceType::Pawn,
+            b'L' => PieceType::Lance,
+            b'N' => PieceType::Knight,
+            b'S' => PieceType::Silver,
+            b'G' => PieceType::Gold,
+            b'B' => PieceType::Bishop,
+            b'R' => PieceType::Rook,
+            ch => {
+                return Err(UsiMoveError::UnknownDropPiece { ch: ch as char });
+            }
+        };
+        return Ok(UsiMove::Drop {
+            piece,
+            to_file: file(bytes[2])?,
+            to_rank: rank(bytes[3])?,
+        });
+    }
+
+    let promote = match bytes.len() {
+        4 => false,
+        5 if bytes[4] == b'+' => true,
+        _ => return Err(fail()),
+    };
+    Ok(UsiMove::Normal {
+        from_file: file(bytes[0])?,
+        from_rank: rank(bytes[1])?,
+        to_file: file(bytes[2])?,
+        to_rank: rank(bytes[3])?,
+        promote,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -574,5 +693,139 @@ mod tests {
         b.grid[kr - 2][kf + 1] = Some((SideToMove::White, PieceType::Knight));
         b.grid[kr - 1][kf] = Some((SideToMove::Black, PieceType::Gold)); // blocker on the path
         assert!(b.is_in_check(), "knight jumps over blocker");
+    }
+
+    #[test]
+    fn parse_usi_move_plain() {
+        assert_eq!(
+            parse_usi_move("9i9h").unwrap(),
+            UsiMove::Normal {
+                from_file: 9,
+                from_rank: 9,
+                to_file: 9,
+                to_rank: 8,
+                promote: false,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_usi_move_promotion() {
+        // From the real sekirei match-runner kifu sample verified during planning.
+        assert_eq!(
+            parse_usi_move("9g5c+").unwrap(),
+            UsiMove::Normal {
+                from_file: 9,
+                from_rank: 7,
+                to_file: 5,
+                to_rank: 3,
+                promote: true,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_usi_move_all_drop_letters() {
+        let expected = [
+            (b'P', PieceType::Pawn),
+            (b'L', PieceType::Lance),
+            (b'N', PieceType::Knight),
+            (b'S', PieceType::Silver),
+            (b'G', PieceType::Gold),
+            (b'B', PieceType::Bishop),
+            (b'R', PieceType::Rook),
+        ];
+        for (letter, piece) in expected {
+            let token = format!("{}*7e", letter as char);
+            assert_eq!(
+                parse_usi_move(&token).unwrap(),
+                UsiMove::Drop {
+                    piece,
+                    to_file: 7,
+                    to_rank: 5,
+                },
+                "token {token:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_usi_move_malformed_length() {
+        assert!(matches!(
+            parse_usi_move("9i9"),
+            Err(UsiMoveError::Malformed { .. })
+        ));
+        assert!(matches!(
+            parse_usi_move("9i9h++"),
+            Err(UsiMoveError::Malformed { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_usi_move_bad_file_char() {
+        assert!(matches!(
+            parse_usi_move("0i9h"),
+            Err(UsiMoveError::Malformed { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_usi_move_bad_rank_char() {
+        assert!(matches!(
+            parse_usi_move("9z9h"),
+            Err(UsiMoveError::Malformed { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_usi_move_plus_in_wrong_position() {
+        // '+' must be the trailing (5th) byte of a normal move, not embedded elsewhere.
+        assert!(matches!(
+            parse_usi_move("9+9h9"),
+            Err(UsiMoveError::Malformed { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_usi_move_unknown_drop_letter() {
+        assert!(matches!(
+            parse_usi_move("K*5e"),
+            Err(UsiMoveError::UnknownDropPiece { ch: 'K' })
+        ));
+    }
+
+    #[test]
+    fn apply_usi_move_normal_and_promotion() {
+        let mut b = empty_board(SideToMove::Black);
+        b.grid[sq(9, 7).0][sq(9, 7).1] = Some((SideToMove::Black, PieceType::Rook));
+        let mv = parse_usi_move("9g5c+").unwrap();
+        b.apply_usi_move(SideToMove::Black, &mv).unwrap();
+        assert_eq!(b.grid[sq(9, 7).0][sq(9, 7).1], None);
+        assert_eq!(
+            b.grid[sq(5, 3).0][sq(5, 3).1],
+            Some((SideToMove::Black, PieceType::Dragon))
+        );
+    }
+
+    #[test]
+    fn apply_usi_move_drop_onto_empty_square() {
+        let mut b = empty_board(SideToMove::Black);
+        b.hand[color_idx(SideToMove::Black)][PieceType::Pawn.hand_idx().unwrap()] = 1;
+        let mv = parse_usi_move("P*7e").unwrap();
+        b.apply_usi_move(SideToMove::Black, &mv).unwrap();
+        assert_eq!(
+            b.grid[sq(7, 5).0][sq(7, 5).1],
+            Some((SideToMove::Black, PieceType::Pawn))
+        );
+    }
+
+    #[test]
+    fn apply_usi_move_normal_from_empty_square_errors() {
+        let mut b = empty_board(SideToMove::Black);
+        let mv = parse_usi_move("9i9h").unwrap();
+        assert!(matches!(
+            b.apply_usi_move(SideToMove::Black, &mv),
+            Err(BoardError::NoPieceAtSquare { .. })
+        ));
     }
 }

@@ -179,6 +179,33 @@ pass `--yes` to actually delete. Requires at least one of `--corrupted-only`/`--
 `--older-than-days`; combining flags deletes anything matching any of them. `--legacy-only` deletes
 only pre-envelope entries, for once you're confident the new format has fully replaced them.
 
+### `from-match` — extract positions from a match-runner's kifu logs
+
+```bash
+shogiesa from-match --input results/kifu/run1 --out failures.jsonl --losing-side engine1
+```
+
+A pure extractor for an external engine's match-runner output (e.g. Sekirei's own
+`sekirei-match-runner --output <dir>`, which writes one `gameNNNN.txt` per game: header lines
+naming each engine slot and the result, then a `position startpos moves ...` USI move list). Does
+**not** label — feed the output through the existing `label`/`select --strategy hard`/`filter`
+commands yourself, same as any other extracted dataset. This is deliberate: a match-runner's own
+result JSONL typically records only the win/loss/draw outcome, not per-ply evaluation (engines
+commonly discard `info` lines rather than logging them), so "which positions were actually
+mistakes" can only be discovered by relabeling the extracted positions and analyzing the fresh
+observations — not by a flag on `from-match` itself.
+
+`--losing-side engine1|engine2` extracts only from games where that literal kifu-file label lost,
+per its own `# Result: Engine1 Win`/`Engine2 Win` line — not an inferred candidate/baseline
+mapping (a match-runner's own source doesn't guarantee which physical engine slot is "the
+candidate" under test). Omit to extract from every game regardless of result. `--min-ply`/
+`--max-ply`/`--every-n-plies`/`--dedup` behave exactly like `extract`.
+
+**Limitation, not a bug**: `position sfen ... moves ...` (a custom start position) isn't
+supported — the game is skipped with a warning, not crashed. No SFEN→Board reconstructor exists
+anywhere in shogiesa, and this form was never observed in real match-runner output sampled while
+building this command; only `position startpos moves ...` is replayed.
+
 ### `stability` — compute stability scores
 
 ```bash

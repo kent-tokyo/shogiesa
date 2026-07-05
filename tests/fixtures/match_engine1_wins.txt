@@ -1,0 +1,4 @@
+# Engine1: Sekirei(candidate) (Black)
+# Engine2: Sekirei(baseline) (White)
+# Result: Engine1 Win
+position startpos moves 2g2f 8c8d

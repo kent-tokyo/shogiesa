@@ -1,0 +1,4 @@
+# Engine1: Sekirei(weights_v9_smoketest) (Black)
+# Engine2: Sekirei (White)
+# Result: Engine2 Win
+position startpos moves 9i9h 7c7d 9g9f 9c9d 8h9g 7a6b 1i1h 9d9e 9g5c+ 6b5c 2h4h 9e9f 4i3h B*7e P*9i 9f9g+ 8g8f 9g9h 9i9h 7e5g+ P*5b 6a5b 9h9g L*5d 8f8e 5g7i 6i5h 7i8i 7g7f 8i6g 9g9f S*6h 5i4i N*5g

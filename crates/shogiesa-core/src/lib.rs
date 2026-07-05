@@ -684,7 +684,9 @@ pub fn phase_from_ply(ply: u32) -> GamePhase {
 }
 
 pub mod board;
-pub use board::{Board, BoardError, PieceType, zobrist_from_sfen};
+pub use board::{
+    Board, BoardError, PieceType, UsiMove, UsiMoveError, parse_usi_move, zobrist_from_sfen,
+};
 
 pub mod sfen;
 

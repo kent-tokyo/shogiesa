@@ -2891,6 +2891,93 @@ fn tune_csv_grid_has_expected_coverage_and_mismatch_per_threshold() {
     );
 }
 
+/// 4 records combining two independent axes -- policy_margin in {500,100} and score_swing in
+/// {0,200} -- so a 2x2 sweep exercises `tune`'s defining behavior: one combined threshold gate
+/// per cell (both axes ANDed together), not two independent 1D sweeps like `calibrate`'s. If the
+/// grid degenerated into independent sweeps, no cell's kept-count could depend on both axes at
+/// once; here all four combinations produce distinct, hand-verified counts.
+fn cartesian_fixture() -> NamedTempFile {
+    make_labeled_jsonl(&[
+        // policy_margin=500, swing=0 (teacher/student cp agree)
+        position(
+            "opening",
+            serde_json::json!([
+                tune_obs("7g7f", 100, 14, 14, 500),
+                tune_obs("7g7f", 100, 6, 6, 500),
+            ]),
+        ),
+        // policy_margin=500, swing=200
+        position(
+            "opening",
+            serde_json::json!([
+                tune_obs("7g7f", 100, 14, 14, 500),
+                tune_obs("7g7f", 300, 6, 6, 500),
+            ]),
+        ),
+        // policy_margin=100, swing=0
+        position(
+            "opening",
+            serde_json::json!([
+                tune_obs("7g7f", 100, 14, 14, 100),
+                tune_obs("7g7f", 100, 6, 6, 100),
+            ]),
+        ),
+        // policy_margin=100, swing=200
+        position(
+            "opening",
+            serde_json::json!([
+                tune_obs("7g7f", 100, 14, 14, 100),
+                tune_obs("7g7f", 300, 6, 6, 100),
+            ]),
+        ),
+    ])
+}
+
+#[test]
+fn tune_grid_is_a_full_cartesian_product_of_both_swept_axes() {
+    let f = cartesian_fixture();
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "tune",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--teacher-depth",
+            "14",
+            "--student-depths",
+            "6",
+            "--sweep-policy-margin",
+            "0,300",
+            "--sweep-score-swing",
+            "50,250",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    let rows: Vec<&str> = content.lines().skip(1).collect();
+    // 2 policy_margin values x 2 score_swing values must yield exactly 4 combined-threshold
+    // rows -- the row-major loop nesting is the thing under test, not just the row count.
+    assert_eq!(rows.len(), 4);
+
+    let kept_for = |policy: &str, swing: &str| -> u32 {
+        let prefix = format!("{policy},{swing},");
+        let row = rows
+            .iter()
+            .find(|r| r.starts_with(&prefix))
+            .unwrap_or_else(|| panic!("missing combined-grid row for {prefix}"));
+        row.split(',').nth(3).unwrap().parse().unwrap() // kept column
+    };
+
+    // Every row has BOTH axes populated with a real (non-empty) value -- independent 1D sweeps
+    // (calibrate's shape) could never produce a row with both columns set at once.
+    assert_eq!(kept_for("0", "50"), 2); // margin>=0 & swing<=50: the two swing=0 records
+    assert_eq!(kept_for("0", "250"), 4); // margin>=0 & swing<=250: all 4 records
+    assert_eq!(kept_for("300", "50"), 1); // margin>=300 & swing<=50: only the margin=500,swing=0 record
+    assert_eq!(kept_for("300", "250"), 2); // margin>=300 & swing<=250: both margin=500 records
+}
+
 #[test]
 fn tune_report_produces_three_distinct_pareto_candidates() {
     let f = pareto_fixture();

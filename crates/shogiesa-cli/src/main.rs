@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex, mpsc};
 
 use shogiesa_core::{
     GamePhase, Observation, PositionRecord, QualityConfig, SCHEMA_VERSION, Score, ScorePerspective,
-    SideToMove, SourceInfo, engine_bestmove_agreement, evaluate_quality, score_swing, sfen::Sfen,
-    zobrist_from_sfen,
+    SideToMove, SourceInfo, cp_from_black_perspective, engine_bestmove_agreement, evaluate_quality,
+    score_swing, sfen::Sfen, zobrist_from_sfen,
 };
 use shogiesa_pack as pack;
 use shogiesa_usi::UsiEngine;
@@ -351,10 +351,12 @@ struct FilterArgs {
     /// Maximum allowed cp swing across observations (abs(max_cp - min_cp))
     #[arg(long)]
     max_score_swing_cp: Option<i32>,
-    /// Minimum cp score — positions with lower eval are excluded (e.g. --eval-min=-1200)
+    /// Minimum cp score, from Black's perspective (positive = good for Black) regardless of
+    /// whose turn it was — positions below it are excluded (e.g. --eval-min=-1200)
     #[arg(long, allow_hyphen_values = true)]
     eval_min: Option<i32>,
-    /// Maximum cp score — positions with higher eval are excluded (e.g. --eval-max=1200)
+    /// Maximum cp score, from Black's perspective (positive = good for Black) regardless of
+    /// whose turn it was — positions above it are excluded (e.g. --eval-max=1200)
     #[arg(long, allow_hyphen_values = true)]
     eval_max: Option<i32>,
     /// Minimum number of observations required (default: 1)
@@ -1671,15 +1673,20 @@ fn cmd_sample(args: SampleArgs) -> Result<()> {
     Ok(())
 }
 
+/// Black-perspective cp of a record's deepest observation. Thin wrapper over
+/// `shogiesa_core::cp_from_black_perspective` -- kept here (rather than inlined at each call
+/// site) since "pick the deepest observation, then convert" is a record-level operation the core
+/// utility itself doesn't know about.
 fn eval_black(rec: &PositionRecord) -> Option<i32> {
     rec.observations
         .iter()
         .max_by_key(|o| o.depth)
         .and_then(|o| match o.score {
-            Score::Cp { value } => Some(match rec.tags.side_to_move {
-                SideToMove::Black => value,
-                SideToMove::White => -value,
-            }),
+            Score::Cp { value } => Some(cp_from_black_perspective(
+                value,
+                o.score_perspective,
+                rec.tags.side_to_move,
+            )),
             Score::Mate { .. } => None,
         })
 }
@@ -1792,7 +1799,14 @@ fn bucket_key(rec: &PositionRecord, by_phase: bool, by_side: bool, by_eval: bool
             .iter()
             .max_by_key(|o| o.depth)
             .map(|o| match o.score {
-                Score::Cp { value } => format!("{}:", (value.div_euclid(200)) * 200),
+                Score::Cp { value } => {
+                    let black_value = cp_from_black_perspective(
+                        value,
+                        o.score_perspective,
+                        rec.tags.side_to_move,
+                    );
+                    format!("{}:", (black_value.div_euclid(200)) * 200)
+                }
                 Score::Mate { .. } => "mate:".to_string(),
             })
             .unwrap_or_else(|| "_none_:".to_string());
@@ -2352,12 +2366,20 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
                     .entry((swing.div_euclid(50)) * 50)
                     .or_default() += 1;
             }
-            // eval bucket from deepest observation
+            // eval bucket from deepest observation, normalized to Black's perspective so the
+            // histogram/cross-tabs share one reference frame regardless of whose turn each
+            // record's position was -- otherwise "+400" would mean opposite things in different
+            // rows of the same table.
             if let Some(deepest) = rec.observations.iter().max_by_key(|o| o.depth) {
                 let key = match deepest.score {
                     Score::Cp { value } => {
+                        let black_value = cp_from_black_perspective(
+                            value,
+                            deepest.score_perspective,
+                            rec.tags.side_to_move,
+                        );
                         // bucket width 200cp; clamp display at ±1400
-                        (value.div_euclid(200)) * 200
+                        (black_value.div_euclid(200)) * 200
                     }
                     Score::Mate { .. } => i32::MAX, // mate sentinel
                 };

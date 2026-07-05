@@ -164,6 +164,9 @@ shogiesa filter \
 ```
 
 Keeps only positions passing the given stability/eval-range/phase criteria. See `shogiesa filter --help` for the full flag list.
+`--eval-min`/`--eval-max` compare against Black-perspective cp (positive = good for Black,
+regardless of whose turn it was), not the raw side-to-move-relative value USI reports — see
+`Observation.score_perspective` under "JSONL Schema".
 `--require-engine-agreement` / `--max-engine-score-swing-cp` mirror
 `--require-bestmove-agreement` / `--max-score-swing-cp` but compare across distinct *engines*
 (a teacher-ensemble disagreement signal) instead of across depths of one engine — both are a
@@ -215,7 +218,9 @@ Extracts positions around large eval swings (blunders) and/or a `--losing-thresh
 shogiesa balance --input positions.jsonl --by phase --by side --out balanced.jsonl
 ```
 
-Buckets by `phase`/`side`/`eval-bucket` and takes an equal number from each bucket.
+Buckets by `phase`/`side`/`eval-bucket` and takes an equal number from each bucket. `eval-bucket`
+buckets on Black-perspective cp, so the same absolute outcome (e.g. "Black is winning by 300")
+lands in the same bucket regardless of whose turn the position was.
 
 ### `select` — re-labeling candidates
 
@@ -305,11 +310,12 @@ Outputs: position count, ply range, phase/side distribution, duplicate SFENs, ta
 source dominance, balance warnings, and — once positions are labeled — cp/mate ratio, an
 observation-level `score_bound` (exact/lowerbound/upperbound) distribution (unconditional — this
 reflects `Observation.score_bound`, so it's meaningful even without MultiPV), average score swing
-(plus a histogram), average policy margin, eval-bucket × phase / eval-bucket × side cross-tabs,
-(for positions labeled by 2+ distinct engines) an engine-disagreement rate, (when
-`label --multipv N` (N≥2) was used) MultiPV-candidate coverage and a separate `score_bound`
-distribution scoped to those candidates, and (when any observation has a recorded
-`requested_depth`) a requested-depth underreach rate.
+(plus a histogram), average policy margin, an eval-bucket histogram plus eval-bucket × phase /
+eval-bucket × side cross-tabs (bucketed on Black-perspective cp, so the histogram/cross-tabs share
+one reference frame regardless of whose turn each position was), (for positions labeled by 2+
+distinct engines) an engine-disagreement rate, (when `label --multipv N` (N≥2) was used)
+MultiPV-candidate coverage and a separate `score_bound` distribution scoped to those candidates,
+and (when any observation has a recorded `requested_depth`) a requested-depth underreach rate.
 
 ### `validate` — data integrity
 

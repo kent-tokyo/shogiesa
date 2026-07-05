@@ -259,6 +259,25 @@ fn report_shows_engine_disagreement() {
         ));
 }
 
+#[test]
+fn report_eval_bucket_normalizes_to_black_perspective() {
+    // Black to move, raw cp -250 ("Black is worse by 250") -- black-perspective is also -250.
+    // White to move, raw cp +250 ("White is better by 250") -- black-perspective is ALSO -250,
+    // since White winning means Black losing. Both belong in the same 200cp bucket (floor(-250/
+    // 200)*200 = -400) once normalized to one shared reference frame; if `report` used the raw
+    // side-to-move-relative value directly instead, the White-to-move record would land in the
+    // +200 bucket instead, splitting what should be one bucket of 2 into two buckets of 1 each.
+    let f = make_labeled_jsonl(&[
+        position("middlegame", serde_json::json!([obs("7g7f", -250, 4)])),
+        position_white_to_move("middlegame", serde_json::json!([obs("3c3d", 250, 4)])),
+    ]);
+    shogiesa()
+        .args(["report", "--input", f.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(" -400.. -201:     2"));
+}
+
 // --- validate (normal mode) ---
 
 #[test]
@@ -1161,6 +1180,20 @@ fn position(phase: &str, observations: serde_json::Value) -> serde_json::Value {
     })
 }
 
+/// Like `position`, but White to move -- every other fixture in this file is Black to move,
+/// under which black-perspective cp conversion is a no-op and couldn't catch a perspective bug
+/// even if one existed (`balance --by eval-bucket`/`report`'s eval stats need this to actually
+/// exercise the sign flip, not just the Black-to-move identity case).
+fn position_white_to_move(phase: &str, observations: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "sfen": "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL w - 1",
+        "source": { "kind": "csa", "path": "test.csa", "ply": 1 },
+        "tags": { "phase": phase, "side_to_move": "white", "in_check": false, "has_capture": false },
+        "observations": observations
+    })
+}
+
 #[test]
 fn filter_no_observations_excluded() {
     let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
@@ -1833,6 +1866,43 @@ fn balance_target_override() {
         .success();
     let content = std::fs::read_to_string(out.path()).unwrap();
     assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 5);
+}
+
+#[test]
+fn balance_by_eval_bucket_normalizes_to_black_perspective() {
+    // Two Black-to-move records (raw cp -250, black-perspective also -250) and two
+    // White-to-move records (raw cp +250, black-perspective -250 -- White winning by 250 means
+    // Black losing by 250) all belong in the SAME 200cp eval bucket once normalized. With
+    // --target 1, that single shared bucket should keep exactly 1 record; if bucketing used the
+    // raw side-to-move-relative value instead, the White-to-move pair would form a second,
+    // distinct bucket (around +200) and --target 1 would keep 2 records total.
+    let f = make_labeled_jsonl(&[
+        position("middlegame", serde_json::json!([obs("7g7f", -250, 4)])),
+        position("middlegame", serde_json::json!([obs("7g7f", -260, 4)])),
+        position_white_to_move("middlegame", serde_json::json!([obs("3c3d", 250, 4)])),
+        position_white_to_move("middlegame", serde_json::json!([obs("3c3d", 260, 4)])),
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "balance",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--by",
+            "eval-bucket",
+            "--target",
+            "1",
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(
+        content.lines().filter(|l| !l.trim().is_empty()).count(),
+        1,
+        "all 4 records should collapse into one black-perspective eval bucket"
+    );
 }
 
 // --- split ---

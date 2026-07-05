@@ -196,6 +196,49 @@ pub struct Observation {
     pub candidates: Vec<CandidateMove>,
 }
 
+/// `cp`, converted to Black's perspective (positive = good for Black), given the perspective it
+/// was actually recorded in and which side was to move. USI's `score cp` is side-to-move-relative
+/// by protocol convention -- this is the one place that convention gets undone, so every consumer
+/// wanting "is Black winning" (not "is whoever's turn it is winning") calls this instead of
+/// re-deriving the sign flip independently, which matters once eval-range gates/buckets/
+/// histograms need one shared reference frame regardless of whose turn a position was.
+pub fn cp_from_black_perspective(
+    cp: i32,
+    perspective: ScorePerspective,
+    side_to_move: SideToMove,
+) -> i32 {
+    match perspective {
+        ScorePerspective::Black => cp,
+        ScorePerspective::SideToMove => {
+            if side_to_move == SideToMove::Black {
+                cp
+            } else {
+                -cp
+            }
+        }
+    }
+}
+
+/// Inverse of `cp_from_black_perspective` -- converts to side-to-move-relative regardless of how
+/// `cp` was actually recorded. Forward-compatible with a future `ScorePerspective::Black`-tagged
+/// observation, not just today's all-`SideToMove` data.
+pub fn cp_from_side_to_move_perspective(
+    cp: i32,
+    perspective: ScorePerspective,
+    side_to_move: SideToMove,
+) -> i32 {
+    match perspective {
+        ScorePerspective::SideToMove => cp,
+        ScorePerspective::Black => {
+            if side_to_move == SideToMove::Black {
+                cp
+            } else {
+                -cp
+            }
+        }
+    }
+}
+
 /// Cp swing (max - min) across at least 2 scores; `None` if fewer than 2.
 pub fn score_swing(cp_scores: &[i32]) -> Option<i32> {
     if cp_scores.len() < 2 {
@@ -409,22 +452,40 @@ pub fn evaluate_quality(rec: &PositionRecord, config: &QualityConfig) -> Quality
     let cp_count = cp_scores.len();
     let mate_count = obs.len() - cp_count;
 
-    if config.eval_min.is_some() {
-        configured_gates += 1;
-        if config
-            .eval_min
-            .is_some_and(|min| cp_scores.iter().any(|&v| v < min))
-        {
-            reasons.push(QualityReason::EvalMin);
+    // Why a separate vector, not just reusing `cp_scores` from above: `cp_scores` also feeds
+    // `score_swing_cp` (max - min) below, which is invariant under a uniform per-record sign flip
+    // (every observation in one record shares the same `side_to_move`) and must stay
+    // side-to-move-relative -- only `eval_min`/`eval_max`, which compare against a fixed
+    // black-perspective threshold, need normalization.
+    if config.eval_min.is_some() || config.eval_max.is_some() {
+        let black_cp_scores: Vec<i32> = obs
+            .iter()
+            .filter_map(|o| match o.score {
+                Score::Cp { value } => Some(cp_from_black_perspective(
+                    value,
+                    o.score_perspective,
+                    rec.tags.side_to_move,
+                )),
+                Score::Mate { .. } => None,
+            })
+            .collect();
+        if config.eval_min.is_some() {
+            configured_gates += 1;
+            if config
+                .eval_min
+                .is_some_and(|min| black_cp_scores.iter().any(|&v| v < min))
+            {
+                reasons.push(QualityReason::EvalMin);
+            }
         }
-    }
-    if config.eval_max.is_some() {
-        configured_gates += 1;
-        if config
-            .eval_max
-            .is_some_and(|max| cp_scores.iter().any(|&v| v > max))
-        {
-            reasons.push(QualityReason::EvalMax);
+        if config.eval_max.is_some() {
+            configured_gates += 1;
+            if config
+                .eval_max
+                .is_some_and(|max| black_cp_scores.iter().any(|&v| v > max))
+            {
+                reasons.push(QualityReason::EvalMax);
+            }
         }
     }
 
@@ -749,6 +810,15 @@ mod tests {
         rec_with(GamePhase::Middlegame, false, false, observations)
     }
 
+    /// Like `simple_rec`, but White to move -- every other fixture in this module is Black to
+    /// move, under which `cp_from_black_perspective` is a no-op and couldn't catch a perspective
+    /// bug even if one existed. Tests that actually need the sign flip to matter use this.
+    fn simple_rec_white_to_move(observations: Vec<Observation>) -> PositionRecord {
+        let mut r = rec_with(GamePhase::Middlegame, false, false, observations);
+        r.tags.side_to_move = SideToMove::White;
+        r
+    }
+
     #[test]
     fn evaluate_quality_min_observations_gate() {
         let config = QualityConfig {
@@ -841,6 +911,39 @@ mod tests {
             ..Default::default()
         };
         let decision = evaluate_quality(&simple_rec(vec![obs("a", 4, 200, "7g7f")]), &config);
+        assert_eq!(decision.reasons, vec![QualityReason::EvalMax]);
+    }
+
+    #[test]
+    fn evaluate_quality_eval_min_gate_uses_black_perspective_when_white_to_move() {
+        // White to move, raw (side-to-move-relative) cp +50 ("White is slightly better")
+        // converts to black-perspective -50. eval_min=0 must reject this on the converted value
+        // (-50 < 0) even though the *raw* value (+50) would NOT have triggered the gate -- this
+        // fails if the gate ever regresses to comparing the raw side-to-move cp directly.
+        let config = QualityConfig {
+            eval_min: Some(0),
+            ..Default::default()
+        };
+        let decision = evaluate_quality(
+            &simple_rec_white_to_move(vec![obs("a", 4, 50, "7g7f")]),
+            &config,
+        );
+        assert_eq!(decision.reasons, vec![QualityReason::EvalMin]);
+    }
+
+    #[test]
+    fn evaluate_quality_eval_max_gate_uses_black_perspective_when_white_to_move() {
+        // White to move, raw cp -50 ("White is slightly worse") converts to black-perspective
+        // +50. eval_max=0 must reject this on the converted value (+50 > 0) even though the raw
+        // value (-50) would NOT have triggered the gate.
+        let config = QualityConfig {
+            eval_max: Some(0),
+            ..Default::default()
+        };
+        let decision = evaluate_quality(
+            &simple_rec_white_to_move(vec![obs("a", 4, -50, "7g7f")]),
+            &config,
+        );
         assert_eq!(decision.reasons, vec![QualityReason::EvalMax]);
     }
 

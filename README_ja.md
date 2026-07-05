@@ -169,7 +169,9 @@ shogiesa filter \
 ```
 
 指定した安定度・eval範囲・phase等の条件を満たす局面のみ残します。全フラグは
-`shogiesa filter --help` を参照してください。`--require-engine-agreement` /
+`shogiesa filter --help` を参照してください。`--eval-min`/`--eval-max` は、USIが返す
+手番側視点の生の値ではなく、先手視点のcp（プラス=先手有利、手番に関わらず）と比較します —
+詳細は「JSONLスキーマ」の `Observation.score_perspective` を参照。`--require-engine-agreement` /
 `--max-engine-score-swing-cp` は `--require-bestmove-agreement` / `--max-score-swing-cp`
 と対になりますが、1エンジン内の深さ間ではなく、異なる *エンジン* 間の不一致（teacher-ensemble
 の不一致シグナル）を比較します — どちらも1エンジンのみでラベル付けされた局面では no-op です。
@@ -219,7 +221,9 @@ evalの大きな揺れ（blunder）周辺の局面、および`--losing-threshol
 shogiesa balance --input positions.jsonl --by phase --by side --out balanced.jsonl
 ```
 
-`phase`/`side`/`eval-bucket`でバケット分けし、各バケットから同数を採用します。
+`phase`/`side`/`eval-bucket`でバケット分けし、各バケットから同数を採用します。`eval-bucket`は
+先手視点のcpでバケット分けするため、同じ絶対的な局面評価（例:「先手が300有利」）は手番に
+関わらず同じバケットに入ります。
 
 ### `select` — 再ラベル候補の選別
 
@@ -311,8 +315,9 @@ shogiesa report --input observations.jsonl
 balance warnings、そしてラベル付け後は cp/mate 比率、観測レベルの `score_bound`
 （exact/lowerbound/upperbound）分布（無条件表示 — `Observation.score_bound` を反映するため
 MultiPV を使っていなくても意味があります）、score swing 平均（ヒストグラム付き）、
-policy margin 平均、eval-bucket × phase / eval-bucket × side のクロス集計、
-（2つ以上の異なるエンジンでラベル付けされた局面については）エンジン不一致率、
+policy margin 平均、eval-bucketヒストグラムと eval-bucket × phase / eval-bucket × side の
+クロス集計（いずれも先手視点のcpでバケット分けするため、手番に関わらず同じ基準で
+比較できます）、（2つ以上の異なるエンジンでラベル付けされた局面については）エンジン不一致率、
 （`label --multipv N`（N≥2）を使った場合は）MultiPV候補カバレッジと、
 その候補に限定した別の `score_bound` 分布、そして（`requested_depth` が記録された観測が
 1件以上あれば）requested_depth の未達率を表示します。

@@ -8,6 +8,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-07-05
+
 ### Added
 - `Observation.requested_depth: Option<u32>` — the depth `label` asked the engine to search to, distinct from `depth` (what it actually reached). `None` on records labeled before this field existed.
 - `filter --require-requested-depth-reached` excludes positions where any non-mate observation's achieved depth fell short of its own `requested_depth`; a no-op on observations with no recorded `requested_depth`. Mate observations are exempt, same rationale as `--min-depth-reached`.

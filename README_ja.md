@@ -345,7 +345,8 @@ policy margin 平均、eval-bucketヒストグラムと eval-bucket × phase / e
 （`label --multipv N`（N≥2）を使った場合は）MultiPV候補カバレッジと、
 その候補に限定した別の `score_bound` 分布、そして（`requested_depth` が記録された観測が
 1件以上あれば)requested_depth の未達率を表示します。入力を1回のストリーム処理のみで走査し、
-全データセットをメモリに載せないため、数GB規模のJSONLでもメモリ使用量は一定です。
+レコード集合自体はメモリに載せません — メモリ使用量は総レコード数ではなく、
+異なるSFEN数・source数に比例します。
 
 ### `validate` — データ整合性チェック
 

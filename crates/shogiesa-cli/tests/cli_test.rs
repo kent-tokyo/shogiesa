@@ -896,10 +896,15 @@ fn label_replace_existing_overwrites() {
 
 #[test]
 fn label_jobs_2_is_unordered_by_default_and_preserve_order_matches_input_order() {
+    // Each position's sfen move-count field (the trailing token) is distinct (ply + 1) so
+    // fake-usi-engine's SlowMoveCount option can single out ply 1 to finish last -- deterministically,
+    // not dependent on OS thread-scheduling jitter (a plain uniform-cost fixture previously let this
+    // test pass even with the write-order branches swapped; see the sabotage check this test guards
+    // against).
     fn tagged_position(ply: u32) -> serde_json::Value {
         serde_json::json!({
             "schema_version": 1,
-            "sfen": "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+            "sfen": format!("lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - {}", ply + 1),
             "source": { "kind": "csa", "path": "test.csa", "ply": ply },
             "tags": { "phase": "opening", "side_to_move": "black", "in_check": false, "has_capture": false },
             "observations": []
@@ -919,6 +924,15 @@ fn label_jobs_2_is_unordered_by_default_and_preserve_order_matches_input_order()
 
     let positions: Vec<serde_json::Value> = (0..8u32).map(tagged_position).collect();
     let input = make_labeled_jsonl(&positions);
+    // ply 1 (sfen move-count 2) is made artificially slow -- 300ms dwarfs every other position's
+    // near-instant fake search, so it deterministically finishes last regardless of which worker
+    // draws it or how the OS schedules the two worker threads.
+    let slow_position_opts = [
+        "--engine-option",
+        "SlowMoveCount=2",
+        "--engine-option",
+        "SlowDelayMs=300",
+    ];
 
     // Default (no flag): interrupt-safe, write-as-completed -- same set of records, but order is
     // not guaranteed to match input order.
@@ -937,14 +951,22 @@ fn label_jobs_2_is_unordered_by_default_and_preserve_order_matches_input_order()
             "--out",
             unordered_out.path().to_str().unwrap(),
         ])
+        .args(slow_position_opts)
         .assert()
         .success();
-    let mut plies = plies_of(unordered_out.path());
-    plies.sort_unstable();
+    let plies = plies_of(unordered_out.path());
+    let mut sorted_plies = plies.clone();
+    sorted_plies.sort_unstable();
     assert_eq!(
-        plies,
+        sorted_plies,
         (0..8u64).collect::<Vec<_>>(),
         "default output must still produce the same set of records"
+    );
+    assert_ne!(
+        plies,
+        (0..8u64).collect::<Vec<_>>(),
+        "default output should reflect completion order, not input order -- ply 1 was made \
+         artificially slow so it must land somewhere other than its input position"
     );
 
     // --preserve-order: opt-in to strict input-order output (trades interrupt-safety for order).
@@ -964,12 +986,14 @@ fn label_jobs_2_is_unordered_by_default_and_preserve_order_matches_input_order()
             "--out",
             ordered_out.path().to_str().unwrap(),
         ])
+        .args(slow_position_opts)
         .assert()
         .success();
     assert_eq!(
         plies_of(ordered_out.path()),
         (0..8u64).collect::<Vec<_>>(),
-        "--preserve-order must produce output order matching input order"
+        "--preserve-order must produce output order matching input order, even though ply 1 was \
+         the last to finish"
     );
 }
 

@@ -22,6 +22,13 @@
 ///   setoption name MultiPV value N        : same effect as --multipv-count N (N>=2)
 ///   setoption name EarlyStopDepth value N : same effect as --early-stop-depth N
 ///   setoption name Bestmove value MOVE    : same effect as --bestmove MOVE
+///   setoption name SlowMoveCount value N  : sleep SlowDelayMs before answering "go" for whichever
+///                                           position's sfen move-count field (the trailing token
+///                                           of "position sfen ...") equals N
+///   setoption name SlowDelayMs value N    : delay, in ms, used by SlowMoveCount above (used to
+///                                           deterministically make one specific position finish
+///                                           last, so tests of label's write-order behavior don't
+///                                           depend on OS thread-scheduling jitter)
 use std::io::{self, BufRead, Write};
 use std::thread;
 use std::time::Duration;
@@ -56,6 +63,9 @@ fn main() {
         .and_then(|i| args.get(i + 1))
         .cloned()
         .unwrap_or_else(|| "7g7f".to_string());
+    let mut current_move_count: Option<u32> = None;
+    let mut slow_move_count: Option<u32> = None;
+    let mut slow_delay_ms: u64 = 0;
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut out = io::BufWriter::new(stdout.lock());
@@ -93,10 +103,28 @@ fn main() {
                     bestmove = mv.to_string();
                 }
             }
-            s if s.starts_with("position") => {}
+            s if s.starts_with("setoption name SlowMoveCount value ") => {
+                slow_move_count = s.rsplit(' ').next().and_then(|v| v.parse().ok());
+            }
+            s if s.starts_with("setoption name SlowDelayMs value ") => {
+                slow_delay_ms = s
+                    .rsplit(' ')
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0);
+            }
+            s if s.starts_with("position") => {
+                current_move_count = s
+                    .split_whitespace()
+                    .next_back()
+                    .and_then(|t| t.parse().ok());
+            }
             s if s.starts_with("go") => {
                 if hang {
                     thread::sleep(Duration::from_secs(9999));
+                }
+                if slow_move_count.is_some() && current_move_count == slow_move_count {
+                    thread::sleep(Duration::from_millis(slow_delay_ms));
                 }
                 if spam_info {
                     loop {

@@ -1194,6 +1194,23 @@ fn position_white_to_move(phase: &str, observations: serde_json::Value) -> serde
     })
 }
 
+/// Like `position`, but with caller-chosen `sfen`/`source.path` -- needed to build fixtures with
+/// deliberately varied (or deliberately duplicated) sfens, which `position`'s single hardcoded
+/// sfen can't express, for `sample`/`select`'s hash-ordering golden-output tests.
+fn position_with_path(
+    sfen: &str,
+    path: &str,
+    observations: serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "sfen": sfen,
+        "source": { "kind": "csa", "path": path, "ply": 1 },
+        "tags": { "phase": "middlegame", "side_to_move": "black", "in_check": false, "has_capture": false },
+        "observations": observations
+    })
+}
+
 #[test]
 fn filter_no_observations_excluded() {
     let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
@@ -2906,6 +2923,265 @@ fn sample_manifest_records_counts() {
     assert_eq!(manifest["records_read"], 3);
     assert_eq!(manifest["records_kept"], 2);
     assert_eq!(manifest["records_dropped"], 1);
+}
+
+// --- PR7 golden baseline: sample/select's bounded top-K heap streaming rewrite must produce
+// byte-identical selection and order to the full-materialize-sort-truncate code it replaces. This
+// fixture ties every record on the primary ranking key (all identical observations, so
+// `uncertain`'s evaluate_quality score and `coverage`'s bucket count are the same for all 6) with
+// one duplicated sfen ("posA" on g1 and g4) -- so ranking is decided entirely by the
+// seeded_hash/original-index tie-break chain, not the primary key, forcing every layer of that
+// chain to actually run. Captured against the pre-refactor binary; must still pass after.
+fn pr7_heap_fixture() -> NamedTempFile {
+    make_labeled_jsonl(&[
+        position_with_path("posA", "g1.csa", serde_json::json!([obs("7g7f", 50, 4)])),
+        position_with_path("posB", "g2.csa", serde_json::json!([obs("7g7f", 50, 4)])),
+        position_with_path("posC", "g3.csa", serde_json::json!([obs("7g7f", 50, 4)])),
+        position_with_path("posA", "g4.csa", serde_json::json!([obs("7g7f", 50, 4)])),
+        position_with_path("posD", "g5.csa", serde_json::json!([obs("7g7f", 50, 4)])),
+        position_with_path("posE", "g6.csa", serde_json::json!([obs("7g7f", 50, 4)])),
+    ])
+}
+
+fn source_paths_in_order(content: &str) -> Vec<String> {
+    content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            let v: serde_json::Value = serde_json::from_str(l).unwrap();
+            v["source"]["path"].as_str().unwrap().to_string()
+        })
+        .collect()
+}
+
+#[test]
+fn sample_bounded_heap_matches_pre_refactor_golden_output() {
+    let f = pr7_heap_fixture();
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "sample",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--count",
+            "4",
+            "--seed",
+            "7",
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    // restored to input order; both duplicate-sfen records (g1, g4) survive the hash tie
+    assert_eq!(
+        source_paths_in_order(&content),
+        vec!["g1.csa", "g3.csa", "g4.csa", "g6.csa"]
+    );
+}
+
+#[test]
+fn select_uncertain_bounded_heap_matches_pre_refactor_golden_output() {
+    let f = pr7_heap_fixture();
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "select",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--strategy",
+            "uncertain",
+            "--count",
+            "4",
+            "--seed",
+            "7",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    // ranked order, not file order; g1 (earlier index) sorts before its hash-tied twin g4
+    assert_eq!(
+        source_paths_in_order(&content),
+        vec!["g6.csa", "g1.csa", "g4.csa", "g3.csa"]
+    );
+}
+
+#[test]
+fn select_coverage_bounded_heap_matches_pre_refactor_golden_output() {
+    let f = pr7_heap_fixture();
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "select",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--strategy",
+            "coverage",
+            "--count",
+            "4",
+            "--seed",
+            "7",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(
+        source_paths_in_order(&content),
+        vec!["g6.csa", "g1.csa", "g4.csa", "g3.csa"]
+    );
+}
+
+#[test]
+fn sample_count_larger_than_dataset_keeps_everything() {
+    let f = pr7_heap_fixture();
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "sample",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--count",
+            "100",
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 6);
+}
+
+#[test]
+fn sample_count_zero_selects_nothing() {
+    let f = pr7_heap_fixture();
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "sample",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--count",
+            "0",
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 0);
+}
+
+#[test]
+fn select_uncertain_count_larger_than_dataset_keeps_everything() {
+    let f = pr7_heap_fixture();
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "select",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--strategy",
+            "uncertain",
+            "--count",
+            "100",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 6);
+}
+
+/// Stronger tie-contest fixture than `pr7_heap_fixture`: 4 records share one sfen ("posA") so
+/// their score/bucket-count AND seeded_hash are all identical. With `--count 2` and one unrelated
+/// survivor (posE), only one of the four tied "posA" records can fit -- forcing a genuine eviction
+/// contest among them (unlike `pr7_heap_fixture`'s single duplicate pair, which happened to both
+/// fit within capacity without ever competing for a slot). Whichever one wins must be resolved by
+/// the final index tiebreak, exactly reproducing `sort_by`'s stability.
+fn pr7_tie_contest_fixture() -> NamedTempFile {
+    make_labeled_jsonl(&[
+        position_with_path("posA", "t1.csa", serde_json::json!([obs("7g7f", 50, 4)])),
+        position_with_path("posA", "t2.csa", serde_json::json!([obs("7g7f", 50, 4)])),
+        position_with_path("posA", "t3.csa", serde_json::json!([obs("7g7f", 50, 4)])),
+        position_with_path("posA", "t4.csa", serde_json::json!([obs("7g7f", 50, 4)])),
+        position_with_path("posD", "t5.csa", serde_json::json!([obs("7g7f", 50, 4)])),
+        position_with_path("posE", "t6.csa", serde_json::json!([obs("7g7f", 50, 4)])),
+    ])
+}
+
+#[test]
+fn sample_bounded_heap_resolves_full_tie_contest_by_earliest_index() {
+    let f = pr7_tie_contest_fixture();
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "sample",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--count",
+            "2",
+            "--seed",
+            "7",
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(source_paths_in_order(&content), vec!["t1.csa", "t6.csa"]);
+}
+
+#[test]
+fn select_uncertain_bounded_heap_resolves_full_tie_contest_by_earliest_index() {
+    let f = pr7_tie_contest_fixture();
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "select",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--strategy",
+            "uncertain",
+            "--count",
+            "2",
+            "--seed",
+            "7",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(source_paths_in_order(&content), vec!["t6.csa", "t1.csa"]);
+}
+
+#[test]
+fn select_coverage_bounded_heap_resolves_full_tie_contest_by_earliest_index() {
+    let f = pr7_tie_contest_fixture();
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "select",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--strategy",
+            "coverage",
+            "--count",
+            "2",
+            "--seed",
+            "7",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(source_paths_in_order(&content), vec!["t6.csa", "t1.csa"]);
 }
 
 #[test]

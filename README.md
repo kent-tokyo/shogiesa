@@ -255,6 +255,14 @@ Unlike `sample`/`balance`, output is in ranked order (most-worth-a-look first), 
 input order — a re-labeling queue is more useful read top-to-bottom by priority. Ties within a
 rank break deterministically by `--seed`, the same mechanism `sample` uses.
 
+`--strategy uncertain`/`coverage` stream the input and keep a bounded top-`--count` heap instead
+of materializing the whole dataset, so memory scales with `--count`, not with dataset size
+(`coverage` reads its input twice — once to tally bucket sizes, once to rank — since a bucket's
+size can't be known until every position naming it has been seen). `--strategy hard` still
+materializes the full dataset: its blunder-adjacency signal fundamentally needs a whole game's
+positions grouped together, which isn't safe to stream without assuming the input is contiguously
+grouped by source.
+
 ### `split` / `sample` — dataset slicing
 
 ```bash
@@ -275,7 +283,9 @@ position), grouped by `source.root_id` when present (falling back to stripping t
 `#varN@ply` suffix for JSONL/extractors that never set `root_id`, e.g. CSA), and it writes a
 `manifest.json` with the seed, requested fractions, and the *actual* per-split position/source
 counts (these naturally deviate from the requested fractions since games vary in length).
-`sample` deterministically selects N positions.
+`sample` deterministically selects N positions, streaming the input and keeping a bounded
+top-`--count` heap (by `seeded_hash`) instead of materializing the whole dataset, the same
+technique `select --strategy uncertain/coverage` uses.
 
 ### `pack` / `unpack` — binary format
 

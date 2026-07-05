@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -1630,45 +1630,100 @@ fn seeded_hash(seed: u64, s: &str) -> u64 {
     hash_parts_u64(&[&seed_bytes, s.as_bytes()])
 }
 
+/// One candidate in a bounded top-K stream. `key` carries every tie-break the equivalent
+/// full-materialize-then-`sort_by` code applied (e.g. `(rank, seeded_hash)`); `index` is always
+/// the final tiebreak layer, reproducing `sort_by`'s stability -- which a heap has no notion of on
+/// its own, since two records can otherwise agree on every field `key` compares.
+struct HeapEntry<K: Ord> {
+    key: K,
+    index: usize,
+    record: PositionRecord,
+}
+
+impl<K: Ord> PartialEq for HeapEntry<K> {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key && self.index == other.index
+    }
+}
+impl<K: Ord> Eq for HeapEntry<K> {}
+impl<K: Ord> PartialOrd for HeapEntry<K> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl<K: Ord> Ord for HeapEntry<K> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.key
+            .cmp(&other.key)
+            .then_with(|| self.index.cmp(&other.index))
+    }
+}
+
+/// Keeps the `count` smallest `HeapEntry`s seen so far -- the standard bounded-heap top-K
+/// algorithm: push while under capacity, otherwise evict the current worst-kept entry if `entry`
+/// ranks ahead of it. Provably identical final set (and, via `BinaryHeap::into_sorted_vec`,
+/// identical order) to "collect everything, sort ascending by the same key, truncate" -- at
+/// O(count) memory instead of O(n).
+fn push_bounded<K: Ord>(heap: &mut BinaryHeap<HeapEntry<K>>, count: usize, entry: HeapEntry<K>) {
+    if heap.len() < count {
+        heap.push(entry);
+    } else if heap.peek().is_some_and(|worst| entry.cmp(worst).is_lt()) {
+        heap.pop();
+        heap.push(entry);
+    }
+}
+
 fn cmd_sample(args: SampleArgs) -> Result<()> {
-    let (records, _) = load_records(&args.input)?;
-    let total = records.len();
-    let count = args.count.min(total);
-
-    // Sort indices by hash(seed, sfen) — deterministic, spread across the dataset
     let seed = args.seed;
-    let mut indices: Vec<usize> = (0..total).collect();
-    indices.sort_by_key(|&i| seeded_hash(seed, &records[i].sfen));
-    indices.truncate(count);
+    let count = args.count;
 
-    // Output in original order
-    let selected: HashSet<usize> = indices.into_iter().collect();
+    let reader = BufReader::new(
+        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
+    );
+    let mut total = 0usize;
+    let mut heap: BinaryHeap<HeapEntry<u64>> = BinaryHeap::with_capacity(count.saturating_add(1));
+    for (i, line) in reader.lines().enumerate() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let record: PositionRecord = match serde_json::from_str(&line) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(line = i + 1, "parse error: {e}");
+                continue;
+            }
+        };
+        let key = seeded_hash(seed, &record.sfen);
+        let index = total;
+        total += 1;
+        push_bounded(&mut heap, count, HeapEntry { key, index, record });
+    }
+
+    // Restore original file order (unlike `select`, which outputs in ranked order)
+    let mut kept: Vec<HeapEntry<u64>> = heap.into_vec();
+    kept.sort_by_key(|e| e.index);
+
     let out_file =
         File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
     let mut writer = BufWriter::new(out_file);
-    let mut kept = 0usize;
-    let mut kept_records = Vec::new();
-    for (i, rec) in records.iter().enumerate() {
-        if selected.contains(&i) {
-            serde_json::to_writer(&mut writer, rec)?;
-            writer.write_all(b"\n")?;
-            kept += 1;
-            if args.manifest.is_some() {
-                kept_records.push(rec.clone());
-            }
-        }
+    for entry in &kept {
+        serde_json::to_writer(&mut writer, &entry.record)?;
+        writer.write_all(b"\n")?;
     }
     writer.flush()?;
     eprintln!(
-        "done: {kept}/{total} sampled (seed={seed}) → {:?}",
+        "done: {}/{total} sampled (seed={seed}) → {:?}",
+        kept.len(),
         args.out
     );
     if let Some(manifest_path) = &args.manifest {
         let mut manifest = RunManifest::new("sample", &args.input);
         manifest.input_hash = hash_file(&args.input)?;
         manifest.records_read = total;
-        manifest.records_kept = kept;
-        manifest.records_dropped = total - kept;
+        manifest.records_kept = kept.len();
+        manifest.records_dropped = total - kept.len();
+        let kept_records: Vec<PositionRecord> = kept.iter().map(|e| e.record.clone()).collect();
         accumulate_coverage(&mut manifest, &kept_records);
         write_manifest(manifest_path, &manifest)?;
     }
@@ -1888,82 +1943,179 @@ fn cmd_balance(args: BalanceArgs) -> Result<()> {
 // below ranks positions by a signal that predicts "worth a second look" and reuses the exact
 // judgment logic `filter`/`mine`/`balance` already have (evaluate_quality, blunder-window
 // detection, bucket keys) rather than re-deriving what "uncertain"/"hard"/"thin" means.
-fn cmd_select(args: SelectArgs) -> Result<()> {
+/// `f32` wrapper with a total order (via `total_cmp`), scoped to `select --strategy uncertain`'s
+/// heap key -- `evaluate_quality`'s score is a plain 0..=1 fraction, never NaN in practice, but
+/// `f32` has no `Ord` impl at all, so a small local wrapper is needed regardless of that.
+#[derive(PartialEq)]
+struct TotalF32(f32);
+impl Eq for TotalF32 {}
+impl PartialOrd for TotalF32 {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for TotalF32 {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.total_cmp(&other.0)
+    }
+}
+
+/// `select --strategy uncertain`: streams the input once, keeping a bounded top-K heap of the
+/// `count` worst `evaluate_quality` scores. Key = `(score, seeded_hash)`, matching the
+/// full-materialize-then-`sort_by` ordering this replaces exactly (ascending: worst first).
+fn select_uncertain_streaming(args: &SelectArgs) -> Result<(usize, Vec<PositionRecord>)> {
+    // No arbitrary thresholds: every gate here is either a plain existence check or, for depth,
+    // requested_depth-vs-achieved (self-referential, no floor to pick) -- require_engine_agreement
+    // stands in for the spec's "engine_disagreement" signal. --min-policy-margin-cp is the one
+    // optional, user-supplied threshold, mirroring `filter`'s flag of the same name instead of
+    // inventing a default.
+    let config = QualityConfig {
+        require_exact_score: true,
+        require_policy_margin: true,
+        require_requested_depth_reached: true,
+        require_engine_agreement: true,
+        min_policy_margin_cp: args.min_policy_margin_cp,
+        ..Default::default()
+    };
+    let count = args.count;
+    let seed = args.seed;
+    let reader = BufReader::new(
+        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
+    );
+    let mut total = 0usize;
+    let mut heap: BinaryHeap<HeapEntry<(TotalF32, u64)>> =
+        BinaryHeap::with_capacity(count.saturating_add(1));
+    for (i, line) in reader.lines().enumerate() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let record: PositionRecord = match serde_json::from_str(&line) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(line = i + 1, "parse error: {e}");
+                continue;
+            }
+        };
+        // decision.score is evaluate_quality's own "fraction of gates passed" -- reused directly
+        // as the ranking key instead of re-deriving a severity score from reasons.
+        let score = evaluate_quality(&record, &config).score;
+        let key = (TotalF32(score), seeded_hash(seed, &record.sfen));
+        let index = total;
+        total += 1;
+        push_bounded(&mut heap, count, HeapEntry { key, index, record });
+    }
+    let ranked_records = heap
+        .into_sorted_vec()
+        .into_iter()
+        .map(|e| e.record)
+        .collect();
+    Ok((total, ranked_records))
+}
+
+/// `select --strategy coverage`: two streaming passes over the input -- pass 1 tallies
+/// `bucket_key → count` (needed before any record can be ranked, since the signal is "how common
+/// is this record's bucket"); pass 2 streams again, keeping a bounded top-K heap keyed by
+/// `(bucket_count, seeded_hash)` (ascending: thinnest bucket first). 2x I/O, O(bucket count +
+/// `count`) memory, in exchange for not materializing the whole dataset.
+fn select_coverage_streaming(args: &SelectArgs) -> Result<(usize, Vec<PositionRecord>)> {
+    let count = args.count;
+    let seed = args.seed;
+
+    let mut bucket_counts: HashMap<String, usize> = HashMap::new();
+    let pass1 = BufReader::new(
+        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
+    );
+    for line in pass1.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        // parse errors are warned once, in pass 2 below -- not duplicated here
+        if let Ok(record) = serde_json::from_str::<PositionRecord>(&line) {
+            *bucket_counts
+                .entry(bucket_key(&record, true, true, true))
+                .or_default() += 1;
+        }
+    }
+
+    let pass2 = BufReader::new(
+        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
+    );
+    let mut total = 0usize;
+    let mut heap: BinaryHeap<HeapEntry<(usize, u64)>> =
+        BinaryHeap::with_capacity(count.saturating_add(1));
+    for (i, line) in pass2.lines().enumerate() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let record: PositionRecord = match serde_json::from_str(&line) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(line = i + 1, "parse error: {e}");
+                continue;
+            }
+        };
+        let bucket_count = bucket_counts[&bucket_key(&record, true, true, true)];
+        let key = (bucket_count, seeded_hash(seed, &record.sfen));
+        let index = total;
+        total += 1;
+        push_bounded(&mut heap, count, HeapEntry { key, index, record });
+    }
+    let ranked_records = heap
+        .into_sorted_vec()
+        .into_iter()
+        .map(|e| e.record)
+        .collect();
+    Ok((total, ranked_records))
+}
+
+/// `select --strategy hard`: unlike `uncertain`/`coverage` above, left fully materialized.
+/// `blunder_adjacent_indices` fundamentally needs a whole game's positions grouped together, which
+/// isn't safe to stream without assuming the input is contiguously grouped by source (an
+/// assumption this codebase doesn't guarantee elsewhere) -- so this stays O(n) memory.
+/// ponytail: revisit only if `hard` is shown to actually hit a memory limit in practice.
+fn select_hard_materialized(args: &SelectArgs) -> Result<(usize, Vec<PositionRecord>)> {
     let (records, _) = load_records(&args.input)?;
     let total = records.len();
     let count = args.count.min(total);
     let seed = args.seed;
 
+    let blunder_set =
+        blunder_adjacent_indices(&records, args.blunder_threshold, args.blunder_window);
+    let hardness = |i: usize| -> (bool, bool, i32) {
+        let rec = &records[i];
+        let cp_scores: Vec<i32> = rec
+            .observations
+            .iter()
+            .filter_map(|o| match o.score {
+                Score::Cp { value } => Some(value),
+                Score::Mate { .. } => None,
+            })
+            .collect();
+        let swing = score_swing(&cp_scores).unwrap_or(0);
+        let disagreement = !bestmove_agreement(&rec.observations);
+        (blunder_set.contains(&i), disagreement, swing)
+    };
     let mut ranked: Vec<usize> = (0..total).collect();
-    match args.strategy.as_str() {
-        "uncertain" => {
-            // No arbitrary thresholds: every gate here is either a plain existence check or,
-            // for depth, requested_depth-vs-achieved (self-referential, no floor to pick) --
-            // require_engine_agreement stands in for the spec's "engine_disagreement" signal.
-            // --min-policy-margin-cp is the one optional, user-supplied threshold, mirroring
-            // `filter`'s flag of the same name instead of inventing a default.
-            let config = QualityConfig {
-                require_exact_score: true,
-                require_policy_margin: true,
-                require_requested_depth_reached: true,
-                require_engine_agreement: true,
-                min_policy_margin_cp: args.min_policy_margin_cp,
-                ..Default::default()
-            };
-            // decision.score is evaluate_quality's own "fraction of gates passed" -- reused
-            // directly as the ranking key instead of re-deriving a severity score from reasons.
-            ranked.sort_by(|&a, &b| {
-                let score_a = evaluate_quality(&records[a], &config).score;
-                let score_b = evaluate_quality(&records[b], &config).score;
-                score_a.total_cmp(&score_b).then_with(|| {
-                    seeded_hash(seed, &records[a].sfen).cmp(&seeded_hash(seed, &records[b].sfen))
-                })
-            });
-        }
-        "hard" => {
-            let blunder_set =
-                blunder_adjacent_indices(&records, args.blunder_threshold, args.blunder_window);
-            let hardness = |i: usize| -> (bool, bool, i32) {
-                let rec = &records[i];
-                let cp_scores: Vec<i32> = rec
-                    .observations
-                    .iter()
-                    .filter_map(|o| match o.score {
-                        Score::Cp { value } => Some(value),
-                        Score::Mate { .. } => None,
-                    })
-                    .collect();
-                let swing = score_swing(&cp_scores).unwrap_or(0);
-                let disagreement = !bestmove_agreement(&rec.observations);
-                (blunder_set.contains(&i), disagreement, swing)
-            };
-            ranked.sort_by(|&a, &b| {
-                hardness(b).cmp(&hardness(a)).then_with(|| {
-                    seeded_hash(seed, &records[a].sfen).cmp(&seeded_hash(seed, &records[b].sfen))
-                })
-            });
-        }
-        "coverage" => {
-            let keys: Vec<String> = records
-                .iter()
-                .map(|r| bucket_key(r, true, true, true))
-                .collect();
-            let mut bucket_counts: HashMap<&str, usize> = HashMap::new();
-            for k in &keys {
-                *bucket_counts.entry(k.as_str()).or_default() += 1;
-            }
-            ranked.sort_by(|&a, &b| {
-                bucket_counts[keys[a].as_str()]
-                    .cmp(&bucket_counts[keys[b].as_str()])
-                    .then_with(|| {
-                        seeded_hash(seed, &records[a].sfen)
-                            .cmp(&seeded_hash(seed, &records[b].sfen))
-                    })
-            });
-        }
-        other => anyhow::bail!("unknown --strategy {other:?} (expected uncertain/hard/coverage)"),
-    }
+    ranked.sort_by(|&a, &b| {
+        hardness(b).cmp(&hardness(a)).then_with(|| {
+            seeded_hash(seed, &records[a].sfen).cmp(&seeded_hash(seed, &records[b].sfen))
+        })
+    });
     ranked.truncate(count);
+    let ranked_records = ranked.into_iter().map(|i| records[i].clone()).collect();
+    Ok((total, ranked_records))
+}
+
+fn cmd_select(args: SelectArgs) -> Result<()> {
+    let (total, ranked_records) = match args.strategy.as_str() {
+        "uncertain" => select_uncertain_streaming(&args)?,
+        "coverage" => select_coverage_streaming(&args)?,
+        "hard" => select_hard_materialized(&args)?,
+        other => anyhow::bail!("unknown --strategy {other:?} (expected uncertain/hard/coverage)"),
+    };
 
     // Output in ranked order (most-worth-a-look first), unlike `sample`/`balance` which restore
     // input order -- a re-labeling queue is more useful read top-to-bottom by priority than by
@@ -1971,15 +2123,16 @@ fn cmd_select(args: SelectArgs) -> Result<()> {
     let out_file =
         File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
     let mut writer = BufWriter::new(out_file);
-    for &i in &ranked {
-        serde_json::to_writer(&mut writer, &records[i])?;
+    for rec in &ranked_records {
+        serde_json::to_writer(&mut writer, rec)?;
         writer.write_all(b"\n")?;
     }
     writer.flush()?;
     eprintln!(
-        "done: {}/{total} selected (strategy={}, seed={seed}) → {:?}",
-        ranked.len(),
+        "done: {}/{total} selected (strategy={}, seed={}) → {:?}",
+        ranked_records.len(),
         args.strategy,
+        args.seed,
         args.out
     );
     Ok(())

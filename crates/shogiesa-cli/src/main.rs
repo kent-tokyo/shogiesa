@@ -430,6 +430,18 @@ struct FilterArgs {
     /// --out.
     #[arg(long)]
     explain_out: Option<PathBuf>,
+    /// Load this run's QualityConfig from a `tune --preset-out` JSON file instead of building one
+    /// from the flags below (FILE.json:label, e.g. "tuning.json:balanced"). Supplies the entire
+    /// resolved config, not a partial override -- conflicts with every individual gate flag so
+    /// precedence is never ambiguous.
+    #[arg(long, conflicts_with_all = [
+        "min_observations", "phase", "exclude_mate", "exclude_in_check", "exclude_capture",
+        "max_score_swing_cp", "eval_min", "eval_max", "min_policy_margin_cp",
+        "require_exact_score", "require_policy_margin", "min_depth_reached",
+        "require_requested_depth_reached", "require_engine_agreement",
+        "max_engine_score_swing_cp", "require_bestmove_agreement",
+    ])]
+    preset: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -577,6 +589,12 @@ struct TuneArgs {
     /// whether a training run wants quantity or reliability varies run to run.
     #[arg(long)]
     report: Option<PathBuf>,
+    /// Optional machine-readable JSON with the same broad/balanced/strict candidates as
+    /// --report, each carrying a full QualityConfig ready for `filter --preset FILE.json:label`.
+    /// Unlike --report's Markdown (for humans), this is meant to be fed directly back into
+    /// filter -- hand-transcribing thresholds from the Markdown report breaks reproducibility.
+    #[arg(long)]
+    preset_out: Option<PathBuf>,
 }
 
 #[derive(clap::Args)]
@@ -2790,9 +2808,34 @@ fn build_quality_config(
     }
 }
 
+/// Loads one named candidate's `QualityConfig` out of a `tune --preset-out` JSON file.
+/// `rsplit_once(':')` splits at the *last* colon, which correctly handles a Windows-style
+/// `C:\...` path (the drive letter's colon is never the last one when a label follows).
+fn load_quality_config_preset(spec: &str) -> Result<QualityConfig> {
+    let (path_str, label) = spec
+        .rsplit_once(':')
+        .ok_or_else(|| anyhow::anyhow!("--preset must be FILE.json:label, got {spec:?}"))?;
+    let text = fs::read_to_string(path_str)
+        .with_context(|| format!("cannot read preset file {path_str:?}"))?;
+    let preset_file: TunePresetFile = serde_json::from_str(&text)
+        .with_context(|| format!("cannot parse preset file {path_str:?}"))?;
+    let candidate = preset_file.presets.get(label).ok_or_else(|| {
+        anyhow::anyhow!(
+            "preset {label:?} not found in {path_str:?}; available: {:?}",
+            preset_file.presets.keys().collect::<Vec<_>>()
+        )
+    })?;
+    Ok(candidate.config.clone())
+}
+
 fn cmd_filter(args: FilterArgs) -> Result<()> {
-    let allowed_phases = parse_allowed_phases(args.phase.as_deref());
-    let config = build_quality_config(&args, allowed_phases);
+    let config = match &args.preset {
+        Some(spec) => load_quality_config_preset(spec)?,
+        None => {
+            let allowed_phases = parse_allowed_phases(args.phase.as_deref());
+            build_quality_config(&args, allowed_phases)
+        }
+    };
 
     let reader = BufReader::new(
         File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
@@ -3845,6 +3888,87 @@ fn write_tune_report(path: &Path, args: &TuneArgs, total: usize, grid: &[TuneCel
     Ok(())
 }
 
+/// Versions `--preset-out`'s JSON shape, independent of `SCHEMA_VERSION` (which versions the
+/// PositionRecord/pack data model) -- this is a standalone artifact, not a labeled dataset.
+const TUNE_PRESET_FORMAT_VERSION: u32 = 1;
+
+/// One named candidate's full resolved `QualityConfig`, ready to hand straight to
+/// `filter --preset FILE.json:label` -- carrying the whole config (not just the swept fields)
+/// means filter never has to re-derive which base flags this tune run held fixed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TunePresetCandidate {
+    config: QualityConfig,
+    coverage_fraction: f64,
+    /// `None` only when `audit_pairs == 0` (no teacher/student comparison available for this
+    /// cell) -- mirrors `TuneCell::mismatch_rate`'s own precondition.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mismatch_rate: Option<f64>,
+    audit_pairs: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TunePresetFile {
+    preset_format_version: u32,
+    tool: String,
+    input: String,
+    teacher_depth: u32,
+    student_depths: String,
+    /// Keys: "broad" / "balanced" / "strict". A map (not 3 fixed fields) so the <3-distinct-
+    /// frontier-points degeneracy (see `candidate_labels`) is handled the same way --report's
+    /// Markdown already handles it: duplicate the full config under each coinciding label, so
+    /// `filter --preset x.json:strict` always resolves even when strict and broad landed on the
+    /// same cell.
+    presets: BTreeMap<String, TunePresetCandidate>,
+}
+
+/// Writes `--preset-out`'s machine-readable JSON. An empty `presets` map when no cell has audit
+/// data is a valid, non-error output -- mirrors `write_tune_report`'s own degenerate case.
+fn write_tune_preset(
+    path: &Path,
+    args: &TuneArgs,
+    base_config: &QualityConfig,
+    grid: &[TuneCell],
+) -> Result<()> {
+    let mut presets = BTreeMap::new();
+    let frontier = pareto_frontier_indices(grid);
+    if !frontier.is_empty() {
+        let broad = pick_broad(grid, &frontier);
+        let balanced = pick_balanced(grid, &frontier);
+        let strict = pick_strict(grid, &frontier);
+        for (label, idx) in [("broad", broad), ("balanced", balanced), ("strict", strict)] {
+            let cell = &grid[idx];
+            // Same expression cmd_tune's hot loop already builds per cell -- reused here outside
+            // the loop for just these (at most) 3 indices, not refactored into a shared helper:
+            // the recomputation is O(frontier size), trivially cheap, and duplicating this small
+            // expression is safer than reshaping cmd_tune's already-tested hot loop.
+            let config = QualityConfig {
+                min_policy_margin_cp: cell.policy_margin,
+                max_score_swing_cp: cell.score_swing,
+                ..base_config.clone()
+            };
+            presets.insert(
+                label.to_string(),
+                TunePresetCandidate {
+                    config,
+                    coverage_fraction: cell.coverage_fraction(),
+                    mismatch_rate: (cell.audit.pairs > 0).then(|| cell.mismatch_rate()),
+                    audit_pairs: cell.audit.pairs,
+                },
+            );
+        }
+    }
+    let file = TunePresetFile {
+        preset_format_version: TUNE_PRESET_FORMAT_VERSION,
+        tool: "shogiesa tune".to_string(),
+        input: args.input.display().to_string(),
+        teacher_depth: args.teacher_depth,
+        student_depths: args.student_depths.clone(),
+        presets,
+    };
+    fs::write(path, serde_json::to_string_pretty(&file)?)?;
+    Ok(())
+}
+
 fn cmd_tune(args: TuneArgs) -> Result<()> {
     if args.sweep_policy_margin.is_none() && args.sweep_score_swing.is_none() {
         anyhow::bail!("tune requires at least one of --sweep-policy-margin/--sweep-score-swing");
@@ -3968,6 +4092,11 @@ fn cmd_tune(args: TuneArgs) -> Result<()> {
     if let Some(report_path) = &args.report {
         write_tune_report(report_path, &args, total, &grid)?;
         eprintln!("report → {report_path:?}");
+    }
+
+    if let Some(preset_path) = &args.preset_out {
+        write_tune_preset(preset_path, &args, &base_config, &grid)?;
+        eprintln!("preset → {preset_path:?}");
     }
 
     Ok(())

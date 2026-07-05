@@ -2409,6 +2409,136 @@ fn filter_exclude_capture() {
     assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 1);
 }
 
+#[test]
+fn filter_preset_loads_config_from_tune_output() {
+    // pareto_fixture()'s "broad" candidate (max coverage on the frontier) is threshold 0 -- see
+    // tune_csv_grid_has_expected_coverage_and_mismatch_per_threshold's own hand-verified table.
+    // A min_policy_margin_cp=0 gate keeps every record (all margins are >= 0), so `filter
+    // --preset ...:broad` must produce byte-identical output to an explicit
+    // `--min-policy-margin-cp 0` run on the same input.
+    let f = pareto_fixture();
+    let tune_out = NamedTempFile::new().unwrap();
+    let preset = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "tune",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--teacher-depth",
+            "14",
+            "--student-depths",
+            "6",
+            "--sweep-policy-margin",
+            "0,150,350,450",
+            "--out",
+            tune_out.path().to_str().unwrap(),
+            "--preset-out",
+            preset.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let via_preset = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            via_preset.path().to_str().unwrap(),
+            "--preset",
+            &format!("{}:broad", preset.path().to_str().unwrap()),
+        ])
+        .assert()
+        .success();
+
+    let via_flags = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            via_flags.path().to_str().unwrap(),
+            "--min-policy-margin-cp",
+            "0",
+        ])
+        .assert()
+        .success();
+
+    let preset_content = std::fs::read_to_string(via_preset.path()).unwrap();
+    let flags_content = std::fs::read_to_string(via_flags.path()).unwrap();
+    assert_eq!(preset_content, flags_content);
+    assert_eq!(
+        preset_content
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .count(),
+        6
+    );
+}
+
+#[test]
+fn filter_preset_unknown_label_errors() {
+    let f = pareto_fixture();
+    let tune_out = NamedTempFile::new().unwrap();
+    let preset = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "tune",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--teacher-depth",
+            "14",
+            "--student-depths",
+            "6",
+            "--sweep-policy-margin",
+            "0,150,350",
+            "--out",
+            tune_out.path().to_str().unwrap(),
+            "--preset-out",
+            preset.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let filtered_out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            filtered_out.path().to_str().unwrap(),
+            "--preset",
+            &format!("{}:nonexistent", preset.path().to_str().unwrap()),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("nonexistent"));
+}
+
+#[test]
+fn filter_preset_conflicts_with_individual_flags() {
+    let f = pareto_fixture();
+    let preset = NamedTempFile::new().unwrap();
+    std::fs::write(preset.path(), "{}").unwrap();
+    let filtered_out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            filtered_out.path().to_str().unwrap(),
+            "--preset",
+            &format!("{}:broad", preset.path().to_str().unwrap()),
+            "--exclude-mate",
+        ])
+        .assert()
+        .failure();
+}
+
 // --- calibrate ---
 
 #[test]
@@ -3108,6 +3238,127 @@ fn tune_no_report_flag_writes_only_csv() {
         .assert()
         .success()
         .stderr(predicate::str::contains("report").not());
+}
+
+#[test]
+fn tune_preset_out_writes_three_candidates_with_full_configs() {
+    let f = pareto_fixture();
+    let out = NamedTempFile::new().unwrap();
+    let preset = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "tune",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--teacher-depth",
+            "14",
+            "--student-depths",
+            "6",
+            "--sweep-policy-margin",
+            "0,150,350,450",
+            "--out",
+            out.path().to_str().unwrap(),
+            "--preset-out",
+            preset.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(preset.path()).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(parsed["preset_format_version"], 1);
+    assert_eq!(parsed["tool"], "shogiesa tune");
+    // Same 0/150/350 margins as the equivalent --report golden test above.
+    assert_eq!(
+        parsed["presets"]["broad"]["config"]["min_policy_margin_cp"],
+        0
+    );
+    assert_eq!(
+        parsed["presets"]["balanced"]["config"]["min_policy_margin_cp"],
+        150
+    );
+    assert_eq!(
+        parsed["presets"]["strict"]["config"]["min_policy_margin_cp"],
+        350
+    );
+    assert!(parsed["presets"]["broad"]["coverage_fraction"].is_number());
+    assert!(parsed["presets"]["broad"]["mismatch_rate"].is_number());
+}
+
+#[test]
+fn tune_preset_out_collapses_like_report_does() {
+    // Same single-frontier-point fixture as the --report collapse test: all 3 candidate keys
+    // must point at the identical config, not fabricate 3 distinct entries.
+    let f = make_labeled_jsonl(&[
+        position(
+            "opening",
+            serde_json::json!([
+                tune_obs("7g7f", 100, 14, 14, 500),
+                tune_obs("7g7f", 100, 6, 6, 500),
+            ]),
+        ),
+        position(
+            "opening",
+            serde_json::json!([
+                tune_obs("7g7f", 100, 14, 14, 500),
+                tune_obs("7g7f", 100, 6, 6, 500),
+            ]),
+        ),
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    let preset = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "tune",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--teacher-depth",
+            "14",
+            "--student-depths",
+            "6",
+            "--sweep-policy-margin",
+            "0,100",
+            "--out",
+            out.path().to_str().unwrap(),
+            "--preset-out",
+            preset.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(preset.path()).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(parsed["presets"]["broad"], parsed["presets"]["balanced"]);
+    assert_eq!(parsed["presets"]["balanced"], parsed["presets"]["strict"]);
+}
+
+#[test]
+fn tune_preset_out_empty_when_no_audit_pairs() {
+    // teacher-depth doesn't exist in the data -> no audit pairs anywhere -> empty frontier ->
+    // an empty (not missing, not erroring) presets map, mirroring --report's own "no audit data"
+    // informative-but-Ok path.
+    let f = pareto_fixture();
+    let out = NamedTempFile::new().unwrap();
+    let preset = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "tune",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--teacher-depth",
+            "99",
+            "--student-depths",
+            "6",
+            "--sweep-policy-margin",
+            "0,150",
+            "--out",
+            out.path().to_str().unwrap(),
+            "--preset-out",
+            preset.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(preset.path()).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(parsed["presets"].as_object().unwrap().len(), 0);
 }
 
 // --- stability ---

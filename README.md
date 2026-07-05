@@ -347,6 +347,19 @@ wider coverage range than mismatch-rate range would make "balanced" collapse ont
 instead of shogiesa picking one "correct" threshold. Whether a training run wants quantity or
 reliability varies run to run; `tune` hands back the trade-off curve, not a verdict.
 
+`--preset-out tuning.json` (optional) writes the same 3 candidates as machine-readable JSON, each
+carrying its **full** resolved `QualityConfig` (not just the swept fields), ready to feed straight
+into `filter --preset tuning.json:balanced` — this removes hand-transcribing thresholds from the
+Markdown report into `filter` flags, which breaks reproducibility and severs the link between a
+data condition and the coverage/mismatch numbers that justified picking it:
+
+```bash
+shogiesa filter --input observations.jsonl --out train.jsonl --preset tuning.json:balanced
+```
+
+`--preset` supplies the entire config and conflicts with every individual gate flag (`--exclude-
+mate`, `--min-policy-margin-cp`, etc.) so precedence is never ambiguous — pick one or the other.
+
 ### `mine` — hard-position mining
 
 ```bash

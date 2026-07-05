@@ -63,6 +63,8 @@ enum Commands {
     Report(ReportArgs),
     /// Validate data integrity of a positions dataset
     Validate(ValidateArgs),
+    /// Inspect/maintain a `label --cache-dir` cache
+    Cache(CacheArgs),
 }
 
 #[derive(clap::Args)]
@@ -500,6 +502,54 @@ struct AuditArgs {
     out: PathBuf,
 }
 
+#[derive(clap::Args)]
+struct CacheArgs {
+    #[command(subcommand)]
+    action: CacheAction,
+}
+
+#[derive(clap::Subcommand)]
+enum CacheAction {
+    /// File count, total size, oldest/newest entry age, and per-engine distribution
+    Stats(CacheStatsArgs),
+    /// Detect corrupted (unparseable) cache entries
+    Verify(CacheVerifyArgs),
+    /// Delete matched cache entries (dry run by default)
+    Prune(CachePruneArgs),
+}
+
+#[derive(clap::Args)]
+struct CacheStatsArgs {
+    /// The `label --cache-dir` directory to inspect
+    #[arg(long)]
+    cache_dir: PathBuf,
+}
+
+#[derive(clap::Args)]
+struct CacheVerifyArgs {
+    /// The `label --cache-dir` directory to inspect
+    #[arg(long)]
+    cache_dir: PathBuf,
+}
+
+#[derive(clap::Args)]
+struct CachePruneArgs {
+    /// The `label --cache-dir` directory to prune
+    #[arg(long)]
+    cache_dir: PathBuf,
+    /// Delete entries whose JSON fails to parse
+    #[arg(long)]
+    corrupted_only: bool,
+    /// Delete entries whose file hasn't been written to in at least this many days
+    #[arg(long)]
+    older_than_days: Option<u64>,
+    /// Actually delete matched entries. Without this, reports what would be deleted and deletes
+    /// nothing -- this is the first genuinely destructive command in this CLI, so it defaults to
+    /// dry-run rather than everything else's "only ever writes new output files" convention.
+    #[arg(long)]
+    yes: bool,
+}
+
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -523,6 +573,11 @@ fn main() -> Result<()> {
         Commands::Audit(args) => cmd_audit(args),
         Commands::Report(args) => cmd_report(args),
         Commands::Validate(args) => cmd_validate(args),
+        Commands::Cache(args) => match args.action {
+            CacheAction::Stats(a) => cmd_cache_stats(a),
+            CacheAction::Verify(a) => cmd_cache_verify(a),
+            CacheAction::Prune(a) => cmd_cache_prune(a),
+        },
     }
 }
 
@@ -3091,6 +3146,168 @@ fn cmd_audit(args: AuditArgs) -> Result<()> {
     }
     overall.print("overall");
 
+    Ok(())
+}
+
+/// Every `.json` file under a `label --cache-dir`'s two-level shard layout
+/// (`cache_dir/xx/<64-hex-hash>.json`, see `label_cache_path`). Filtering strictly on the `.json`
+/// extension skips `write_cache_entry_atomically`'s in-flight temp files
+/// (`<hash>.json.tmp.<pid>.<tid>`) by construction, so a walk never races a concurrent `label`
+/// process sharing the same cache dir.
+fn walk_cache_entries(cache_dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut entries = Vec::new();
+    for shard in fs::read_dir(cache_dir).with_context(|| format!("cannot read {cache_dir:?}"))? {
+        let shard_path = shard?.path();
+        if !shard_path.is_dir() {
+            continue;
+        }
+        for entry in
+            fs::read_dir(&shard_path).with_context(|| format!("cannot read {shard_path:?}"))?
+        {
+            let path = entry?.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("json") {
+                entries.push(path);
+            }
+        }
+    }
+    Ok(entries)
+}
+
+fn cmd_cache_stats(args: CacheStatsArgs) -> Result<()> {
+    let entries = walk_cache_entries(&args.cache_dir)?;
+    let now = std::time::SystemTime::now();
+    let mut total_bytes = 0u64;
+    let mut oldest: Option<std::time::SystemTime> = None;
+    let mut newest: Option<std::time::SystemTime> = None;
+    // Parsed straight from each entry's bare `Observation.engine` field -- genuinely present in
+    // every payload, not inferred from the (otherwise opaque, one-way-hashed) cache key/path.
+    let mut engine_counts: BTreeMap<String, usize> = BTreeMap::new();
+
+    for path in &entries {
+        if let Ok(meta) = fs::metadata(path) {
+            total_bytes += meta.len();
+            if let Ok(modified) = meta.modified() {
+                oldest = Some(oldest.map_or(modified, |o| o.min(modified)));
+                newest = Some(newest.map_or(modified, |n| n.max(modified)));
+            }
+        }
+        if let Some(obs) = fs::read_to_string(path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<Observation>(&s).ok())
+        {
+            *engine_counts.entry(obs.engine).or_default() += 1;
+        }
+    }
+
+    println!("cache entries : {}", entries.len());
+    println!("total size    : {total_bytes} bytes");
+    if let Some(oldest) = oldest {
+        let days = now.duration_since(oldest).unwrap_or_default().as_secs() / 86400;
+        println!("oldest entry  : {days} days old");
+    }
+    if let Some(newest) = newest {
+        let days = now.duration_since(newest).unwrap_or_default().as_secs() / 86400;
+        println!("newest entry  : {days} days old");
+    }
+    if !engine_counts.is_empty() {
+        println!("engine distribution:");
+        for (engine, count) in &engine_counts {
+            println!("  {engine:<20} {count:>6}");
+        }
+    }
+    Ok(())
+}
+
+fn cmd_cache_verify(args: CacheVerifyArgs) -> Result<()> {
+    let entries = walk_cache_entries(&args.cache_dir)?;
+    let mut corrupted = 0usize;
+    for path in &entries {
+        let ok = fs::read_to_string(path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<Observation>(&s).ok())
+            .is_some();
+        if !ok {
+            corrupted += 1;
+            tracing::warn!(path = %path.display(), "corrupted cache entry");
+        }
+    }
+    println!("cache entries : {}", entries.len());
+    println!("corrupted     : {corrupted}");
+    // Deliberately not claiming schema/fingerprint-staleness detection: label_cache_path already
+    // folds SCHEMA_VERSION and the engine fingerprint into the (one-way) cache key hash, so a
+    // schema bump or a different engine binary simply produces a different key -- a stale entry
+    // is never wrongly returned as a hit, it's just orphaned dead weight this command doesn't (and
+    // honestly can't, since the payload stores no schema_version/engine_fingerprint of its own)
+    // detect.
+    println!(
+        "note: cache entries store no schema_version/engine_fingerprint metadata -- a schema \
+         bump or engine change already changes future cache keys by construction (see \
+         label_cache_path), so a stale entry is never wrongly reused, just orphaned; this command \
+         cannot and does not detect that staleness, only JSON corruption."
+    );
+    Ok(())
+}
+
+/// The file's age (now minus mtime), or `None` if either the metadata/mtime read fails or the
+/// clock has gone backwards -- either way, "unknown age" should never count as "old enough to
+/// prune."
+fn file_age(path: &Path, now: std::time::SystemTime) -> Option<std::time::Duration> {
+    let modified = fs::metadata(path).ok()?.modified().ok()?;
+    now.duration_since(modified).ok()
+}
+
+fn cmd_cache_prune(args: CachePruneArgs) -> Result<()> {
+    if !args.corrupted_only && args.older_than_days.is_none() {
+        anyhow::bail!("cache prune requires --corrupted-only and/or --older-than-days");
+    }
+    let entries = walk_cache_entries(&args.cache_dir)?;
+    let now = std::time::SystemTime::now();
+    let max_age = args
+        .older_than_days
+        .map(|days| std::time::Duration::from_secs(days * 86400));
+
+    let mut to_delete = Vec::new();
+    for path in &entries {
+        let mut matched = false;
+        if args.corrupted_only {
+            let ok = fs::read_to_string(path)
+                .ok()
+                .and_then(|s| serde_json::from_str::<Observation>(&s).ok())
+                .is_some();
+            if !ok {
+                matched = true;
+            }
+        }
+        if let Some(max_age) = max_age
+            && file_age(path, now).is_some_and(|age| age >= max_age)
+        {
+            matched = true;
+        }
+        if matched {
+            to_delete.push(path.clone());
+        }
+    }
+
+    if args.yes {
+        let mut deleted = 0usize;
+        for path in &to_delete {
+            match fs::remove_file(path) {
+                Ok(()) => deleted += 1,
+                Err(e) => tracing::warn!(path = %path.display(), "failed to delete: {e}"),
+            }
+        }
+        eprintln!(
+            "deleted {deleted}/{} matched entries ({} total)",
+            to_delete.len(),
+            entries.len()
+        );
+    } else {
+        eprintln!(
+            "dry run: {}/{} entries matched and would be deleted (pass --yes to actually delete)",
+            to_delete.len(),
+            entries.len()
+        );
+    }
     Ok(())
 }
 

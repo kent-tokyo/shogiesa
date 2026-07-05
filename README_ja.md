@@ -148,6 +148,31 @@ PATH経由で解決されるベア名の場合(プロセス起動と違い、読
 ため)、`content`/`metadata` はその実行に限り警告付きで `none` 相当の挙動にフォールバック
 します — `label` 自体を失敗させることはありません。
 
+### `cache` — `label --cache-dir` の点検・保守
+
+```bash
+shogiesa cache stats  --cache-dir .shogiesa-cache
+shogiesa cache verify --cache-dir .shogiesa-cache
+shogiesa cache prune  --cache-dir .shogiesa-cache --older-than-days 30
+shogiesa cache prune  --cache-dir .shogiesa-cache --corrupted-only --yes
+```
+
+`cache stats` はエントリ数・合計サイズ・最古/最新エントリの経過日数、そして(各エントリに
+保存された `Observation.engine` フィールドから読み取った)エンジン別分布を表示します。
+`cache verify` は壊れた(パースできない)エントリを検出します。**スコープに関する注記**:
+cache key(`(sfen, engine名/バージョン, engineオプション, engineバイナリのfingerprint,
+requested_depth, multipv, schema_version)`)は一方向ハッシュです — キャッシュされたJSON
+ペイロードは素の `Observation` であり、schema_version/fingerprint のメタデータは保存
+されていません。そのため `verify` は「このエントリは古いschemaでキャッシュされた」や
+「このエントリは現在のエンジンと一致しない」を検出できませんし、そう主張もしません。
+これは正当性の欠陥ではありません — `SCHEMA_VERSION` とengine fingerprintは既にcache key
+自体に組み込まれているため、schemaの変更やengineの変更は今後単に別のキーを生成するだけで、
+古いエントリが誤って再利用されることはなく、単にディスク上の孤立したゴミになるだけです。
+これが `cache prune --older-than-days N` の役割です。`cache prune` はデフォルトでdry-run
+です(削除される内容を報告するだけ)— 実際に削除するには `--yes` を渡してください。
+`--corrupted-only`/`--older-than-days` の少なくとも一方が必須です。両方指定した場合は
+どちらかに一致するものを削除します。
+
 ### `stability` — 安定度スコアの算出
 
 ```bash

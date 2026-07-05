@@ -143,6 +143,29 @@ USI id strings alone. If `--engine` names a bare command resolved via `PATH` (wh
 stat-ing the binary can't follow the way process spawning does), `content`/`metadata` fall back
 to `none`'s behavior for that run with a warning, rather than failing `label` outright.
 
+### `cache` — inspect/maintain a `label --cache-dir`
+
+```bash
+shogiesa cache stats  --cache-dir .shogiesa-cache
+shogiesa cache verify --cache-dir .shogiesa-cache
+shogiesa cache prune  --cache-dir .shogiesa-cache --older-than-days 30
+shogiesa cache prune  --cache-dir .shogiesa-cache --corrupted-only --yes
+```
+
+`cache stats` reports entry count, total size, oldest/newest entry age (in days), and a per-engine
+distribution (read straight from each entry's stored `Observation.engine` field). `cache verify`
+detects corrupted (unparseable) entries. **Scope note**: the cache key
+(`(sfen, engine name/version, engine options, engine binary fingerprint, requested depth, multipv,
+schema version)`) is a one-way hash — the cached JSON payload is a bare `Observation` with no
+stored schema-version/fingerprint metadata, so `verify` genuinely can't (and doesn't claim to)
+detect "this entry was cached under an old schema" or "this entry doesn't match today's engine."
+That's not a correctness gap: `SCHEMA_VERSION` and the engine fingerprint are already folded into
+the key itself, so a schema bump or engine change simply produces a different key going forward —
+a stale entry is never wrongly reused, it's just orphaned dead weight on disk, which is what `cache
+prune --older-than-days N` is for. `cache prune` is dry-run by default (reports what would be
+deleted) — pass `--yes` to actually delete. Requires at least one of `--corrupted-only`/
+`--older-than-days`; combining both deletes anything matching either.
+
 ### `stability` — compute stability scores
 
 ```bash

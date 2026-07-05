@@ -1105,6 +1105,207 @@ fn label_cache_dir_hits_on_second_run_and_output_matches() {
     );
 }
 
+// --- cache ---
+
+/// Populates a real `label --cache-dir` cache (5 positions x 2 depths = 10 entries, one engine)
+/// via the actual extract -> label pipeline, so `cache` subcommand tests exercise the real
+/// sharded/atomic file layout `label_cache_path`/`write_cache_entry_atomically` produce, not a
+/// hand-approximated one.
+fn populate_cache_dir() -> TempDir {
+    let pos = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "extract",
+            "--input",
+            fixture("sample.csa").to_str().unwrap(),
+            "--out",
+            pos.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let cache_dir = TempDir::new().unwrap();
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            pos.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4,6",
+            "--cache-dir",
+            cache_dir.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    cache_dir
+}
+
+fn cache_entry_paths(cache_dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut paths = Vec::new();
+    for shard in std::fs::read_dir(cache_dir).unwrap() {
+        let shard_path = shard.unwrap().path();
+        if !shard_path.is_dir() {
+            continue;
+        }
+        for entry in std::fs::read_dir(&shard_path).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) == Some("json") {
+                paths.push(path);
+            }
+        }
+    }
+    paths
+}
+
+#[test]
+fn cache_stats_reports_entry_count_and_engine_distribution() {
+    let cache_dir = populate_cache_dir();
+    shogiesa()
+        .args([
+            "cache",
+            "stats",
+            "--cache-dir",
+            cache_dir.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("cache entries : 10"))
+        .stdout(predicate::str::contains("FakeUsiEngine"));
+}
+
+#[test]
+fn cache_verify_detects_corruption_and_does_not_claim_schema_awareness() {
+    let cache_dir = populate_cache_dir();
+    let entries = cache_entry_paths(cache_dir.path());
+    std::fs::write(&entries[0], "{not valid json").unwrap();
+
+    shogiesa()
+        .args([
+            "cache",
+            "verify",
+            "--cache-dir",
+            cache_dir.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("cache entries : 10"))
+        .stdout(predicate::str::contains("corrupted     : 1"))
+        .stdout(predicate::str::contains(
+            "no schema_version/engine_fingerprint metadata",
+        ));
+}
+
+#[test]
+fn cache_prune_dry_run_deletes_nothing_by_default() {
+    let cache_dir = populate_cache_dir();
+    let entries = cache_entry_paths(cache_dir.path());
+    std::fs::write(&entries[0], "{not valid json").unwrap();
+
+    shogiesa()
+        .args([
+            "cache",
+            "prune",
+            "--cache-dir",
+            cache_dir.path().to_str().unwrap(),
+            "--corrupted-only",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("dry run: 1/10"));
+    assert_eq!(
+        cache_entry_paths(cache_dir.path()).len(),
+        10,
+        "dry run must not delete anything"
+    );
+}
+
+#[test]
+fn cache_prune_yes_corrupted_only_removes_only_corrupted_entries() {
+    let cache_dir = populate_cache_dir();
+    let entries = cache_entry_paths(cache_dir.path());
+    std::fs::write(&entries[0], "{not valid json").unwrap();
+
+    shogiesa()
+        .args([
+            "cache",
+            "prune",
+            "--cache-dir",
+            cache_dir.path().to_str().unwrap(),
+            "--corrupted-only",
+            "--yes",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "deleted 1/1 matched entries (10 total)",
+        ));
+    let remaining = cache_entry_paths(cache_dir.path());
+    assert_eq!(remaining.len(), 9);
+    assert!(
+        !remaining.contains(&entries[0]),
+        "the corrupted entry must be gone"
+    );
+    for surviving in &entries[1..] {
+        assert!(remaining.contains(surviving), "valid entries must survive");
+    }
+}
+
+#[test]
+fn cache_prune_yes_older_than_days_removes_only_aged_entries() {
+    let cache_dir = populate_cache_dir();
+    let entries = cache_entry_paths(cache_dir.path());
+
+    // Back-date one entry's mtime by 60 days; the rest were just written (age ~0). stdlib-only
+    // (File::set_modified, stable since 1.75) -- no new dependency needed.
+    let sixty_days_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(60 * 86400);
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&entries[0])
+        .unwrap();
+    file.set_modified(sixty_days_ago).unwrap();
+
+    shogiesa()
+        .args([
+            "cache",
+            "prune",
+            "--cache-dir",
+            cache_dir.path().to_str().unwrap(),
+            "--older-than-days",
+            "30",
+            "--yes",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "deleted 1/1 matched entries (10 total)",
+        ));
+    let remaining = cache_entry_paths(cache_dir.path());
+    assert_eq!(remaining.len(), 9);
+    assert!(!remaining.contains(&entries[0]));
+}
+
+#[test]
+fn cache_prune_requires_at_least_one_filter() {
+    let cache_dir = populate_cache_dir();
+    shogiesa()
+        .args([
+            "cache",
+            "prune",
+            "--cache-dir",
+            cache_dir.path().to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "requires --corrupted-only and/or --older-than-days",
+        ));
+}
+
 // --- filter ---
 
 /// Build a labeled JSONL string with custom observations inline.

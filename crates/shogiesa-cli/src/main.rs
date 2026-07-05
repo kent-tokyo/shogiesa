@@ -575,34 +575,54 @@ impl EngineFingerprintMode {
     }
 }
 
-fn compute_engine_fingerprint(
-    mode: EngineFingerprintMode,
-    engine_path: &Path,
-) -> Result<Option<u64>> {
+/// Why this can't just propagate an error: `--engine` is passed straight to
+/// `std::process::Command`, which resolves a bare name (no path separator) via `PATH` at spawn
+/// time -- but `fs::read`/`fs::canonicalize` only understand literal filesystem paths, with no
+/// `PATH` search. A bare engine name that launches fine today would otherwise make `content`/
+/// `metadata` fingerprinting hard-fail before the engine is ever spawned, breaking a case that
+/// worked before this fingerprinting existed. So an unreadable path falls back to no fingerprint
+/// (identical to `--engine-fingerprint-mode none` for this run) with a warning, rather than
+/// aborting the whole `label` invocation over what is, at worst, a weaker cache guarantee.
+fn compute_engine_fingerprint(mode: EngineFingerprintMode, engine_path: &Path) -> Option<u64> {
     match mode {
-        EngineFingerprintMode::None => Ok(None),
-        EngineFingerprintMode::Content => {
-            let bytes = fs::read(engine_path)
-                .with_context(|| format!("cannot read engine binary {engine_path:?}"))?;
-            Ok(Some(hash_parts_u64(&[&bytes])))
-        }
+        EngineFingerprintMode::None => None,
+        EngineFingerprintMode::Content => match fs::read(engine_path) {
+            Ok(bytes) => Some(hash_parts_u64(&[&bytes])),
+            Err(e) => {
+                tracing::warn!(
+                    engine = %engine_path.display(),
+                    "cannot read engine binary for fingerprinting ({e}) -- is --engine a bare \
+                     name resolved via PATH? falling back to no fingerprint for this run"
+                );
+                None
+            }
+        },
         EngineFingerprintMode::Metadata => {
-            let canonical = fs::canonicalize(engine_path)
-                .with_context(|| format!("cannot canonicalize {engine_path:?}"))?;
-            let meta =
-                fs::metadata(&canonical).with_context(|| format!("cannot stat {canonical:?}"))?;
-            let mtime_nanos = meta
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_nanos() as u64)
-                .unwrap_or(0);
-            let path_bytes = canonical.to_string_lossy().into_owned();
-            Ok(Some(hash_parts_u64(&[
-                path_bytes.as_bytes(),
-                &meta.len().to_le_bytes(),
-                &mtime_nanos.to_le_bytes(),
-            ])))
+            let stat = fs::canonicalize(engine_path).and_then(|p| fs::metadata(&p).map(|m| (p, m)));
+            match stat {
+                Ok((canonical, meta)) => {
+                    let mtime_nanos = meta
+                        .modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_nanos() as u64)
+                        .unwrap_or(0);
+                    let path_bytes = canonical.to_string_lossy().into_owned();
+                    Some(hash_parts_u64(&[
+                        path_bytes.as_bytes(),
+                        &meta.len().to_le_bytes(),
+                        &mtime_nanos.to_le_bytes(),
+                    ]))
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        engine = %engine_path.display(),
+                        "cannot stat engine binary for fingerprinting ({e}) -- is --engine a bare \
+                         name resolved via PATH? falling back to no fingerprint for this run"
+                    );
+                    None
+                }
+            }
         }
     }
 }
@@ -882,7 +902,7 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
             // Read once, before any workers spawn -- negligible next to actually running search
             // across a dataset, and every worker shares this same value via `LabelCache`.
             let engine_fingerprint =
-                compute_engine_fingerprint(engine_fingerprint_mode, &engine_path)?;
+                compute_engine_fingerprint(engine_fingerprint_mode, &engine_path);
             Some(Arc::new(LabelCache {
                 dir: dir.clone(),
                 engine_options_hash: engine_options_hash(&engine_options),
@@ -2918,8 +2938,8 @@ mod label_cache_correctness_tests {
         fs::write(&path_a, b"binary A content").unwrap();
         fs::write(&path_b, b"binary B content").unwrap();
 
-        let fp_a = compute_engine_fingerprint(EngineFingerprintMode::Content, &path_a).unwrap();
-        let fp_b = compute_engine_fingerprint(EngineFingerprintMode::Content, &path_b).unwrap();
+        let fp_a = compute_engine_fingerprint(EngineFingerprintMode::Content, &path_a);
+        let fp_b = compute_engine_fingerprint(EngineFingerprintMode::Content, &path_b);
         assert!(fp_a.is_some());
         assert_ne!(
             fp_a, fp_b,
@@ -2935,7 +2955,24 @@ mod label_cache_correctness_tests {
         let path = dir.path().join("engine");
         fs::write(&path, b"anything").unwrap();
         assert_eq!(
-            compute_engine_fingerprint(EngineFingerprintMode::None, &path).unwrap(),
+            compute_engine_fingerprint(EngineFingerprintMode::None, &path),
+            None
+        );
+    }
+
+    #[test]
+    fn engine_fingerprint_falls_back_to_none_when_path_is_unreadable() {
+        // A bare engine name (e.g. "sekirei") is resolved via PATH by std::process::Command at
+        // spawn time, but fs::read/fs::canonicalize have no PATH search -- they'd fail on that
+        // same bare name. Fingerprinting must degrade gracefully (not error out label entirely)
+        // for a case that worked fine before fingerprinting existed.
+        let unreadable = PathBuf::from("this-path-almost-certainly-does-not-exist-anywhere");
+        assert_eq!(
+            compute_engine_fingerprint(EngineFingerprintMode::Content, &unreadable),
+            None
+        );
+        assert_eq!(
+            compute_engine_fingerprint(EngineFingerprintMode::Metadata, &unreadable),
             None
         );
     }

@@ -134,7 +134,9 @@ different executable. `content` hashes the binary's bytes (read once, negligible
 running search); `metadata` hashes its canonical path/size/mtime instead (cheaper, but
 invalidates on every rebuild into a fresh path even when the bytes are identical — e.g. a CI job
 that builds into a new directory each run); `none` restores the original behavior of trusting the
-USI id strings alone.
+USI id strings alone. If `--engine` names a bare command resolved via `PATH` (which reading/
+stat-ing the binary can't follow the way process spawning does), `content`/`metadata` fall back
+to `none`'s behavior for that run with a warning, rather than failing `label` outright.
 
 ### `stability` — compute stability scores
 

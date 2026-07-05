@@ -2659,8 +2659,10 @@ fn pack_manifest_records_counts() {
 #[test]
 fn same_input_file_produces_same_manifest_input_hash_across_commands() {
     // filter/pack hash incrementally while streaming; sample/balance hash via a separate
-    // whole-file pass -- both must agree, or comparing manifests across commands for the
-    // same file would show a spurious "changed input" for no reason.
+    // whole-file pass; label accumulates its hash inside its own reader thread instead of
+    // calling that separate pass (to avoid re-reading the whole input a second time) -- all
+    // three must agree, or comparing manifests across commands for the same file would show a
+    // spurious "changed input" for no reason.
     let f = make_labeled_jsonl(&[
         position("opening", serde_json::json!([obs("7g7f", 50, 4)])),
         position("opening", serde_json::json!([obs("7g7f", 60, 4)])),
@@ -2697,11 +2699,33 @@ fn same_input_file_produces_same_manifest_input_hash_across_commands() {
         .assert()
         .success();
 
+    let label_out = NamedTempFile::new().unwrap();
+    let label_manifest = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--out",
+            label_out.path().to_str().unwrap(),
+            "--manifest",
+            label_manifest.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
     let filter_json: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(filter_manifest.path()).unwrap()).unwrap();
     let sample_json: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(sample_manifest.path()).unwrap()).unwrap();
+    let label_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(label_manifest.path()).unwrap()).unwrap();
     assert_eq!(filter_json["input_hash"], sample_json["input_hash"]);
+    assert_eq!(filter_json["input_hash"], label_json["input_hash"]);
 }
 
 #[test]

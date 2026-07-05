@@ -297,6 +297,43 @@ stderr summary: pairs compared, bestmove-mismatch rate, average/max `|score_erro
 teacher/student non-exact rate, teacher/student underreach rate, teacher/student special-bestmove
 rate.
 
+### `tune` — grid-sweep thresholds and compare against a teacher depth together
+
+```bash
+shogiesa tune \
+  --input observations.jsonl \
+  --teacher-depth 14 \
+  --student-depths 6,8,10 \
+  --sweep-policy-margin 0,40,80,120,160 \
+  --sweep-score-swing 50,100,150,200 \
+  --out tuning.csv \
+  --report tuning.md
+```
+
+Merges `calibrate` and `audit` into one question: does a quality-gate config that *keeps more
+data* also keep *less trustworthy* data? Grids `--sweep-policy-margin` × `--sweep-score-swing` (a
+combined threshold per grid cell, not `calibrate`'s independent 1D sweeps — a 1×N or N×1 grid
+degenerates to exactly `calibrate`'s behavior, so `tune` is a strict superset, not a second
+concept), and for each cell reports both coverage (via `evaluate_quality`/`QualityConfig`, same as
+`calibrate` — no separate judgment logic) and `audit`-style teacher/student mismatch metrics
+**restricted to the records that cell would keep**. Single streaming pass: each record's
+teacher/student comparisons are computed once (independent of any threshold) and folded into every
+grid cell that would keep that record, rather than recomputed per cell.
+
+`--out tuning.csv` has one row per `(policy_margin, score_swing)` cell: coverage/kept/dropped/
+drop-reasons (same convention as `calibrate`) plus `audit_pairs`/mismatch-rate/avg\|max
+`score_error_cp`/non-exact/underreach/special-bestmove rates — the audit-derived columns render
+empty (not `0.00`) when a cell has no audit pairs, so a genuine 0% mismatch is never confused with
+"no data."
+
+`--report tuning.md` (optional) computes the Pareto frontier over each cell's (coverage,
+mismatch-rate) point and presents 3 candidates — **broad** (max coverage), **strict** (min
+mismatch rate), **balanced** (closest to the ideal corner, coverage and mismatch-rate range-
+normalized to the frontier's own observed spread before computing distance — without this, a much
+wider coverage range than mismatch-rate range would make "balanced" collapse onto "broad") —
+instead of shogiesa picking one "correct" threshold. Whether a training run wants quantity or
+reliability varies run to run; `tune` hands back the trade-off curve, not a verdict.
+
 ### `mine` — hard-position mining
 
 ```bash

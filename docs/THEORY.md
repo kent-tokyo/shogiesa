@@ -98,7 +98,17 @@ guessing with measurement:
   "what a much deeper search from the same engine would have said" — and it's the right tool for
   answering "is my chosen `--depths` value actually good enough," which no static threshold can
   tell you on its own.
+- **`tune`** merges the two: it grid-sweeps `filter` thresholds like `calibrate` does, but for
+  each combined threshold configuration also reports `audit`'s teacher/student mismatch rate
+  *restricted to the records that configuration would keep*. Coverage alone can't tell you
+  whether a gate is trustworthy — a config that keeps 90% of a dataset but whose kept records
+  disagree with a deeper teacher 15% of the time is a worse config than one that keeps 60% at a
+  2% mismatch rate, even though the first number ("coverage") looks better in isolation. `tune`
+  never picks a single "correct" threshold for you: `--report` computes the Pareto frontier over
+  (coverage, mismatch-rate) and hands back three candidates — broad (most data), strict (most
+  trustworthy), balanced (the best trade-off) — because whether a training run wants quantity or
+  reliability is a decision about *your* pipeline, not something shogiesa can infer from the data.
 
 If you take away one thing from this document: shogiesa's numbers describe *what the engine
 output*, faithfully and without any statistical interpretation layered on top. Deciding what those
-numbers *mean* for your specific training pipeline is what `calibrate`/`audit` are for.
+numbers *mean* for your specific training pipeline is what `calibrate`/`audit`/`tune` are for.

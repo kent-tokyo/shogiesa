@@ -2539,6 +2539,270 @@ fn audit_score_error_cp_normalizes_through_black_perspective() {
     assert_eq!(v["score_error_cp"], -150);
 }
 
+// --- tune ---
+
+/// Observation with both `requested_depth` (needed to match teacher/student depths, like
+/// `audit_obs`) and `policy_margin_cp` (needed to drive `--sweep-policy-margin`, like
+/// `obs_with_margin`) under caller control -- neither existing helper has both.
+fn tune_obs(
+    bestmove: &str,
+    cp_value: i32,
+    depth: u32,
+    requested_depth: u32,
+    policy_margin: i32,
+) -> serde_json::Value {
+    serde_json::json!({
+        "engine": "e",
+        "engine_version": null,
+        "depth": depth,
+        "requested_depth": requested_depth,
+        "score": { "kind": "cp", "value": cp_value },
+        "bestmove": bestmove,
+        "nodes": null,
+        "time_ms": null,
+        "pv": null,
+        "policy_margin_cp": policy_margin
+    })
+}
+
+/// 6 records, each with a teacher (depth 14) and student (depth 6) observation sharing one
+/// policy_margin_cp -- margins 500/400/300/200/100/50, with the student disagreeing with the
+/// teacher's bestmove exactly on the 300 and 50 margin records. Sweeping `--sweep-policy-margin
+/// 0,150,350,450` against this produces a genuine (not degenerate) 3-point Pareto frontier:
+/// coverage strictly decreases as the threshold rises, but mismatch rate drops faster than
+/// coverage does, so no single point dominates every other -- verified by hand (and against this
+/// exact fixture's pre-refactor behavior) before being written down as a permanent test.
+fn pareto_fixture() -> NamedTempFile {
+    make_labeled_jsonl(&[
+        position(
+            "opening",
+            serde_json::json!([
+                tune_obs("7g7f", 100, 14, 14, 500),
+                tune_obs("7g7f", 100, 6, 6, 500),
+            ]),
+        ),
+        position(
+            "opening",
+            serde_json::json!([
+                tune_obs("7g7f", 100, 14, 14, 400),
+                tune_obs("7g7f", 100, 6, 6, 400),
+            ]),
+        ),
+        position(
+            "opening",
+            serde_json::json!([
+                tune_obs("7g7f", 100, 14, 14, 300),
+                tune_obs("2g2f", 100, 6, 6, 300), // disagrees with teacher
+            ]),
+        ),
+        position(
+            "opening",
+            serde_json::json!([
+                tune_obs("7g7f", 100, 14, 14, 200),
+                tune_obs("7g7f", 100, 6, 6, 200),
+            ]),
+        ),
+        position(
+            "opening",
+            serde_json::json!([
+                tune_obs("7g7f", 100, 14, 14, 100),
+                tune_obs("2g2f", 100, 6, 6, 100), // disagrees with teacher
+            ]),
+        ),
+        position(
+            "opening",
+            serde_json::json!([
+                tune_obs("7g7f", 100, 14, 14, 50),
+                tune_obs("2g2f", 100, 6, 6, 50), // disagrees with teacher
+            ]),
+        ),
+    ])
+}
+
+#[test]
+fn tune_csv_grid_has_expected_coverage_and_mismatch_per_threshold() {
+    let f = pareto_fixture();
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "tune",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--teacher-depth",
+            "14",
+            "--student-depths",
+            "6",
+            "--sweep-policy-margin",
+            "0,150,350,450",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+    assert_eq!(
+        lines[0],
+        "policy_margin,score_swing,total,kept,dropped,coverage_pct,drop_reasons,audit_pairs,\
+         teacher_bestmove_mismatch_pct,avg_abs_score_error_cp,max_abs_score_error_cp,\
+         teacher_non_exact_pct,student_non_exact_pct,teacher_underreach_pct,student_underreach_pct,\
+         teacher_special_bestmove_pct,student_special_bestmove_pct"
+    );
+    // threshold 0: all 6 kept, 3/6 disagree
+    assert_eq!(
+        lines[1],
+        "0,,6,6,0,100.00,,6,50.00,0.00,0,0.00,0.00,0.00,0.00,0.00,0.00"
+    );
+    // threshold 150: margins {500,400,300,200} kept (4), of which {300} disagrees -> 1/4
+    assert_eq!(
+        lines[2],
+        "150,,6,4,2,66.67,policy_margin=2,4,25.00,0.00,0,0.00,0.00,0.00,0.00,0.00,0.00"
+    );
+    // threshold 350: margins {500,400} kept (2), both agree -> 0/2
+    assert_eq!(
+        lines[3],
+        "350,,6,2,4,33.33,policy_margin=4,2,0.00,0.00,0,0.00,0.00,0.00,0.00,0.00,0.00"
+    );
+    // threshold 450: margin {500} kept (1), agrees -> 0/1 -- dominated on the frontier by 350's
+    // point (higher coverage, same 0% mismatch), but still a real, correctly computed CSV row.
+    assert_eq!(
+        lines[4],
+        "450,,6,1,5,16.67,policy_margin=5,1,0.00,0.00,0,0.00,0.00,0.00,0.00,0.00,0.00"
+    );
+}
+
+#[test]
+fn tune_report_produces_three_distinct_pareto_candidates() {
+    let f = pareto_fixture();
+    let out = NamedTempFile::new().unwrap();
+    let report = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "tune",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--teacher-depth",
+            "14",
+            "--student-depths",
+            "6",
+            "--sweep-policy-margin",
+            "0,150,350,450",
+            "--out",
+            out.path().to_str().unwrap(),
+            "--report",
+            report.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(report.path()).unwrap();
+    assert!(content.contains("| broad | 0 |"));
+    assert!(content.contains("| balanced | 150 |"));
+    assert!(content.contains("| strict | 350 |"));
+    // the dominated threshold=450 point (lower coverage, same 0% mismatch as 350) must not be
+    // labeled as any candidate, even though it legitimately still appears in the Full grid
+    // listing below -- extract just the "Recommended candidates" table to check.
+    let candidates_section = content
+        .split("## Recommended candidates")
+        .nth(1)
+        .unwrap()
+        .split("## Pareto frontier")
+        .next()
+        .unwrap();
+    assert!(!candidates_section.contains("450"));
+    assert!(content.contains("Why three candidates, not one"));
+}
+
+#[test]
+fn tune_report_collapses_candidates_when_frontier_has_one_point() {
+    // Every record identical (no coverage/mismatch variation at all) -- the frontier has exactly
+    // one point, so all three candidate roles coincide there instead of fabricating distinctness.
+    let f = make_labeled_jsonl(&[
+        position(
+            "opening",
+            serde_json::json!([
+                tune_obs("7g7f", 100, 14, 14, 500),
+                tune_obs("7g7f", 100, 6, 6, 500),
+            ]),
+        ),
+        position(
+            "opening",
+            serde_json::json!([
+                tune_obs("7g7f", 100, 14, 14, 500),
+                tune_obs("7g7f", 100, 6, 6, 500),
+            ]),
+        ),
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    let report = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "tune",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--teacher-depth",
+            "14",
+            "--student-depths",
+            "6",
+            "--sweep-policy-margin",
+            "0,100",
+            "--out",
+            out.path().to_str().unwrap(),
+            "--report",
+            report.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(report.path()).unwrap();
+    assert!(content.contains("broad, balanced, strict"));
+    assert!(content.contains("fewer than 3 distinct points"));
+}
+
+#[test]
+fn tune_requires_at_least_one_sweep_flag() {
+    let f = pareto_fixture();
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "tune",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--teacher-depth",
+            "14",
+            "--student-depths",
+            "6",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "requires at least one of --sweep-policy-margin/--sweep-score-swing",
+        ));
+}
+
+#[test]
+fn tune_no_report_flag_writes_only_csv() {
+    let f = pareto_fixture();
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "tune",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--teacher-depth",
+            "14",
+            "--student-depths",
+            "6",
+            "--sweep-policy-margin",
+            "0,150",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("report").not());
+}
+
 // --- stability ---
 
 #[test]

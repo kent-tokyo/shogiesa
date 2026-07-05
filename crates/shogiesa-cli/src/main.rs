@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
+use std::fmt::Write as _; // writeln! into a String, for cmd_tune's Markdown report
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -59,6 +60,10 @@ enum Commands {
     /// Compare shallow ("student") observations against a deep ("teacher") observation from the
     /// same engine, within an already-labeled file
     Audit(AuditArgs),
+    /// Grid-sweep quality-gate thresholds AND compare against a teacher depth in one pass,
+    /// reporting the coverage/reliability trade-off (Pareto frontier) instead of measuring each
+    /// separately -- a strict superset of `calibrate`/`audit` combined
+    Tune(TuneArgs),
     /// Report statistics about a positions dataset
     Report(ReportArgs),
     /// Validate data integrity of a positions dataset
@@ -503,6 +508,77 @@ struct AuditArgs {
 }
 
 #[derive(clap::Args)]
+struct TuneArgs {
+    /// Input labeled positions JSONL (must already contain both the teacher and student depths,
+    /// e.g. from one `label --depths 6,8,10,14` run)
+    #[arg(short, long)]
+    input: PathBuf,
+    /// The depth treated as ground truth for each engine
+    #[arg(long)]
+    teacher_depth: u32,
+    /// Comma-separated shallower depths to compare against the teacher depth (e.g. "6,8,10")
+    #[arg(long)]
+    student_depths: String,
+    /// Comma-separated values to sweep for the equivalent of `filter --min-policy-margin-cp`
+    /// (e.g. "0,40,80,120,160")
+    #[arg(long, conflicts_with = "min_policy_margin_cp")]
+    sweep_policy_margin: Option<String>,
+    /// Comma-separated values to sweep for the equivalent of `filter --max-score-swing-cp`
+    /// (e.g. "50,100,150,200")
+    #[arg(long, conflicts_with = "max_score_swing_cp")]
+    sweep_score_swing: Option<String>,
+    /// Hold min_policy_margin_cp at this fixed value while sweeping --sweep-score-swing
+    /// (rejected together with --sweep-policy-margin, which sweeps this same field)
+    #[arg(long, allow_hyphen_values = true)]
+    min_policy_margin_cp: Option<i32>,
+    /// Hold max_score_swing_cp at this fixed value while sweeping --sweep-policy-margin
+    /// (rejected together with --sweep-score-swing, which sweeps this same field)
+    #[arg(long)]
+    max_score_swing_cp: Option<i32>,
+    /// Minimum number of observations required (default: 1) -- same base-config fields as
+    /// `filter`/`calibrate`, held fixed across every grid cell
+    #[arg(long, default_value = "1")]
+    min_observations: u32,
+    /// Filter by game phase: comma-separated (opening,middlegame,endgame)
+    #[arg(long)]
+    phase: Option<String>,
+    #[arg(long)]
+    exclude_mate: bool,
+    #[arg(long)]
+    exclude_in_check: bool,
+    #[arg(long)]
+    exclude_capture: bool,
+    /// Minimum cp score, from Black's perspective, regardless of whose turn it was
+    #[arg(long, allow_hyphen_values = true)]
+    eval_min: Option<i32>,
+    /// Maximum cp score, from Black's perspective, regardless of whose turn it was
+    #[arg(long, allow_hyphen_values = true)]
+    eval_max: Option<i32>,
+    #[arg(long)]
+    require_bestmove_agreement: bool,
+    #[arg(long)]
+    require_engine_agreement: bool,
+    #[arg(long)]
+    max_engine_score_swing_cp: Option<i32>,
+    #[arg(long)]
+    require_exact_score: bool,
+    #[arg(long)]
+    require_policy_margin: bool,
+    #[arg(long)]
+    min_depth_reached: Option<u32>,
+    #[arg(long)]
+    require_requested_depth_reached: bool,
+    /// Output CSV: one row per (policy_margin, score_swing) grid configuration
+    #[arg(short, long)]
+    out: PathBuf,
+    /// Optional Markdown report with a Pareto-frontier analysis and 3 recommended candidates
+    /// (broad/balanced/strict) -- shogiesa doesn't pick a single "correct" threshold, since
+    /// whether a training run wants quantity or reliability varies run to run.
+    #[arg(long)]
+    report: Option<PathBuf>,
+}
+
+#[derive(clap::Args)]
 struct CacheArgs {
     #[command(subcommand)]
     action: CacheAction,
@@ -571,6 +647,7 @@ fn main() -> Result<()> {
         Commands::Filter(args) => cmd_filter(args),
         Commands::Calibrate(args) => cmd_calibrate(args),
         Commands::Audit(args) => cmd_audit(args),
+        Commands::Tune(args) => cmd_tune(args),
         Commands::Report(args) => cmd_report(args),
         Commands::Validate(args) => cmd_validate(args),
         Commands::Cache(args) => match args.action {
@@ -3079,6 +3156,71 @@ impl AuditStats {
     }
 }
 
+/// Every (student_depth, bestmove_match, score_error_cp, teacher, student) comparison this
+/// record's engine-grouped observations produce against `teacher_depth` -- the same
+/// engine-grouping (a dataset labeled by 2+ engines must never compare engine A's shallow
+/// observation against engine B's deep one), `find_at_depth` matching, and
+/// `cp_from_black_perspective` normalization `cmd_audit` always used, extracted so `cmd_tune` can
+/// fold the SAME comparisons into every grid cell without recomputing them per cell (the
+/// comparison itself doesn't depend on any quality-gate threshold; only which cells count it
+/// toward "kept" does).
+fn compute_audit_pairs<'a>(
+    rec: &'a PositionRecord,
+    teacher_depth: u32,
+    student_depths: &[u32],
+) -> Vec<(u32, bool, Option<i32>, &'a Observation, &'a Observation)> {
+    let mut pairs = Vec::new();
+    let mut by_engine: HashMap<&str, Vec<&Observation>> = HashMap::new();
+    for obs in &rec.observations {
+        by_engine.entry(obs.engine.as_str()).or_default().push(obs);
+    }
+
+    for observations in by_engine.values() {
+        let Some(teacher) = find_at_depth(observations, teacher_depth) else {
+            continue;
+        };
+        for &student_depth in student_depths {
+            // Comparing the teacher depth against itself (if it's also listed as a student depth)
+            // is degenerate -- always a "match" with zero error, not a real comparison.
+            if student_depth == teacher_depth {
+                continue;
+            }
+            let Some(student) = find_at_depth(observations, student_depth) else {
+                continue;
+            };
+
+            let bestmove_match = bestmove_agreement(&[teacher.clone(), student.clone()]);
+            // Normalize both sides through the record's shared side_to_move rather than assuming
+            // they already share ScorePerspective::SideToMove -- correct by construction, not by
+            // coincidence. None (not compared) if either side is mate.
+            let score_error_cp = match (&teacher.score, &student.score) {
+                (Score::Cp { value: t }, Score::Cp { value: s }) => {
+                    let t_black = cp_from_black_perspective(
+                        *t,
+                        teacher.score_perspective,
+                        rec.tags.side_to_move,
+                    );
+                    let s_black = cp_from_black_perspective(
+                        *s,
+                        student.score_perspective,
+                        rec.tags.side_to_move,
+                    );
+                    Some(t_black - s_black)
+                }
+                _ => None,
+            };
+            pairs.push((
+                student_depth,
+                bestmove_match,
+                score_error_cp,
+                teacher,
+                student,
+            ));
+        }
+    }
+    pairs
+}
+
 fn cmd_audit(args: AuditArgs) -> Result<()> {
     let student_depths = parse_u32_list(&args.student_depths)?;
 
@@ -3107,79 +3249,38 @@ fn cmd_audit(args: AuditArgs) -> Result<()> {
         };
         total_records += 1;
 
-        // Group by engine -- a dataset labeled by 2+ engines must not compare engine A's shallow
-        // observation against engine B's deep one; each engine's own student/teacher pair is the
-        // only comparison that means "did going shallower cost this engine anything."
-        let mut by_engine: HashMap<&str, Vec<&Observation>> = HashMap::new();
-        for obs in &rec.observations {
-            by_engine.entry(obs.engine.as_str()).or_default().push(obs);
-        }
+        for (student_depth, bestmove_match, score_error_cp, teacher, student) in
+            compute_audit_pairs(&rec, args.teacher_depth, &student_depths)
+        {
+            overall.record(bestmove_match, score_error_cp, teacher, student);
+            per_depth.entry(student_depth).or_default().record(
+                bestmove_match,
+                score_error_cp,
+                teacher,
+                student,
+            );
 
-        for observations in by_engine.values() {
-            let Some(teacher) = find_at_depth(observations, args.teacher_depth) else {
-                continue;
-            };
-            for &student_depth in &student_depths {
-                // Comparing the teacher depth against itself (if it's also listed as a student
-                // depth) is degenerate -- always a "match" with zero error, not a real comparison.
-                if student_depth == args.teacher_depth {
-                    continue;
-                }
-                let Some(student) = find_at_depth(observations, student_depth) else {
-                    continue;
-                };
-
-                let bestmove_match = bestmove_agreement(&[teacher.clone(), student.clone()]);
-                // Normalize both sides through the record's shared side_to_move rather than
-                // assuming they already share ScorePerspective::SideToMove -- correct by
-                // construction, not by coincidence. None (not compared) if either side is mate.
-                let score_error_cp = match (&teacher.score, &student.score) {
-                    (Score::Cp { value: t }, Score::Cp { value: s }) => {
-                        let t_black = cp_from_black_perspective(
-                            *t,
-                            teacher.score_perspective,
-                            rec.tags.side_to_move,
-                        );
-                        let s_black = cp_from_black_perspective(
-                            *s,
-                            student.score_perspective,
-                            rec.tags.side_to_move,
-                        );
-                        Some(t_black - s_black)
-                    }
-                    _ => None,
-                };
-
-                overall.record(bestmove_match, score_error_cp, teacher, student);
-                per_depth.entry(student_depth).or_default().record(
-                    bestmove_match,
-                    score_error_cp,
-                    teacher,
-                    student,
-                );
-
-                serde_json::to_writer(
-                    &mut writer,
-                    &serde_json::json!({
-                        "sfen": &rec.sfen,
-                        "source": &rec.source,
-                        "engine": &teacher.engine,
-                        "teacher_requested_depth": teacher.requested_depth,
-                        "teacher_depth": teacher.depth,
-                        "teacher_score_bound": score_bound_str(teacher.score_bound),
-                        "teacher_underreach": requested_depth_underreached(teacher),
-                        "teacher_bestmove_kind": effective_bestmove_kind(teacher),
-                        "student_requested_depth": student.requested_depth,
-                        "student_depth": student.depth,
-                        "student_score_bound": score_bound_str(student.score_bound),
-                        "student_underreach": requested_depth_underreached(student),
-                        "student_bestmove_kind": effective_bestmove_kind(student),
-                        "bestmove_match": bestmove_match,
-                        "score_error_cp": score_error_cp,
-                    }),
-                )?;
-                writer.write_all(b"\n")?;
-            }
+            serde_json::to_writer(
+                &mut writer,
+                &serde_json::json!({
+                    "sfen": &rec.sfen,
+                    "source": &rec.source,
+                    "engine": &teacher.engine,
+                    "teacher_requested_depth": teacher.requested_depth,
+                    "teacher_depth": teacher.depth,
+                    "teacher_score_bound": score_bound_str(teacher.score_bound),
+                    "teacher_underreach": requested_depth_underreached(teacher),
+                    "teacher_bestmove_kind": effective_bestmove_kind(teacher),
+                    "student_requested_depth": student.requested_depth,
+                    "student_depth": student.depth,
+                    "student_score_bound": score_bound_str(student.score_bound),
+                    "student_underreach": requested_depth_underreached(student),
+                    "student_bestmove_kind": effective_bestmove_kind(student),
+                    "bestmove_match": bestmove_match,
+                    "score_error_cp": score_error_cp,
+                }),
+            )?;
+            writer.write_all(b"\n")?;
         }
     }
 
@@ -3200,6 +3301,509 @@ fn cmd_audit(args: AuditArgs) -> Result<()> {
         stats.print(&format!("student_depth={depth}"));
     }
     overall.print("overall");
+
+    Ok(())
+}
+
+/// One (policy_margin, score_swing) grid cell's outcome: coverage over the WHOLE dataset under
+/// that combined `QualityConfig` (same denominator as `calibrate`'s sweep rows), plus, for the
+/// SUBSET of records this cell keeps, the pooled teacher-vs-student audit signal across every
+/// requested student depth and engine (`AuditStats`, unchanged -- reused exactly as `cmd_audit`
+/// uses it). `coverage.kept` and `audit.pairs` are expected to differ: coverage answers "how much
+/// data survives this gate," audit answers "of the survivors we could check against a teacher, how
+/// much do we actually trust them" -- the whole point of pairing the two.
+struct TuneCell {
+    policy_margin: Option<i32>,
+    score_swing: Option<i32>,
+    coverage: CoverageTally,
+    audit: AuditStats,
+}
+
+impl TuneCell {
+    fn new(policy_margin: Option<i32>, score_swing: Option<i32>) -> Self {
+        Self {
+            policy_margin,
+            score_swing,
+            coverage: CoverageTally::default(),
+            audit: AuditStats::default(),
+        }
+    }
+
+    /// Fraction (not percent) of the dataset this cell keeps -- `0.0` if the dataset was empty.
+    fn coverage_fraction(&self) -> f64 {
+        if self.coverage.total == 0 {
+            0.0
+        } else {
+            self.coverage.kept as f64 / self.coverage.total as f64
+        }
+    }
+
+    /// Only meaningful (and only ever called) when `audit.pairs > 0` -- callers must check that
+    /// first, matching `AuditStats::print`'s own `if self.pairs == 0 { return; }` guard.
+    fn mismatch_rate(&self) -> f64 {
+        self.audit.bestmove_mismatches as f64 / self.audit.pairs as f64
+    }
+
+    /// `(policy_margin, score_swing)` with an inactive axis sorting first -- used only to break
+    /// ties deterministically between cells that are otherwise numerically identical on every
+    /// metric, so candidate selection never depends on grid iteration order.
+    fn lexicographic_key(&self) -> (i32, i32) {
+        (
+            self.policy_margin.unwrap_or(i32::MIN),
+            self.score_swing.unwrap_or(i32::MIN),
+        )
+    }
+
+    fn threshold_csv_cells(&self) -> (String, String) {
+        (
+            self.policy_margin
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
+            self.score_swing.map(|v| v.to_string()).unwrap_or_default(),
+        )
+    }
+
+    fn to_csv_row(&self) -> String {
+        let (policy_margin, score_swing) = self.threshold_csv_cells();
+        // Audit-derived columns render empty (not "0.00") when there's no audit pair to compute
+        // them from -- a real 0% mismatch rate must never be confused with "no data," mirroring
+        // `AuditStats::print`'s own `if pairs == 0 { return }` guard.
+        let pct = |n: usize| -> String {
+            if self.audit.pairs == 0 {
+                String::new()
+            } else {
+                format!("{:.2}", n as f64 / self.audit.pairs as f64 * 100.0)
+            }
+        };
+        let avg_abs_score_error_cp = if self.audit.abs_score_error_count > 0 {
+            format!(
+                "{:.2}",
+                self.audit.abs_score_error_sum / self.audit.abs_score_error_count as f64
+            )
+        } else {
+            String::new()
+        };
+        let max_abs_score_error_cp = if self.audit.abs_score_error_count > 0 {
+            self.audit.abs_score_error_max.to_string()
+        } else {
+            String::new()
+        };
+        let total = self.coverage.total;
+        let kept = self.coverage.kept;
+        let dropped = self.coverage.dropped;
+        let coverage_pct = self.coverage.coverage_pct();
+        let drop_reasons = self.coverage.drop_reasons_csv_cell();
+        let audit_pairs = self.audit.pairs;
+        let teacher_bestmove_mismatch_pct = pct(self.audit.bestmove_mismatches);
+        let teacher_non_exact_pct = pct(self.audit.teacher_non_exact);
+        let student_non_exact_pct = pct(self.audit.student_non_exact);
+        let teacher_underreach_pct = pct(self.audit.teacher_underreach);
+        let student_underreach_pct = pct(self.audit.student_underreach);
+        let teacher_special_bestmove_pct = pct(self.audit.teacher_special_bestmove);
+        let student_special_bestmove_pct = pct(self.audit.student_special_bestmove);
+        format!(
+            "{policy_margin},{score_swing},{total},{kept},{dropped},{coverage_pct:.2},\
+             {drop_reasons},{audit_pairs},{teacher_bestmove_mismatch_pct},\
+             {avg_abs_score_error_cp},{max_abs_score_error_cp},{teacher_non_exact_pct},\
+             {student_non_exact_pct},{teacher_underreach_pct},{student_underreach_pct},\
+             {teacher_special_bestmove_pct},{student_special_bestmove_pct}"
+        )
+    }
+}
+
+/// Whether `a` Pareto-dominates `b` on (coverage, mismatch_rate): at least as good on both axes
+/// (higher coverage, lower mismatch), strictly better on at least one. Only called on cells with
+/// `audit.pairs > 0` on both sides (the frontier excludes cells with no audit data entirely).
+fn dominates(a: &TuneCell, b: &TuneCell) -> bool {
+    let (a_cov, b_cov) = (a.coverage_fraction(), b.coverage_fraction());
+    let (a_mis, b_mis) = (a.mismatch_rate(), b.mismatch_rate());
+    let not_worse = a_cov >= b_cov && a_mis <= b_mis;
+    let strictly_better = a_cov > b_cov || a_mis < b_mis;
+    not_worse && strictly_better
+}
+
+/// Indices into `grid` of cells with `audit.pairs > 0` that are not Pareto-dominated by any other
+/// such cell. Plain O(n^2) pairwise comparison -- grid sizes here are always tens of cells, so an
+/// O(n log n) skyline sweep would trade a smaller diff for a subtler-to-verify implementation with
+/// no real benefit at this scale.
+fn pareto_frontier_indices(grid: &[TuneCell]) -> Vec<usize> {
+    let candidates: Vec<usize> = (0..grid.len())
+        .filter(|&i| grid[i].audit.pairs > 0)
+        .collect();
+    candidates
+        .iter()
+        .copied()
+        .filter(|&i| {
+            !candidates
+                .iter()
+                .any(|&j| j != i && dominates(&grid[j], &grid[i]))
+        })
+        .collect()
+}
+
+/// Index (into `grid`) of the frontier point with maximum coverage -- the "keep the most data"
+/// candidate. Ties broken by minimum mismatch_rate, then by `lexicographic_key` for determinism.
+fn pick_broad(grid: &[TuneCell], frontier: &[usize]) -> usize {
+    let mut best = frontier[0];
+    for &i in &frontier[1..] {
+        let better = grid[i].coverage_fraction() > grid[best].coverage_fraction()
+            || (grid[i].coverage_fraction() == grid[best].coverage_fraction()
+                && grid[i].mismatch_rate() < grid[best].mismatch_rate())
+            || (grid[i].coverage_fraction() == grid[best].coverage_fraction()
+                && grid[i].mismatch_rate() == grid[best].mismatch_rate()
+                && grid[i].lexicographic_key() < grid[best].lexicographic_key());
+        if better {
+            best = i;
+        }
+    }
+    best
+}
+
+/// Index (into `grid`) of the frontier point with minimum mismatch_rate -- the "trust the data
+/// most" candidate. Ties broken by maximum coverage, then `lexicographic_key`.
+fn pick_strict(grid: &[TuneCell], frontier: &[usize]) -> usize {
+    let mut best = frontier[0];
+    for &i in &frontier[1..] {
+        let better = grid[i].mismatch_rate() < grid[best].mismatch_rate()
+            || (grid[i].mismatch_rate() == grid[best].mismatch_rate()
+                && grid[i].coverage_fraction() > grid[best].coverage_fraction())
+            || (grid[i].mismatch_rate() == grid[best].mismatch_rate()
+                && grid[i].coverage_fraction() == grid[best].coverage_fraction()
+                && grid[i].lexicographic_key() < grid[best].lexicographic_key());
+        if better {
+            best = i;
+        }
+    }
+    best
+}
+
+/// Index (into `grid`) of the frontier point closest to the ideal corner (coverage=1,
+/// mismatch_rate=0) -- the "split the difference" candidate.
+///
+/// Why: coverage and mismatch_rate are both mathematically in [0,1], but their *dynamic range
+/// across a real frontier* is typically wildly different -- coverage might span 0.35..0.95 while
+/// mismatch_rate spans only 0.02..0.11. Computing distance on those raw values lets the coverage
+/// term dominate regardless of L1 or Euclidean, so "balanced" silently collapses onto "broad" and
+/// the three-candidate menu degenerates to two. Min-max normalizing each axis to the frontier's
+/// OWN observed range (not a fixed assumed 0..1) fixes this; the distance formula itself
+/// (Euclidean here) is a minor detail once that normalization is in place.
+fn pick_balanced(grid: &[TuneCell], frontier: &[usize]) -> usize {
+    let covs = frontier.iter().map(|&i| grid[i].coverage_fraction());
+    let miss = frontier.iter().map(|&i| grid[i].mismatch_rate());
+    let cov_min = covs.clone().fold(f64::INFINITY, f64::min);
+    let cov_max = covs.fold(f64::NEG_INFINITY, f64::max);
+    let mis_min = miss.clone().fold(f64::INFINITY, f64::min);
+    let mis_max = miss.fold(f64::NEG_INFINITY, f64::max);
+    // A single-valued (degenerate) axis normalizes to 0 for every point rather than dividing by
+    // zero -- it contributes nothing to the distance, which is correct: there's no variation on
+    // that axis to weigh "balanced" against.
+    let normalize = |value: f64, lo: f64, hi: f64| {
+        if hi > lo {
+            (value - lo) / (hi - lo)
+        } else {
+            0.0
+        }
+    };
+
+    let mut best = frontier[0];
+    let mut best_dist = f64::INFINITY;
+    for &i in frontier {
+        let cov_norm = normalize(grid[i].coverage_fraction(), cov_min, cov_max);
+        let mis_norm = normalize(grid[i].mismatch_rate(), mis_min, mis_max);
+        let dist = ((1.0 - cov_norm).powi(2) + mis_norm.powi(2)).sqrt();
+        if dist < best_dist
+            || (dist == best_dist && grid[i].lexicographic_key() < grid[best].lexicographic_key())
+        {
+            best = i;
+            best_dist = dist;
+        }
+    }
+    best
+}
+
+/// Every candidate label(s) that landed on grid index `idx`, in `broad, balanced, strict` order --
+/// a `Vec` (not a single label) because the frontier can have fewer than 3 distinct points, in
+/// which case multiple roles coincide on the same cell.
+fn candidate_labels(idx: usize, broad: usize, balanced: usize, strict: usize) -> Vec<&'static str> {
+    [(broad, "broad"), (balanced, "balanced"), (strict, "strict")]
+        .into_iter()
+        .filter(|&(i, _)| i == idx)
+        .map(|(_, label)| label)
+        .collect()
+}
+
+/// Writes `--report`'s Pareto-frontier Markdown. A no-op-content-but-still-`Ok`-file when no cell
+/// has any audit data (e.g. `--teacher-depth`/`--student-depths` matched nothing) -- mirrors
+/// `cmd_audit`'s own "pairs == 0 -> informative message, not an error" convention.
+fn write_tune_report(path: &Path, args: &TuneArgs, total: usize, grid: &[TuneCell]) -> Result<()> {
+    let mut report = String::new();
+    writeln!(report, "# Tuning Report")?;
+    writeln!(report)?;
+    writeln!(report, "Input: {:?}, {total} records read", args.input)?;
+    writeln!(
+        report,
+        "Teacher depth: {}. Student depths: {}.",
+        args.teacher_depth, args.student_depths
+    )?;
+    writeln!(report, "Grid: {} configurations", grid.len())?;
+    writeln!(report)?;
+
+    let frontier = pareto_frontier_indices(grid);
+    if frontier.is_empty() {
+        writeln!(
+            report,
+            "No grid cell had a teacher/student comparison pair -- check `--teacher-depth`/\
+             `--student-depths` against what's actually in the data. Pareto analysis skipped; \
+             see the CSV for coverage-only results."
+        )?;
+        fs::write(path, report)?;
+        return Ok(());
+    }
+
+    let broad = pick_broad(grid, &frontier);
+    let balanced = pick_balanced(grid, &frontier);
+    let strict = pick_strict(grid, &frontier);
+
+    writeln!(report, "## Why three candidates, not one")?;
+    writeln!(report)?;
+    writeln!(
+        report,
+        "Training-data needs vary by whether this round wants quantity or reliability -- \
+         shogiesa doesn't presume to know which, so it hands back the Pareto-optimal menu below \
+         instead of picking one \"correct\" threshold for you."
+    )?;
+    writeln!(report)?;
+
+    writeln!(report, "## Recommended candidates")?;
+    writeln!(report)?;
+    writeln!(
+        report,
+        "| candidate | policy_margin | score_swing | coverage | teacher_mismatch_rate | avg \\|score_error\\| cp | max \\|score_error\\| cp | audit pairs |"
+    )?;
+    writeln!(report, "|---|---|---|---|---|---|---|---|")?;
+    let mut seen = Vec::new();
+    for &idx in &[broad, balanced, strict] {
+        if seen.contains(&idx) {
+            continue;
+        }
+        seen.push(idx);
+        let cell = &grid[idx];
+        let labels = candidate_labels(idx, broad, balanced, strict).join(", ");
+        let (policy_margin, score_swing) = cell.threshold_csv_cells();
+        let avg_abs = if cell.audit.abs_score_error_count > 0 {
+            format!(
+                "{:.1}",
+                cell.audit.abs_score_error_sum / cell.audit.abs_score_error_count as f64
+            )
+        } else {
+            "n/a".to_string()
+        };
+        writeln!(
+            report,
+            "| {labels} | {policy_margin} | {score_swing} | {:.1}% | {:.1}% | {avg_abs} | {} | {} |",
+            cell.coverage_fraction() * 100.0,
+            cell.mismatch_rate() * 100.0,
+            cell.audit.abs_score_error_max,
+            cell.audit.pairs
+        )?;
+    }
+    if seen.len() < 3 {
+        writeln!(report)?;
+        writeln!(
+            report,
+            "(The Pareto frontier had fewer than 3 distinct points, so some candidates coincided \
+             on the same grid cell above.)"
+        )?;
+    }
+    writeln!(report)?;
+
+    writeln!(report, "## Pareto frontier")?;
+    writeln!(report)?;
+    let mut sorted_frontier = frontier.clone();
+    sorted_frontier.sort_by(|&a, &b| {
+        grid[b]
+            .coverage_fraction()
+            .total_cmp(&grid[a].coverage_fraction())
+    });
+    writeln!(
+        report,
+        "| policy_margin | score_swing | coverage | teacher_mismatch_rate | candidate |"
+    )?;
+    writeln!(report, "|---|---|---|---|---|")?;
+    for &idx in &sorted_frontier {
+        let cell = &grid[idx];
+        let (policy_margin, score_swing) = cell.threshold_csv_cells();
+        let labels = candidate_labels(idx, broad, balanced, strict).join(", ");
+        writeln!(
+            report,
+            "| {policy_margin} | {score_swing} | {:.1}% | {:.1}% | {labels} |",
+            cell.coverage_fraction() * 100.0,
+            cell.mismatch_rate() * 100.0
+        )?;
+    }
+    writeln!(report)?;
+
+    writeln!(report, "## Full grid")?;
+    writeln!(report)?;
+    if grid.len() <= 50 {
+        writeln!(
+            report,
+            "| policy_margin | score_swing | coverage | kept | dropped | audit pairs | teacher_mismatch_rate |"
+        )?;
+        writeln!(report, "|---|---|---|---|---|---|---|")?;
+        for cell in grid {
+            let (policy_margin, score_swing) = cell.threshold_csv_cells();
+            let mismatch = if cell.audit.pairs > 0 {
+                format!("{:.1}%", cell.mismatch_rate() * 100.0)
+            } else {
+                "n/a".to_string()
+            };
+            writeln!(
+                report,
+                "| {policy_margin} | {score_swing} | {:.1}% | {} | {} | {} | {mismatch} |",
+                cell.coverage_fraction() * 100.0,
+                cell.coverage.kept,
+                cell.coverage.dropped,
+                cell.audit.pairs
+            )?;
+        }
+    } else {
+        writeln!(
+            report,
+            "See `{:?}` for the full {}-row grid.",
+            args.out,
+            grid.len()
+        )?;
+    }
+
+    fs::write(path, report)?;
+    Ok(())
+}
+
+fn cmd_tune(args: TuneArgs) -> Result<()> {
+    if args.sweep_policy_margin.is_none() && args.sweep_score_swing.is_none() {
+        anyhow::bail!("tune requires at least one of --sweep-policy-margin/--sweep-score-swing");
+    }
+    let student_depths = parse_u32_list(&args.student_depths)?;
+
+    let allowed_phases = parse_allowed_phases(args.phase.as_deref());
+    // Same convention as calibrate: a field currently being swept is always None here (overridden
+    // per grid cell below); Some only when that field is instead held fixed while the OTHER
+    // dimension sweeps (enforced by clap's conflicts_with on the sweep/hold pairs).
+    let base_config = QualityConfig {
+        min_observations: args.min_observations,
+        allowed_phases,
+        exclude_mate: args.exclude_mate,
+        exclude_in_check: args.exclude_in_check,
+        exclude_capture: args.exclude_capture,
+        eval_min: args.eval_min,
+        eval_max: args.eval_max,
+        max_score_swing_cp: args.max_score_swing_cp,
+        min_policy_margin_cp: args.min_policy_margin_cp,
+        require_bestmove_agreement: args.require_bestmove_agreement,
+        require_engine_agreement: args.require_engine_agreement,
+        max_engine_score_swing_cp: args.max_engine_score_swing_cp,
+        require_exact_score: args.require_exact_score,
+        require_policy_margin: args.require_policy_margin,
+        min_depth_reached: args.min_depth_reached,
+        require_requested_depth_reached: args.require_requested_depth_reached,
+    };
+
+    // A held-but-not-swept axis becomes a single-value list (possibly `None`, meaning "gate
+    // inactive") -- this makes `tune` a strict superset of `calibrate`'s shape: a 1xN or Nx1 grid
+    // degenerates to exactly calibrate's independent-sweep behavior, not a divergent second mode.
+    let policy_values: Vec<Option<i32>> = match &args.sweep_policy_margin {
+        Some(s) => parse_int_list(s)?.into_iter().map(Some).collect(),
+        None => vec![args.min_policy_margin_cp],
+    };
+    let swing_values: Vec<Option<i32>> = match &args.sweep_score_swing {
+        Some(s) => parse_int_list(s)?.into_iter().map(Some).collect(),
+        None => vec![args.max_score_swing_cp],
+    };
+
+    let mut grid: Vec<TuneCell> = Vec::with_capacity(policy_values.len() * swing_values.len());
+    for &policy_margin in &policy_values {
+        for &score_swing_value in &swing_values {
+            grid.push(TuneCell::new(policy_margin, score_swing_value));
+        }
+    }
+
+    let reader = BufReader::new(
+        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
+    );
+    let mut total = 0usize;
+    let mut diagnostics = DatasetDiagnostics::default();
+
+    for (i, line) in reader.lines().enumerate() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let rec: PositionRecord = match serde_json::from_str(&line) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(line = i + 1, "JSON parse error: {e}");
+                continue;
+            }
+        };
+        total += 1;
+        diagnostics.record(&rec);
+
+        // Computed ONCE per record, independent of any grid cell's thresholds -- the comparison
+        // itself doesn't depend on a quality gate; only whether a given cell counts it toward
+        // "kept" does. Folding these into every cell below, instead of recomputing per cell,
+        // is what keeps this a single streaming pass despite an M*N grid.
+        let audit_pairs = compute_audit_pairs(&rec, args.teacher_depth, &student_depths);
+
+        // Why this calls evaluate_quality M*N times per record instead of caching one base
+        // decision and only re-checking the two swept gates: doing the latter would mean
+        // re-deriving evaluate_quality's own pass/fail logic here in the CLI, exactly the
+        // parallel judgment logic this project centralizes in shogiesa_core instead. Grid sizes
+        // are always small (tens of cells), so this isn't a real performance concern.
+        for cell in &mut grid {
+            let config = QualityConfig {
+                min_policy_margin_cp: cell.policy_margin,
+                max_score_swing_cp: cell.score_swing,
+                ..base_config.clone()
+            };
+            let decision = evaluate_quality(&rec, &config);
+            let kept = decision.keep;
+            cell.coverage.record(&decision);
+            if kept {
+                for &(_, bestmove_match, score_error_cp, teacher, student) in &audit_pairs {
+                    cell.audit
+                        .record(bestmove_match, score_error_cp, teacher, student);
+                }
+            }
+        }
+    }
+
+    let out_file =
+        File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
+    let mut writer = BufWriter::new(out_file);
+    writeln!(
+        writer,
+        "policy_margin,score_swing,total,kept,dropped,coverage_pct,drop_reasons,audit_pairs,\
+         teacher_bestmove_mismatch_pct,avg_abs_score_error_cp,max_abs_score_error_cp,\
+         teacher_non_exact_pct,student_non_exact_pct,teacher_underreach_pct,student_underreach_pct,\
+         teacher_special_bestmove_pct,student_special_bestmove_pct"
+    )?;
+    for cell in &grid {
+        writeln!(writer, "{}", cell.to_csv_row())?;
+    }
+    writer.flush()?;
+
+    eprintln!(
+        "done: {total} read, {} grid configurations → {:?}",
+        grid.len(),
+        args.out
+    );
+    diagnostics.print();
+
+    if let Some(report_path) = &args.report {
+        write_tune_report(report_path, &args, total, &grid)?;
+        eprintln!("report → {report_path:?}");
+    }
 
     Ok(())
 }
@@ -4286,5 +4890,63 @@ mod calibrate_helper_tests {
         assert_eq!(diagnostics.labeled, 1);
         assert_eq!(diagnostics.margin_buckets.get(&50), Some(&1)); // 80.div_euclid(50)*50 == 50
         assert_eq!(diagnostics.obs_score_bound_counts.get("exact"), Some(&1));
+    }
+}
+
+#[cfg(test)]
+mod tune_pareto_tests {
+    use super::*;
+
+    fn cell_with(id: i32, kept_pct: usize, mismatch_pct: usize) -> TuneCell {
+        let mut cell = TuneCell::new(Some(id), None);
+        cell.coverage.total = 100;
+        cell.coverage.kept = kept_pct;
+        cell.audit.pairs = 100;
+        cell.audit.bestmove_mismatches = mismatch_pct;
+        cell
+    }
+
+    #[test]
+    fn pick_balanced_range_normalizes_before_computing_distance() {
+        // Coverage spans a much wider range (20%..95%) across this frontier than mismatch_rate
+        // (2%..8%) does. On RAW (non-normalized) values, distance-to-the-ideal-corner is
+        // dominated by the coverage term regardless of L1/Euclidean, so an unnormalized
+        // "balanced" pick collapses onto "broad" (highest coverage) -- this is the exact bug
+        // caught in this feature's design review before it shipped. Range-normalizing each axis
+        // to the frontier's own min/max first fixes it: the middle cell (60% coverage, 4%
+        // mismatch) is the actual best trade-off, not the edge with the most data.
+        let cells = vec![
+            cell_with(0, 95, 8),
+            cell_with(1, 60, 4),
+            cell_with(2, 20, 2),
+        ];
+        let frontier = pareto_frontier_indices(&cells);
+        assert_eq!(
+            frontier,
+            vec![0, 1, 2],
+            "all three are mutually non-dominated: coverage and mismatch both decrease together"
+        );
+        assert_eq!(
+            pick_balanced(&cells, &frontier),
+            1,
+            "the middle trade-off point, not the highest-coverage one"
+        );
+    }
+
+    #[test]
+    fn pareto_frontier_excludes_a_strictly_dominated_point() {
+        let cells = vec![
+            cell_with(0, 70, 0), // dominates cell 1: same mismatch, higher coverage
+            cell_with(1, 30, 0),
+        ];
+        assert_eq!(pareto_frontier_indices(&cells), vec![0]);
+    }
+
+    #[test]
+    fn pick_broad_and_strict_pick_opposite_ends() {
+        let cells = vec![cell_with(0, 90, 10), cell_with(1, 40, 2)];
+        let frontier = pareto_frontier_indices(&cells);
+        assert_eq!(pick_broad(&cells, &frontier), 0);
+        assert_eq!(pick_strict(&cells, &frontier), 1);
     }
 }

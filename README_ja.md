@@ -302,6 +302,43 @@ shogiesa audit \
 表示します: 比較件数、bestmove不一致率、`|score_error_cp|` の平均/最大値、教師/生徒の
 非exact率、教師/生徒の未達率、教師/生徒の特殊bestmove率。
 
+### `tune` — 閾値のグリッドサーチとteacher depth比較を同時に行う
+
+```bash
+shogiesa tune \
+  --input observations.jsonl \
+  --teacher-depth 14 \
+  --student-depths 6,8,10 \
+  --sweep-policy-margin 0,40,80,120,160 \
+  --sweep-score-swing 50,100,150,200 \
+  --out tuning.csv \
+  --report tuning.md
+```
+
+`calibrate` と `audit` を1つの問いに統合します: より多くのデータを残す品質ゲート設定は、
+より信頼性の低いデータも残していないか? `--sweep-policy-margin` × `--sweep-score-swing`
+をグリッドサーチします(各セルは組み合わせた閾値であり、`calibrate` の独立した1次元sweep
+とは異なります — 1×N や N×1 のグリッドは `calibrate` と全く同じ挙動に退化するので、`tune`
+は別の概念ではなく厳密な上位互換です)。各セルについて、カバレッジ(`evaluate_quality`/
+`QualityConfig` 経由、`calibrate` と同じ — 別の判定ロジックはありません)と、**そのセルが
+残すレコードに限定した** `audit` 形式の教師/生徒不一致メトリクスの両方を報告します。
+1回のストリーミングパスで完結します: 各レコードの教師/生徒比較は(閾値に関係なく)一度だけ
+計算され、そのレコードを残す全てのグリッドセルに畳み込まれます(セルごとに再計算しません)。
+
+`--out tuning.csv` は `(policy_margin, score_swing)` セルごとに1行: カバレッジ/kept/dropped/
+drop_reasons(`calibrate` と同じ規約)に加えて `audit_pairs`/不一致率/`score_error_cp` の
+平均・最大/非exact率/未達率/特殊bestmove率 — audit由来の列は、そのセルにaudit pairが
+ない場合は(`0.00` ではなく)空欄になります。真の0%不一致率が「データなし」と混同されない
+ためです。
+
+`--report tuning.md`(任意)は各セルの(coverage, mismatch_rate)点からPareto frontierを
+計算し、3つの候補を提示します — **broad**(最大coverage)、**strict**(最小不一致率)、
+**balanced**(理想的な角への最短距離 — coverage と mismatch_rate をフロンティア自身の
+観測範囲に正規化してから距離を計算します。正規化しないと、coverage の範囲が
+mismatch_rate よりずっと広いため、「balanced」が「broad」に潰れてしまいます)— shogiesa
+が唯一の「正しい」閾値を選ぶのではありません。訓練実行ごとに量と信頼性のどちらを重視するか
+は変わるため、`tune` は判定ではなくトレードオフ曲線を返します。
+
 ### `mine` — 難局面のマイニング
 
 ```bash

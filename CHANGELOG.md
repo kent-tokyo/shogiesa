@@ -25,6 +25,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 - `SCHEMA_VERSION` bumped to 7 and pack `FORMAT_VERSION` bumped to 7 for the new `SourceInfo` fields; old `.shgpk` files are not readable by this version
 - `split --train/--valid/--test` now groups by `source.root_id` when present, falling back to stripping the `path`'s `#varN@ply` suffix (its previous, sole mechanism) for records without `root_id`
 
+### Fixed
+- `extract --dedup-zobrist` no longer collapses every unparseable SFEN into a single sentinel hash (`0`); each unparseable position is now individually warned about and counted as skipped, instead of the first bad SFEN silently absorbing all later, unrelated bad SFENs as "duplicates"
+
 ---
 
 ## [0.4.0] — 2026-07-04

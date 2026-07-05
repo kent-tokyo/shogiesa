@@ -422,6 +422,24 @@ fn main() -> Result<()> {
     }
 }
 
+/// Why: extracted so the zobrist-sentinel-collision fix (an earlier `unwrap_or(0)` merged every
+/// unparseable SFEN into one "duplicate") can be unit-tested directly -- CSA/KIF extraction from
+/// real game files can't produce an unparseable SFEN, so this can't be exercised end-to-end.
+fn zobrist_dedup_keep(
+    rec: &PositionRecord,
+    seen_hashes: &mut HashSet<u64>,
+    skipped: &mut usize,
+) -> bool {
+    match zobrist_from_sfen(&rec.sfen) {
+        Some(hash) => seen_hashes.insert(hash),
+        None => {
+            tracing::warn!(sfen = %rec.sfen, "cannot zobrist-hash SFEN, skipping");
+            *skipped += 1;
+            false
+        }
+    }
+}
+
 fn cmd_extract(args: ExtractArgs) -> Result<()> {
     let config = shogiesa_core::ExtractConfig {
         min_ply: args.min_ply,
@@ -467,11 +485,8 @@ fn cmd_extract(args: ExtractArgs) -> Result<()> {
         match result {
             Ok(records) => {
                 for rec in &records {
-                    if use_zobrist {
-                        let hash = zobrist_from_sfen(&rec.sfen).unwrap_or(0);
-                        if !seen_hashes.insert(hash) {
-                            continue;
-                        }
+                    if use_zobrist && !zobrist_dedup_keep(rec, &mut seen_hashes, &mut skipped) {
+                        continue;
                     }
                     serde_json::to_writer(&mut writer, rec)?;
                     writer.write_all(b"\n")?;
@@ -2537,5 +2552,69 @@ mod label_pipeline_tests {
         let ready = reorder_push(&mut pending, &mut next_id, 0, rec("a"));
         assert_eq!(ready.len(), 21, "job 0 unblocks every buffered successor");
         assert!(pending.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod extract_zobrist_dedup_tests {
+    use super::*;
+    use shogiesa_core::{PositionTags, SourceInfo};
+
+    fn rec_with_sfen(sfen: &str) -> PositionRecord {
+        PositionRecord::new(
+            sfen.to_string(),
+            SourceInfo {
+                kind: "test".to_string(),
+                path: "game".to_string(),
+                ply: 1,
+                root_id: None,
+                variation_id: None,
+                branch_from_ply: None,
+            },
+            PositionTags {
+                phase: GamePhase::Opening,
+                side_to_move: SideToMove::Black,
+                in_check: false,
+                has_capture: false,
+            },
+        )
+    }
+
+    #[test]
+    fn two_distinct_unparseable_sfens_are_both_kept_and_counted_as_skipped() {
+        let mut seen_hashes = HashSet::new();
+        let mut skipped = 0usize;
+
+        // Neither SFEN is valid, so neither should ever get inserted into seen_hashes --
+        // an earlier `unwrap_or(0)` sentinel would have made the second one collide with the
+        // first and be silently dropped as a "duplicate".
+        let a = rec_with_sfen("not a valid sfen");
+        let b = rec_with_sfen("also not valid");
+        assert!(zobrist_from_sfen(&a.sfen).is_none());
+        assert!(zobrist_from_sfen(&b.sfen).is_none());
+
+        assert!(!zobrist_dedup_keep(&a, &mut seen_hashes, &mut skipped));
+        assert!(!zobrist_dedup_keep(&b, &mut seen_hashes, &mut skipped));
+        assert_eq!(skipped, 2, "both unparseable records counted as skipped");
+        assert!(seen_hashes.is_empty(), "no sentinel hash was ever inserted");
+    }
+
+    #[test]
+    fn valid_duplicate_sfen_is_deduped_normally() {
+        let mut seen_hashes = HashSet::new();
+        let mut skipped = 0usize;
+        let sfen = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1";
+
+        assert!(zobrist_dedup_keep(
+            &rec_with_sfen(sfen),
+            &mut seen_hashes,
+            &mut skipped
+        ));
+        assert!(!zobrist_dedup_keep(
+            &rec_with_sfen(sfen),
+            &mut seen_hashes,
+            &mut skipped
+        ));
+        assert_eq!(skipped, 0, "a real duplicate isn't counted as skipped");
     }
 }

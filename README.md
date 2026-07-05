@@ -206,6 +206,33 @@ a normal run, without writing `--out` — `--out` isn't required in this mode. C
 routing rejected positions to manual review or a future re-labeling pass. Works standalone or
 combined with `--dry-run`/`--manifest`.
 
+### `calibrate` — sweep quality-gate thresholds
+
+```bash
+shogiesa calibrate \
+  --input observations.jsonl \
+  --sweep-policy-margin 0,40,80,120,160 \
+  --sweep-score-swing 50,100,150,200 \
+  --out calibration.csv
+```
+
+`filter`'s thresholds (`--min-policy-margin-cp`, `--max-score-swing-cp`, ...) are otherwise picked
+by guesswork. `calibrate` reuses `shogiesa_core::evaluate_quality`/`QualityConfig` exactly as
+`filter` does — no separate quality-judgment logic — and sweeps a threshold across the values you
+give it, reporting how many positions each value would keep/drop and why, so you can pick a
+threshold based on your own dataset and engine instead of an assumed rule of thumb.
+`--sweep-policy-margin`/`--sweep-score-swing` each sweep independently (one CSV row per swept
+value); the other dimension can be held at a fixed value via `--min-policy-margin-cp`/
+`--max-score-swing-cp` (mutually exclusive with sweeping that same field). Every other `filter`
+gate flag (`--exclude-mate`, `--eval-min`/`--eval-max`, `--require-exact-score`, etc.) is also
+available here, held fixed across every swept value. Output is a CSV with one row per
+`(sweep_param, sweep_value)`: `total`/`kept`/`dropped`/`coverage_pct`, plus a `drop_reasons` column
+(first-failing-reason-only, same convention `filter`'s stderr breakdown uses). Separately, prints a
+one-time, sweep-independent stderr summary: `policy_margin_cp`/`score_swing_cp` distributions
+(50cp buckets, same convention as `report`'s histograms), observation-level `score_bound` counts,
+`requested_depth` underreach rate, and special-bestmove rate — context for interpreting the sweep,
+not something that varies by threshold.
+
 ### `mine` — hard-position mining
 
 ```bash

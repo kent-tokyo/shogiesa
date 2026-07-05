@@ -1988,6 +1988,140 @@ fn filter_exclude_capture() {
     assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 1);
 }
 
+// --- calibrate ---
+
+#[test]
+fn calibrate_sweep_policy_margin_produces_golden_csv_rows() {
+    // margins 50 and 150; sweeping thresholds 0/100/200 crosses each record's margin exactly once.
+    let f = make_labeled_jsonl(&[
+        position(
+            "opening",
+            serde_json::json!([obs_with_margin("7g7f", 50, 4, 50)]),
+        ),
+        position(
+            "opening",
+            serde_json::json!([obs_with_margin("7g7f", 50, 4, 150)]),
+        ),
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "calibrate",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--sweep-policy-margin",
+            "0,100,200",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+    assert_eq!(
+        lines[0],
+        "sweep_param,sweep_value,total,kept,dropped,coverage_pct,drop_reasons"
+    );
+    assert_eq!(lines[1], "policy_margin,0,2,2,0,100.00,");
+    assert_eq!(lines[2], "policy_margin,100,2,1,1,50.00,policy_margin=1");
+    assert_eq!(lines[3], "policy_margin,200,2,0,2,0.00,policy_margin=2");
+}
+
+#[test]
+fn calibrate_sweep_score_swing_produces_golden_csv_rows() {
+    // swing = 250 (50->300); sweeping thresholds 100/300 crosses it exactly once.
+    let f = make_labeled_jsonl(&[position(
+        "opening",
+        serde_json::json!([obs("7g7f", 50, 4), obs("7g7f", 300, 6)]),
+    )]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "calibrate",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--sweep-score-swing",
+            "100,300",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+    assert_eq!(lines[1], "score_swing,100,1,0,1,0.00,score_swing=1");
+    assert_eq!(lines[2], "score_swing,300,1,1,0,100.00,");
+}
+
+#[test]
+fn calibrate_reports_dataset_wide_diagnostics_independent_of_sweep() {
+    let f = make_labeled_jsonl(&[
+        position("opening", serde_json::json!([obs("resign", 50, 4)])),
+        position(
+            "opening",
+            serde_json::json!([obs_with_margin("7g7f", 50, 4, 80)]),
+        ),
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "calibrate",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--sweep-policy-margin",
+            "0",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "special bestmove:      1  (50.0% of labeled)",
+        ))
+        .stderr(predicate::str::contains("exact      :      2"))
+        .stderr(predicate::str::contains("50..99  :      1"));
+}
+
+#[test]
+fn calibrate_requires_at_least_one_sweep_flag() {
+    let f = make_labeled_jsonl(&[position("opening", serde_json::json!([obs("7g7f", 50, 4)]))]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "calibrate",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "requires at least one of --sweep-policy-margin/--sweep-score-swing",
+        ));
+}
+
+#[test]
+fn calibrate_sweep_and_hold_flag_on_the_same_field_are_mutually_exclusive() {
+    let f = make_labeled_jsonl(&[position("opening", serde_json::json!([obs("7g7f", 50, 4)]))]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "calibrate",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--sweep-policy-margin",
+            "0,100",
+            "--min-policy-margin-cp",
+            "50",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
 // --- stability ---
 
 #[test]

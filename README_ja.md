@@ -210,6 +210,32 @@ shogiesa filter \
 落選局面を手動レビューや将来の再ラベル候補に回すのに便利です。`--dry-run`/`--manifest`
 と組み合わせても、単独でも使えます。
 
+### `calibrate` — 品質ゲートの閾値を較正する
+
+```bash
+shogiesa calibrate \
+  --input observations.jsonl \
+  --sweep-policy-margin 0,40,80,120,160 \
+  --sweep-score-swing 50,100,150,200 \
+  --out calibration.csv
+```
+
+`filter` の閾値(`--min-policy-margin-cp`、`--max-score-swing-cp` など)は、これまで経験則で
+決めるしかありませんでした。`calibrate` は `filter` と全く同じ `shogiesa_core::evaluate_quality`/
+`QualityConfig` を再利用します — CLI側に別の品質判定ロジックは増やしません — 指定した値の
+範囲で閾値を掃引し、各値でどれだけの局面が残る/落ちるか、なぜ落ちるかを報告するので、
+経験則ではなく自分のデータセット・エンジンに基づいて閾値を選べます。
+`--sweep-policy-margin`/`--sweep-score-swing` はそれぞれ独立に掃引されます(掃引した値ごとに
+CSV1行)。もう一方の次元は `--min-policy-margin-cp`/`--max-score-swing-cp` で固定値に
+できます(同じフィールドを掃引する場合とは併用不可)。`filter` の他のゲートフラグ
+(`--exclude-mate`、`--eval-min`/`--eval-max`、`--require-exact-score` など)もここで使え、
+掃引中は全ての値で固定されます。出力は `(sweep_param, sweep_value)` ごとに1行のCSVで、
+`total`/`kept`/`dropped`/`coverage_pct` と `drop_reasons` 列(最初に失敗した理由のみ、`filter`
+の stderr 内訳と同じ規約)を含みます。別途、1回だけ、掃引に依存しない stderr サマリーも
+表示します: `policy_margin_cp`/`score_swing_cp` の分布(50cp単位、`report` のヒストグラムと
+同じ規約)、観測レベルの `score_bound` 件数、`requested_depth` 未達率、特殊bestmove率 —
+掃引結果を解釈する際の文脈情報であり、閾値によって変わる値ではありません。
+
 ### `mine` — 難局面のマイニング
 
 ```bash

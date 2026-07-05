@@ -10,6 +10,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ### Added
 - `shogiesa_core::requested_depth_underreached(obs: &Observation) -> bool` — the mate-exempt "did this observation fall short of the depth `label` asked it to reach" check, extracted from `evaluate_quality`'s `require_requested_depth_reached` gate and the CLI's `accumulate_requested_depth`, which each previously inlined the identical logic independently. No behavior change.
+- `calibrate` command — sweeps `filter`'s `--min-policy-margin-cp`/`--max-score-swing-cp` thresholds across caller-supplied values and reports coverage/kept/dropped/drop-reason-counts per swept value (`--out calibration.csv`), plus a one-time stderr summary of dataset-wide `policy_margin_cp`/`score_swing_cp` distributions, observation-level `score_bound` counts, `requested_depth` underreach rate, and special-bestmove rate. Reuses `shogiesa_core::evaluate_quality`/`QualityConfig` unchanged — no separate quality-judgment logic was added to the CLI. Every other `filter` gate flag is available as a fixed base-config value held across the sweep.
 
 ## [0.5.0] — 2026-07-05
 

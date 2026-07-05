@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 
 use shogiesa_core::{
-    GamePhase, Observation, PositionRecord, QualityConfig, SCHEMA_VERSION, Score, ScorePerspective,
-    SideToMove, SourceInfo, bestmove_agreement, cp_from_black_perspective,
+    GamePhase, Observation, PositionRecord, QualityConfig, QualityDecision, SCHEMA_VERSION, Score,
+    ScorePerspective, SideToMove, SourceInfo, bestmove_agreement, cp_from_black_perspective,
     engine_bestmove_agreement, evaluate_quality, has_special_bestmove,
     requested_depth_underreached, score_swing, sfen::Sfen, zobrist_from_sfen,
 };
@@ -53,6 +53,9 @@ enum Commands {
     Select(SelectArgs),
     /// Filter labeled positions by stability criteria
     Filter(FilterArgs),
+    /// Sweep quality-gate thresholds and report coverage/drop-reasons/distributions per value,
+    /// to calibrate a filter config against a specific dataset/engine instead of guessing
+    Calibrate(CalibrateArgs),
     /// Report statistics about a positions dataset
     Report(ReportArgs),
     /// Validate data integrity of a positions dataset
@@ -418,6 +421,65 @@ struct FilterArgs {
     explain_out: Option<PathBuf>,
 }
 
+#[derive(clap::Args)]
+struct CalibrateArgs {
+    /// Input labeled positions JSONL
+    #[arg(short, long)]
+    input: PathBuf,
+    /// Output CSV: one row per (swept parameter, swept value)
+    #[arg(short, long)]
+    out: PathBuf,
+    /// Comma-separated values to sweep for the equivalent of `filter --min-policy-margin-cp`
+    /// (e.g. "0,40,80,120,160")
+    #[arg(long, conflicts_with = "min_policy_margin_cp")]
+    sweep_policy_margin: Option<String>,
+    /// Comma-separated values to sweep for the equivalent of `filter --max-score-swing-cp`
+    /// (e.g. "50,100,150,200")
+    #[arg(long, conflicts_with = "max_score_swing_cp")]
+    sweep_score_swing: Option<String>,
+    /// Hold min_policy_margin_cp at this fixed value while sweeping --sweep-score-swing
+    /// (rejected together with --sweep-policy-margin, which sweeps this same field)
+    #[arg(long, allow_hyphen_values = true)]
+    min_policy_margin_cp: Option<i32>,
+    /// Hold max_score_swing_cp at this fixed value while sweeping --sweep-policy-margin
+    /// (rejected together with --sweep-score-swing, which sweeps this same field)
+    #[arg(long)]
+    max_score_swing_cp: Option<i32>,
+    /// Minimum number of observations required (default: 1) -- same base-config fields as
+    /// `filter`, held fixed across every swept value
+    #[arg(long, default_value = "1")]
+    min_observations: u32,
+    /// Filter by game phase: comma-separated (opening,middlegame,endgame)
+    #[arg(long)]
+    phase: Option<String>,
+    #[arg(long)]
+    exclude_mate: bool,
+    #[arg(long)]
+    exclude_in_check: bool,
+    #[arg(long)]
+    exclude_capture: bool,
+    /// Minimum cp score, from Black's perspective, regardless of whose turn it was
+    #[arg(long, allow_hyphen_values = true)]
+    eval_min: Option<i32>,
+    /// Maximum cp score, from Black's perspective, regardless of whose turn it was
+    #[arg(long, allow_hyphen_values = true)]
+    eval_max: Option<i32>,
+    #[arg(long)]
+    require_bestmove_agreement: bool,
+    #[arg(long)]
+    require_engine_agreement: bool,
+    #[arg(long)]
+    max_engine_score_swing_cp: Option<i32>,
+    #[arg(long)]
+    require_exact_score: bool,
+    #[arg(long)]
+    require_policy_margin: bool,
+    #[arg(long)]
+    min_depth_reached: Option<u32>,
+    #[arg(long)]
+    require_requested_depth_reached: bool,
+}
+
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -437,6 +499,7 @@ fn main() -> Result<()> {
         Commands::Pack(args) => cmd_pack(args),
         Commands::Unpack(args) => cmd_unpack(args),
         Commands::Filter(args) => cmd_filter(args),
+        Commands::Calibrate(args) => cmd_calibrate(args),
         Commands::Report(args) => cmd_report(args),
         Commands::Validate(args) => cmd_validate(args),
     }
@@ -2359,6 +2422,25 @@ fn cmd_unpack(args: UnpackArgs) -> Result<()> {
     Ok(())
 }
 
+/// Parses `--phase`'s comma-separated `opening,middlegame,endgame` list into `QualityConfig`'s
+/// `allowed_phases` -- shared by `filter` and `calibrate` so both interpret the same flag
+/// identically instead of keeping two copies of the same match arms.
+fn parse_allowed_phases(phase: Option<&str>) -> Option<Vec<GamePhase>> {
+    phase.map(|s| {
+        s.split(',')
+            .filter_map(|p| match p.trim() {
+                "opening" => Some(GamePhase::Opening),
+                "middlegame" => Some(GamePhase::Middlegame),
+                "endgame" => Some(GamePhase::Endgame),
+                other => {
+                    tracing::warn!("unknown phase {other:?}, ignoring");
+                    None
+                }
+            })
+            .collect()
+    })
+}
+
 fn build_quality_config(
     args: &FilterArgs,
     allowed_phases: Option<Vec<GamePhase>>,
@@ -2384,19 +2466,7 @@ fn build_quality_config(
 }
 
 fn cmd_filter(args: FilterArgs) -> Result<()> {
-    let allowed_phases: Option<Vec<GamePhase>> = args.phase.as_deref().map(|s| {
-        s.split(',')
-            .filter_map(|p| match p.trim() {
-                "opening" => Some(GamePhase::Opening),
-                "middlegame" => Some(GamePhase::Middlegame),
-                "endgame" => Some(GamePhase::Endgame),
-                other => {
-                    tracing::warn!("unknown phase {other:?}, ignoring");
-                    None
-                }
-            })
-            .collect()
-    });
+    let allowed_phases = parse_allowed_phases(args.phase.as_deref());
     let config = build_quality_config(&args, allowed_phases);
 
     let reader = BufReader::new(
@@ -2497,6 +2567,249 @@ fn cmd_filter(args: FilterArgs) -> Result<()> {
         m.filter_config = Some(config);
         write_manifest(manifest_path, &m)?;
     }
+    Ok(())
+}
+
+/// One swept threshold value's outcome under `evaluate_quality` -- the base config plus this one
+/// field overridden to `value`, everything else held fixed. Lets `calibrate` show "what does
+/// raising this specific gate do to coverage" in isolation, reusing `evaluate_quality` itself
+/// rather than re-deriving its judgment logic.
+struct SweepRow {
+    param: &'static str,
+    value: i32,
+    total: usize,
+    kept: usize,
+    dropped: usize,
+    /// First-failing-reason-only, matching `filter`'s and core's own documented convention (see
+    /// `evaluate_quality`'s doc comment) -- keeps `drop_reasons` values summing to `dropped`.
+    drop_reasons: BTreeMap<&'static str, usize>,
+}
+
+impl SweepRow {
+    fn new(param: &'static str, value: i32) -> Self {
+        Self {
+            param,
+            value,
+            total: 0,
+            kept: 0,
+            dropped: 0,
+            drop_reasons: BTreeMap::new(),
+        }
+    }
+
+    fn record(&mut self, decision: &QualityDecision) {
+        self.total += 1;
+        match decision.reasons.first() {
+            None => self.kept += 1,
+            Some(reason) => {
+                self.dropped += 1;
+                *self.drop_reasons.entry(reason.as_str()).or_default() += 1;
+            }
+        }
+    }
+}
+
+fn parse_int_list(s: &str) -> Result<Vec<i32>> {
+    s.split(',')
+        .map(|p| {
+            p.trim()
+                .parse::<i32>()
+                .with_context(|| format!("invalid integer {p:?} in sweep list"))
+        })
+        .collect()
+}
+
+fn cmd_calibrate(args: CalibrateArgs) -> Result<()> {
+    if args.sweep_policy_margin.is_none() && args.sweep_score_swing.is_none() {
+        anyhow::bail!(
+            "calibrate requires at least one of --sweep-policy-margin/--sweep-score-swing"
+        );
+    }
+
+    let allowed_phases = parse_allowed_phases(args.phase.as_deref());
+    // Why the held values feed straight into the base config: `--sweep-x`/its `--min-x`(or
+    // `--max-x`) hold counterpart are a clap `conflicts_with` pair, so at most one of "sweep this
+    // field" and "hold this field at a fixed value" is ever active for a given field -- the base
+    // config's value for a field currently being swept is always `None` here (overridden per
+    // sweep value in the loop below), and `Some` only when that field is instead held fixed while
+    // the OTHER dimension sweeps.
+    let base_config = QualityConfig {
+        min_observations: args.min_observations,
+        allowed_phases,
+        exclude_mate: args.exclude_mate,
+        exclude_in_check: args.exclude_in_check,
+        exclude_capture: args.exclude_capture,
+        eval_min: args.eval_min,
+        eval_max: args.eval_max,
+        max_score_swing_cp: args.max_score_swing_cp,
+        min_policy_margin_cp: args.min_policy_margin_cp,
+        require_bestmove_agreement: args.require_bestmove_agreement,
+        require_engine_agreement: args.require_engine_agreement,
+        max_engine_score_swing_cp: args.max_engine_score_swing_cp,
+        require_exact_score: args.require_exact_score,
+        require_policy_margin: args.require_policy_margin,
+        min_depth_reached: args.min_depth_reached,
+        require_requested_depth_reached: args.require_requested_depth_reached,
+    };
+
+    let mut policy_margin_rows: Vec<SweepRow> = match &args.sweep_policy_margin {
+        Some(s) => parse_int_list(s)?
+            .into_iter()
+            .map(|v| SweepRow::new("policy_margin", v))
+            .collect(),
+        None => Vec::new(),
+    };
+    let mut score_swing_rows: Vec<SweepRow> = match &args.sweep_score_swing {
+        Some(s) => parse_int_list(s)?
+            .into_iter()
+            .map(|v| SweepRow::new("score_swing", v))
+            .collect(),
+        None => Vec::new(),
+    };
+
+    let reader = BufReader::new(
+        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
+    );
+
+    let mut total = 0usize;
+    let mut labeled = 0usize;
+    // 50cp buckets, same convention as `report`'s swing/eval histograms -- bucket-and-count, not
+    // percentiles.
+    let mut margin_buckets: BTreeMap<i32, usize> = BTreeMap::new();
+    let mut swing_buckets: BTreeMap<i32, usize> = BTreeMap::new();
+    let mut obs_score_bound_counts: BTreeMap<&'static str, usize> = BTreeMap::new();
+    let mut requested_depth_total = 0usize;
+    let mut requested_depth_underreach = 0usize;
+    let mut special_bestmove = 0usize;
+
+    for (i, line) in reader.lines().enumerate() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let rec: PositionRecord = match serde_json::from_str(&line) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(line = i + 1, "JSON parse error: {e}");
+                continue;
+            }
+        };
+        total += 1;
+
+        // Each swept value gets its own evaluate_quality call, overriding only the one field this
+        // sweep varies -- everything else (including the OTHER dimension, if held via --min-x/
+        // --max-x) stays at the base config.
+        for row in &mut policy_margin_rows {
+            let config = QualityConfig {
+                min_policy_margin_cp: Some(row.value),
+                ..base_config.clone()
+            };
+            row.record(&evaluate_quality(&rec, &config));
+        }
+        for row in &mut score_swing_rows {
+            let config = QualityConfig {
+                max_score_swing_cp: Some(row.value),
+                ..base_config.clone()
+            };
+            row.record(&evaluate_quality(&rec, &config));
+        }
+
+        // Dataset-wide diagnostics: sweep-independent, so accumulated once per record regardless
+        // of threshold, not duplicated per sweep row (which would wrongly imply they vary by
+        // threshold).
+        if !rec.observations.is_empty() {
+            labeled += 1;
+            if has_special_bestmove(&rec.observations) {
+                special_bestmove += 1;
+            }
+            let mut cp_scores = Vec::new();
+            for obs in &rec.observations {
+                if let Some(margin) = obs.policy_margin_cp {
+                    *margin_buckets
+                        .entry((margin.div_euclid(50)) * 50)
+                        .or_default() += 1;
+                }
+                if let Score::Cp { value } = obs.score {
+                    cp_scores.push(value);
+                }
+                let bound_key = match obs.score_bound {
+                    shogiesa_core::ScoreBound::Exact => "exact",
+                    shogiesa_core::ScoreBound::Lowerbound => "lowerbound",
+                    shogiesa_core::ScoreBound::Upperbound => "upperbound",
+                };
+                *obs_score_bound_counts.entry(bound_key).or_default() += 1;
+            }
+            if let Some(swing) = score_swing(&cp_scores) {
+                *swing_buckets
+                    .entry((swing.div_euclid(50)) * 50)
+                    .or_default() += 1;
+            }
+            accumulate_requested_depth(
+                &rec,
+                &mut requested_depth_total,
+                &mut requested_depth_underreach,
+            );
+        }
+    }
+
+    let out_file =
+        File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
+    let mut writer = BufWriter::new(out_file);
+    writeln!(
+        writer,
+        "sweep_param,sweep_value,total,kept,dropped,coverage_pct,drop_reasons"
+    )?;
+    for row in policy_margin_rows.iter().chain(score_swing_rows.iter()) {
+        let coverage_pct = if row.total > 0 {
+            row.kept as f64 / row.total as f64 * 100.0
+        } else {
+            0.0
+        };
+        let drop_reasons_cell = row
+            .drop_reasons
+            .iter()
+            .map(|(r, c)| format!("{r}={c}"))
+            .collect::<Vec<_>>()
+            .join(";");
+        writeln!(
+            writer,
+            "{},{},{},{},{},{:.2},{}",
+            row.param, row.value, row.total, row.kept, row.dropped, coverage_pct, drop_reasons_cell
+        )?;
+    }
+    writer.flush()?;
+
+    eprintln!("done: {total} read, {labeled} labeled → {:?}", args.out);
+    eprintln!("dataset-wide diagnostics (independent of swept thresholds):");
+    eprintln!(
+        "  special bestmove: {special_bestmove:>6}  ({:.1}% of labeled)",
+        special_bestmove as f64 / labeled.max(1) as f64 * 100.0
+    );
+    if requested_depth_total > 0 {
+        eprintln!(
+            "  requested-depth underreach: {requested_depth_underreach:>6}  ({:.1}% of {requested_depth_total} observations with a requested_depth)",
+            requested_depth_underreach as f64 / requested_depth_total as f64 * 100.0
+        );
+    }
+    if !obs_score_bound_counts.is_empty() {
+        eprintln!("  score bound (observations):");
+        for (bound, count) in &obs_score_bound_counts {
+            eprintln!("    {bound:<10} : {count:>6}");
+        }
+    }
+    if !margin_buckets.is_empty() {
+        eprintln!("  policy_margin_cp distribution (50cp buckets):");
+        for (&key, &count) in &margin_buckets {
+            eprintln!("    {key:>5}..{:<4}: {count:>6}", key + 49);
+        }
+    }
+    if !swing_buckets.is_empty() {
+        eprintln!("  score_swing_cp distribution (50cp buckets, per record):");
+        for (&key, &count) in &swing_buckets {
+            eprintln!("    {key:>5}..{:<4}: {count:>6}", key + 49);
+        }
+    }
+
     Ok(())
 }
 

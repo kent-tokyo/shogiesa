@@ -1558,6 +1558,28 @@ fn hash_file(path: &Path) -> Result<String> {
 /// Tally MultiPV-candidate coverage and score-bound distribution across a batch of
 /// observations. Shared by `accumulate_coverage` (manifests) and `cmd_report` (stdout) so the
 /// `match c.score_bound { ... }` logic isn't duplicated.
+fn accumulate_candidate_coverage(
+    rec: &PositionRecord,
+    with_candidates: &mut usize,
+    total: &mut usize,
+    score_bound_distribution: &mut BTreeMap<&'static str, usize>,
+) {
+    for obs in &rec.observations {
+        *total += 1;
+        if !obs.candidates.is_empty() {
+            *with_candidates += 1;
+            for c in &obs.candidates {
+                let key = match c.score_bound {
+                    shogiesa_core::ScoreBound::Exact => "exact",
+                    shogiesa_core::ScoreBound::Lowerbound => "lowerbound",
+                    shogiesa_core::ScoreBound::Upperbound => "upperbound",
+                };
+                *score_bound_distribution.entry(key).or_default() += 1;
+            }
+        }
+    }
+}
+
 fn candidate_coverage_stats(
     records: &[PositionRecord],
 ) -> (usize, usize, BTreeMap<&'static str, usize>) {
@@ -1565,20 +1587,12 @@ fn candidate_coverage_stats(
     let mut total = 0;
     let mut score_bound_distribution: BTreeMap<&'static str, usize> = BTreeMap::new();
     for rec in records {
-        for obs in &rec.observations {
-            total += 1;
-            if !obs.candidates.is_empty() {
-                with_candidates += 1;
-                for c in &obs.candidates {
-                    let key = match c.score_bound {
-                        shogiesa_core::ScoreBound::Exact => "exact",
-                        shogiesa_core::ScoreBound::Lowerbound => "lowerbound",
-                        shogiesa_core::ScoreBound::Upperbound => "upperbound",
-                    };
-                    *score_bound_distribution.entry(key).or_default() += 1;
-                }
-            }
-        }
+        accumulate_candidate_coverage(
+            rec,
+            &mut with_candidates,
+            &mut total,
+            &mut score_bound_distribution,
+        );
     }
     (with_candidates, total, score_bound_distribution)
 }
@@ -1587,18 +1601,26 @@ fn candidate_coverage_stats(
 /// it (achieved `depth` below `requested_depth`, non-mate — mirrors
 /// `evaluate_quality`'s `require_requested_depth_reached` gate). Shared by `report` and
 /// manifests for the same reason `candidate_coverage_stats` is: one implementation, not two.
+fn accumulate_requested_depth(
+    rec: &PositionRecord,
+    total_with_requested: &mut usize,
+    underreach: &mut usize,
+) {
+    for obs in &rec.observations {
+        if let Some(rd) = obs.requested_depth {
+            *total_with_requested += 1;
+            if obs.depth < rd && !matches!(obs.score, shogiesa_core::Score::Mate { .. }) {
+                *underreach += 1;
+            }
+        }
+    }
+}
+
 fn requested_depth_stats(records: &[PositionRecord]) -> (usize, usize) {
     let mut total_with_requested = 0usize;
     let mut underreach = 0usize;
     for rec in records {
-        for obs in &rec.observations {
-            if let Some(rd) = obs.requested_depth {
-                total_with_requested += 1;
-                if obs.depth < rd && !matches!(obs.score, shogiesa_core::Score::Mate { .. }) {
-                    underreach += 1;
-                }
-            }
-        }
+        accumulate_requested_depth(rec, &mut total_with_requested, &mut underreach);
     }
     (total_with_requested, underreach)
 }
@@ -2407,39 +2429,39 @@ fn collect_game_paths(input: &PathBuf) -> Result<Vec<PathBuf>> {
 
 fn load_records(path: &PathBuf) -> Result<(Vec<PositionRecord>, usize)> {
     let content = fs::read_to_string(path).with_context(|| format!("cannot read {:?}", path))?;
-    let non_empty: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
-    let broken = non_empty
-        .iter()
-        .filter(|l| serde_json::from_str::<PositionRecord>(l).is_err())
-        .count();
-    let records: Vec<PositionRecord> = non_empty
-        .iter()
+    let mut broken = 0usize;
+    let records: Vec<PositionRecord> = content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
         .enumerate()
-        .filter_map(|(i, line)| {
-            serde_json::from_str::<PositionRecord>(line)
-                .map_err(|e| tracing::warn!(line = i + 1, "parse error: {e}"))
-                .ok()
-        })
+        .filter_map(
+            |(i, line)| match serde_json::from_str::<PositionRecord>(line) {
+                Ok(rec) => Some(rec),
+                Err(e) => {
+                    tracing::warn!(line = i + 1, "parse error: {e}");
+                    broken += 1;
+                    None
+                }
+            },
+        )
         .collect();
     Ok((records, broken))
 }
 
 fn cmd_report(args: ReportArgs) -> Result<()> {
-    let (records, broken) = load_records(&args.input)?;
+    let reader = BufReader::new(
+        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
+    );
 
-    if records.is_empty() {
-        println!("no valid records in {:?}", args.input);
-        return Ok(());
-    }
-
-    let n = records.len();
+    let mut n = 0usize;
+    let mut broken = 0usize;
     let mut phases = BTreeMap::<String, usize>::new();
     let mut sides = BTreeMap::<String, usize>::new();
     let mut schema_versions = BTreeMap::<u32, usize>::new();
     let mut ply_sum = 0u64;
     let mut ply_min = u32::MAX;
     let mut ply_max = 0u32;
-    let mut sfen_counts: HashMap<&str, usize> = HashMap::new();
+    let mut sfen_counts: HashMap<String, usize> = HashMap::new();
     let mut tag_mismatches = 0usize;
     let mut invalid_sfens = 0usize;
     let mut labeled = 0usize;
@@ -2463,8 +2485,28 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
     let mut margin_sum = 0f64;
     let mut margin_count = 0usize;
     let mut obs_score_bound_counts: BTreeMap<&'static str, usize> = BTreeMap::new();
+    let mut sources = BTreeMap::<String, usize>::new();
+    let mut obs_with_candidates = 0usize;
+    let mut obs_total = 0usize;
+    let mut score_bound_distribution: BTreeMap<&'static str, usize> = BTreeMap::new();
+    let mut requested_depth_total = 0usize;
+    let mut requested_depth_underreach = 0usize;
 
-    for rec in &records {
+    for (i, line) in reader.lines().enumerate() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let rec: PositionRecord = match serde_json::from_str(&line) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(line = i + 1, "parse error: {e}");
+                broken += 1;
+                continue;
+            }
+        };
+        n += 1;
+
         *phases.entry(format!("{}", rec.tags.phase)).or_default() += 1;
         *sides
             .entry(format!("{}", rec.tags.side_to_move))
@@ -2480,7 +2522,8 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
         ply_sum += ply as u64;
         ply_min = ply_min.min(ply);
         ply_max = ply_max.max(ply);
-        *sfen_counts.entry(rec.sfen.as_str()).or_default() += 1;
+        *sfen_counts.entry(rec.sfen.clone()).or_default() += 1;
+        *sources.entry(rec.source.path.clone()).or_default() += 1;
 
         match Sfen::parse(&rec.sfen) {
             Ok(sfen) => {
@@ -2577,7 +2620,24 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
                     .entry(format!("{}", rec.tags.side_to_move))
                     .or_default() += 1;
             }
+
+            accumulate_candidate_coverage(
+                &rec,
+                &mut obs_with_candidates,
+                &mut obs_total,
+                &mut score_bound_distribution,
+            );
+            accumulate_requested_depth(
+                &rec,
+                &mut requested_depth_total,
+                &mut requested_depth_underreach,
+            );
         }
+    }
+
+    if n == 0 {
+        println!("no valid records in {:?}", args.input);
+        return Ok(());
     }
 
     let duplicate_sfens: usize = sfen_counts
@@ -2587,10 +2647,6 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
         .sum();
     let duplicate_rate = duplicate_sfens as f64 / n as f64 * 100.0;
 
-    let mut sources = BTreeMap::<&str, usize>::new();
-    for rec in &records {
-        *sources.entry(rec.source.path.as_str()).or_default() += 1;
-    }
     let top_source_pct = sources.values().max().copied().unwrap_or(0) as f64 / n as f64 * 100.0;
     let opening_pct = phases.get("opening").copied().unwrap_or(0) as f64 / n as f64 * 100.0;
     let black_count = sides.get("black").copied().unwrap_or(0);
@@ -2727,8 +2783,6 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
                 margin_sum / margin_count as f64
             );
         }
-        let (obs_with_candidates, obs_total, score_bound_distribution) =
-            candidate_coverage_stats(&records);
         if obs_with_candidates > 0 {
             println!(
                 "  multipv coverage: {obs_with_candidates:>6}  ({:.1}% of {obs_total} observations)",
@@ -2739,7 +2793,6 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
                 println!("    {bound:<10} : {count:>6}");
             }
         }
-        let (requested_depth_total, requested_depth_underreach) = requested_depth_stats(&records);
         if requested_depth_total > 0 {
             println!(
                 "  requested-depth underreach: {requested_depth_underreach:>6}  ({:.1}% of {requested_depth_total} observations with a requested_depth)",

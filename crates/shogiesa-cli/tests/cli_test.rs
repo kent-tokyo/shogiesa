@@ -1460,6 +1460,113 @@ fn report_shows_special_bestmove_rate() {
         .stdout(predicate::str::contains("50.0% of labeled"));
 }
 
+// PR9 golden baseline: `report`'s full-materialize-then-4-pass (main loop, sources loop,
+// candidate_coverage_stats, requested_depth_stats) rewrite to a single streaming pass must
+// produce byte-identical stdout. This fixture was generated once via the real
+// extract -> label (multipv=2) -> label (2nd engine, forced resign) pipeline against
+// tests/fixtures/sample.csa, then hand-augmented with a duplicate sfen, an invalid sfen, a
+// side_to_move/SFEN tag mismatch, an unlabeled record, and one malformed JSON line -- covering
+// every branch `report` prints, not just the common path. Captured against the pre-refactor
+// binary; must still pass after.
+const REPORT_GOLDEN_FIXTURE: &str = r#"{"schema_version":8,"sfen":"lnsgkgsnl/1r5b1/ppppppppp/9/9/2P6/PP1PPPPPP/1B5R1/LNSGKGSNL w - 2","source":{"kind":"csa","path":"tests/fixtures/sample.csa","ply":1},"tags":{"phase":"opening","side_to_move":"white","in_check":false,"has_capture":false},"observations":[{"engine":"FakeUsiEngine","engine_version":null,"depth":4,"requested_depth":4,"score":{"kind":"cp","value":100},"score_perspective":"side_to_move","score_bound":"exact","bestmove":"7g7f","nodes":1000,"time_ms":50,"pv":["7g7f","8h7g"],"policy_margin_cp":310,"candidates":[{"multipv":1,"bestmove":"7g7f","score":{"kind":"cp","value":100},"score_bound":"exact","pv":["7g7f","8h7g"]},{"multipv":2,"bestmove":"2g2f","score":{"kind":"cp","value":-210},"score_bound":"exact","pv":["2g2f","8h7g"]}]},{"engine":"FakeUsiEngine","engine_version":null,"depth":6,"requested_depth":6,"score":{"kind":"cp","value":100},"score_perspective":"side_to_move","score_bound":"exact","bestmove":"7g7f","nodes":1000,"time_ms":50,"pv":["7g7f","8h7g"],"policy_margin_cp":310,"candidates":[{"multipv":1,"bestmove":"7g7f","score":{"kind":"cp","value":100},"score_bound":"exact","pv":["7g7f","8h7g"]},{"multipv":2,"bestmove":"2g2f","score":{"kind":"cp","value":-210},"score_bound":"exact","pv":["2g2f","8h7g"]}]},{"engine":"engineB","engine_version":null,"depth":4,"requested_depth":4,"score":{"kind":"cp","value":100},"score_perspective":"side_to_move","score_bound":"exact","bestmove":"resign","bestmove_kind":"resign","nodes":1000,"time_ms":50,"pv":["7g7f","8h7g"]}]}
+{"schema_version":8,"sfen":"lnsgkgsnl/1r5b1/pppppp1pp/6p2/9/2P6/PP1PPPPPP/1B5R1/LNSGKGSNL b - 3","source":{"kind":"csa","path":"tests/fixtures/sample.csa","ply":2},"tags":{"phase":"opening","side_to_move":"black","in_check":false,"has_capture":false},"observations":[{"engine":"FakeUsiEngine","engine_version":null,"depth":4,"requested_depth":4,"score":{"kind":"cp","value":100},"score_perspective":"side_to_move","score_bound":"exact","bestmove":"7g7f","nodes":1000,"time_ms":50,"pv":["7g7f","8h7g"],"policy_margin_cp":310,"candidates":[{"multipv":1,"bestmove":"7g7f","score":{"kind":"cp","value":100},"score_bound":"exact","pv":["7g7f","8h7g"]},{"multipv":2,"bestmove":"2g2f","score":{"kind":"cp","value":-210},"score_bound":"exact","pv":["2g2f","8h7g"]}]},{"engine":"FakeUsiEngine","engine_version":null,"depth":6,"requested_depth":6,"score":{"kind":"cp","value":100},"score_perspective":"side_to_move","score_bound":"exact","bestmove":"7g7f","nodes":1000,"time_ms":50,"pv":["7g7f","8h7g"],"policy_margin_cp":310,"candidates":[{"multipv":1,"bestmove":"7g7f","score":{"kind":"cp","value":100},"score_bound":"exact","pv":["7g7f","8h7g"]},{"multipv":2,"bestmove":"2g2f","score":{"kind":"cp","value":-210},"score_bound":"exact","pv":["2g2f","8h7g"]}]},{"engine":"engineB","engine_version":null,"depth":4,"requested_depth":4,"score":{"kind":"cp","value":100},"score_perspective":"side_to_move","score_bound":"exact","bestmove":"resign","bestmove_kind":"resign","nodes":1000,"time_ms":50,"pv":["7g7f","8h7g"]}]}
+{"schema_version":8,"sfen":"lnsgkgsnl/1r5B1/pppppp1pp/6p2/9/2P6/PP1PPPPPP/7R1/LNSGKGSNL w B 4","source":{"kind":"csa","path":"tests/fixtures/sample.csa","ply":3},"tags":{"phase":"opening","side_to_move":"white","in_check":false,"has_capture":true},"observations":[{"engine":"FakeUsiEngine","engine_version":null,"depth":4,"requested_depth":4,"score":{"kind":"cp","value":100},"score_perspective":"side_to_move","score_bound":"exact","bestmove":"7g7f","nodes":1000,"time_ms":50,"pv":["7g7f","8h7g"],"policy_margin_cp":310,"candidates":[{"multipv":1,"bestmove":"7g7f","score":{"kind":"cp","value":100},"score_bound":"exact","pv":["7g7f","8h7g"]},{"multipv":2,"bestmove":"2g2f","score":{"kind":"cp","value":-210},"score_bound":"exact","pv":["2g2f","8h7g"]}]},{"engine":"FakeUsiEngine","engine_version":null,"depth":6,"requested_depth":6,"score":{"kind":"cp","value":100},"score_perspective":"side_to_move","score_bound":"exact","bestmove":"7g7f","nodes":1000,"time_ms":50,"pv":["7g7f","8h7g"],"policy_margin_cp":310,"candidates":[{"multipv":1,"bestmove":"7g7f","score":{"kind":"cp","value":100},"score_bound":"exact","pv":["7g7f","8h7g"]},{"multipv":2,"bestmove":"2g2f","score":{"kind":"cp","value":-210},"score_bound":"exact","pv":["2g2f","8h7g"]}]},{"engine":"engineB","engine_version":null,"depth":4,"requested_depth":4,"score":{"kind":"cp","value":100},"score_perspective":"side_to_move","score_bound":"exact","bestmove":"resign","bestmove_kind":"resign","nodes":1000,"time_ms":50,"pv":["7g7f","8h7g"]}]}
+{"schema_version":8,"sfen":"lnsgkg1nl/1r5s1/pppppp1pp/6p2/9/2P6/PP1PPPPPP/7R1/LNSGKGSNL b Bb 5","source":{"kind":"csa","path":"tests/fixtures/sample.csa","ply":4},"tags":{"phase":"opening","side_to_move":"black","in_check":false,"has_capture":true},"observations":[{"engine":"FakeUsiEngine","engine_version":null,"depth":4,"requested_depth":4,"score":{"kind":"cp","value":100},"score_perspective":"side_to_move","score_bound":"exact","bestmove":"7g7f","nodes":1000,"time_ms":50,"pv":["7g7f","8h7g"],"policy_margin_cp":310,"candidates":[{"multipv":1,"bestmove":"7g7f","score":{"kind":"cp","value":100},"score_bound":"exact","pv":["7g7f","8h7g"]},{"multipv":2,"bestmove":"2g2f","score":{"kind":"cp","value":-210},"score_bound":"exact","pv":["2g2f","8h7g"]}]},{"engine":"FakeUsiEngine","engine_version":null,"depth":6,"requested_depth":6,"score":{"kind":"cp","value":100},"score_perspective":"side_to_move","score_bound":"exact","bestmove":"7g7f","nodes":1000,"time_ms":50,"pv":["7g7f","8h7g"],"policy_margin_cp":310,"candidates":[{"multipv":1,"bestmove":"7g7f","score":{"kind":"cp","value":100},"score_bound":"exact","pv":["7g7f","8h7g"]},{"multipv":2,"bestmove":"2g2f","score":{"kind":"cp","value":-210},"score_bound":"exact","pv":["2g2f","8h7g"]}]},{"engine":"engineB","engine_version":null,"depth":4,"requested_depth":4,"score":{"kind":"cp","value":100},"score_perspective":"side_to_move","score_bound":"exact","bestmove":"resign","bestmove_kind":"resign","nodes":1000,"time_ms":50,"pv":["7g7f","8h7g"]}]}
+{"schema_version":8,"sfen":"lnsgkg1nl/1r5s1/pppppp1pp/6p2/5B3/2P6/PP1PPPPPP/7R1/LNSGKGSNL w b 6","source":{"kind":"csa","path":"tests/fixtures/sample.csa","ply":5},"tags":{"phase":"opening","side_to_move":"white","in_check":false,"has_capture":false},"observations":[{"engine":"FakeUsiEngine","engine_version":null,"depth":4,"requested_depth":4,"score":{"kind":"cp","value":100},"score_perspective":"side_to_move","score_bound":"exact","bestmove":"7g7f","nodes":1000,"time_ms":50,"pv":["7g7f","8h7g"],"policy_margin_cp":310,"candidates":[{"multipv":1,"bestmove":"7g7f","score":{"kind":"cp","value":100},"score_bound":"exact","pv":["7g7f","8h7g"]},{"multipv":2,"bestmove":"2g2f","score":{"kind":"cp","value":-210},"score_bound":"exact","pv":["2g2f","8h7g"]}]},{"engine":"FakeUsiEngine","engine_version":null,"depth":6,"requested_depth":6,"score":{"kind":"cp","value":100},"score_perspective":"side_to_move","score_bound":"exact","bestmove":"7g7f","nodes":1000,"time_ms":50,"pv":["7g7f","8h7g"],"policy_margin_cp":310,"candidates":[{"multipv":1,"bestmove":"7g7f","score":{"kind":"cp","value":100},"score_bound":"exact","pv":["7g7f","8h7g"]},{"multipv":2,"bestmove":"2g2f","score":{"kind":"cp","value":-210},"score_bound":"exact","pv":["2g2f","8h7g"]}]},{"engine":"engineB","engine_version":null,"depth":4,"requested_depth":4,"score":{"kind":"cp","value":100},"score_perspective":"side_to_move","score_bound":"exact","bestmove":"resign","bestmove_kind":"resign","nodes":1000,"time_ms":50,"pv":["7g7f","8h7g"]}]}
+{"schema_version": 8, "sfen": "lnsgkgsnl/1r5b1/ppppppppp/9/9/2P6/PP1PPPPPP/1B5R1/LNSGKGSNL w - 2", "source": {"kind": "csa", "path": "dup_source.csa", "ply": 1}, "tags": {"phase": "opening", "side_to_move": "white", "in_check": false, "has_capture": false}, "observations": [{"engine": "FakeUsiEngine", "engine_version": null, "depth": 4, "requested_depth": 4, "score": {"kind": "cp", "value": 100}, "score_perspective": "side_to_move", "score_bound": "exact", "bestmove": "7g7f", "nodes": 1000, "time_ms": 50, "pv": ["7g7f", "8h7g"], "policy_margin_cp": 310, "candidates": [{"multipv": 1, "bestmove": "7g7f", "score": {"kind": "cp", "value": 100}, "score_bound": "exact", "pv": ["7g7f", "8h7g"]}, {"multipv": 2, "bestmove": "2g2f", "score": {"kind": "cp", "value": -210}, "score_bound": "exact", "pv": ["2g2f", "8h7g"]}]}, {"engine": "FakeUsiEngine", "engine_version": null, "depth": 6, "requested_depth": 6, "score": {"kind": "cp", "value": 100}, "score_perspective": "side_to_move", "score_bound": "exact", "bestmove": "7g7f", "nodes": 1000, "time_ms": 50, "pv": ["7g7f", "8h7g"], "policy_margin_cp": 310, "candidates": [{"multipv": 1, "bestmove": "7g7f", "score": {"kind": "cp", "value": 100}, "score_bound": "exact", "pv": ["7g7f", "8h7g"]}, {"multipv": 2, "bestmove": "2g2f", "score": {"kind": "cp", "value": -210}, "score_bound": "exact", "pv": ["2g2f", "8h7g"]}]}, {"engine": "engineB", "engine_version": null, "depth": 4, "requested_depth": 4, "score": {"kind": "cp", "value": 100}, "score_perspective": "side_to_move", "score_bound": "exact", "bestmove": "resign", "bestmove_kind": "resign", "nodes": 1000, "time_ms": 50, "pv": ["7g7f", "8h7g"]}]}
+{"schema_version": 8, "sfen": "not-a-valid-sfen", "source": {"kind": "csa", "path": "invalid.csa", "ply": 1}, "tags": {"phase": "endgame", "side_to_move": "black", "in_check": false, "has_capture": false}, "observations": []}
+{"schema_version": 8, "sfen": "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1", "source": {"kind": "csa", "path": "mismatch.csa", "ply": 1}, "tags": {"phase": "middlegame", "side_to_move": "white", "in_check": false, "has_capture": false}, "observations": []}
+{this is not valid json
+"#;
+
+const REPORT_GOLDEN_STDOUT: &str = r#"=== shogiesa report ===
+positions      : 8
+broken lines   : 1
+ply range      : 1–5 (avg 2.2)
+invalid SFENs  : 1
+duplicate SFENs: 1
+tag mismatches : 1  (side_to_move vs SFEN)
+
+schema versions: {8: 8}
+
+phase distribution:
+  endgame           1  (12.5%)
+  middlegame        1  (12.5%)
+  opening           6  (75.0%)
+
+side to move:
+  black             3  (37.5%)
+  white             5  (62.5%)
+
+tag ratios:
+  in-check            0  (0.0%)
+  capture             2  (25.0%)
+
+source files: 4
+  dup_source.csa: 1
+  invalid.csa: 1
+  mismatch.csa: 1
+  tests/fixtures/sample.csa: 5
+
+source dominance:
+  top source     : 62.5%  WARN: too concentrated
+
+balance warnings:
+  opening ratio  : 75.0%  WARN: too high
+  side imbalance : 37.5% / 62.5%  OK
+  duplicate rate : 12.5%  WARN: too high
+
+observations:
+  labeled        :      6  (75.0%)
+  unlabeled      :      2  (25.0%)
+  depth disagree :      0  (0.0% of labeled)
+  engine disagree:      0  (0.0% of 6 multi-engine positions)
+  special bestmove:     6  (100.0% of labeled; resign/win/none)
+  depth counts:
+    depth  4     :     12
+    depth  6     :      6
+  cp/mate ratio  : 18 cp / 0 mate  (0.0% mate)
+  score bound (observations):
+    exact      :     18
+  avg score swing: 0.0cp  (over 6 records with ≥2 cp observations)
+  avg policy margin: 310.0cp  (over 12 observations)
+  multipv coverage:     12  (66.7% of 18 observations)
+  score bound (multipv candidates):
+    exact      :     24
+  requested-depth underreach:      0  (0.0% of 18 observations with a requested_depth)
+
+eval distribution (200cp buckets, deepest observation):
+  unlabeled  :     2  ██████████
+   -200..   -1:     4  ████████████████████
+     +0.. +199:     2  ██████████
+
+score swing distribution (50cp buckets, per record):
+     0..49  :     6  ████████████████████
+
+eval bucket x phase:
+                     endgame  middlegame     opening
+  unlabeled                1           1           0
+  -200..-1                 0           0           4
+  +0..+199                 0           0           2
+
+eval bucket x side:
+                       black       white
+  unlabeled                1           1
+  -200..-1                 0           4
+  +0..+199                 2           0
+"#;
+
+#[test]
+fn report_bounded_streaming_matches_pre_refactor_golden_output() {
+    let mut f = NamedTempFile::new().unwrap();
+    f.write_all(REPORT_GOLDEN_FIXTURE.as_bytes()).unwrap();
+    shogiesa()
+        .args(["report", "--input", f.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(REPORT_GOLDEN_STDOUT);
+}
+
 #[test]
 fn stability_excludes_resign_from_bestmove_agreement() {
     let f = make_labeled_jsonl(&[position(

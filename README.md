@@ -333,7 +333,8 @@ positions with at least one `resign`/`win`/`none` observation — excluded from 
 rates above, not counted as either agreement or disagreement), (when `label --multipv N` (N≥2)
 was used) MultiPV-candidate coverage and a separate `score_bound` distribution scoped to those
 candidates, and (when any observation has a recorded `requested_depth`) a requested-depth
-underreach rate.
+underreach rate. Streams its input in a single pass and never materializes the whole dataset, so
+memory stays flat on multi-GB JSONL.
 
 ### `validate` — data integrity
 

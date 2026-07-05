@@ -155,23 +155,37 @@ shogiesa cache stats  --cache-dir .shogiesa-cache
 shogiesa cache verify --cache-dir .shogiesa-cache
 shogiesa cache prune  --cache-dir .shogiesa-cache --older-than-days 30
 shogiesa cache prune  --cache-dir .shogiesa-cache --corrupted-only --yes
+shogiesa cache prune  --cache-dir .shogiesa-cache --legacy-only --yes
 ```
 
-`cache stats` はエントリ数・合計サイズ・最古/最新エントリの経過日数、そして(各エントリに
-保存された `Observation.engine` フィールドから読み取った)エンジン別分布を表示します。
-`cache verify` は壊れた(パースできない)エントリを検出します。**スコープに関する注記**:
-cache key(`(sfen, engine名/バージョン, engineオプション, engineバイナリのfingerprint,
-requested_depth, multipv, schema_version)`)は一方向ハッシュです — キャッシュされたJSON
-ペイロードは素の `Observation` であり、schema_version/fingerprint のメタデータは保存
-されていません。そのため `verify` は「このエントリは古いschemaでキャッシュされた」や
-「このエントリは現在のエンジンと一致しない」を検出できませんし、そう主張もしません。
-これは正当性の欠陥ではありません — `SCHEMA_VERSION` とengine fingerprintは既にcache key
-自体に組み込まれているため、schemaの変更やengineの変更は今後単に別のキーを生成するだけで、
-古いエントリが誤って再利用されることはなく、単にディスク上の孤立したゴミになるだけです。
-これが `cache prune --older-than-days N` の役割です。`cache prune` はデフォルトでdry-run
-です(削除される内容を報告するだけ)— 実際に削除するには `--yes` を渡してください。
-`--corrupted-only`/`--older-than-days` の少なくとも一方が必須です。両方指定した場合は
-どちらかに一致するものを削除します。
+新しく書かれる全てのcacheエントリは、素の `Observation` ではなく小さなenvelope
+(`cache_schema_version`、`created_at`、`schema_version`、engine名/バージョン/fingerprint/
+fingerprint-mode、`requested_depth`、`multipv`、そして `observation` 自体)として保存されます
+— cache key(`(sfen, engine名/バージョン, engineオプション, engineバイナリのfingerprint,
+requested_depth, multipv, schema_version)`)は既にこれら全てをエンコードしていますが、
+一方向ハッシュなので、ファイル名だけから「これはどのschema_versionだったか」を復元する方法は
+ありません。ペイロード側にも保存しておくことは、書き込み時のコストはゼロで、読み込み時の
+実際の可視化を可能にします。このenvelopeが存在する前に作られたcacheディレクトリも変わらず
+動作します — 全ての読み込みはまず新形式を試し、失敗すれば古い素の `Observation` 形式に
+フォールバックするので、何も移行する必要はなく、削除したものを再ラベル付けする必要も
+ありません。
+
+`cache stats` はエントリ数・合計サイズ・最古/最新エントリの経過日数・エンジン別分布・
+legacy(envelope導入前)エントリ数、そして新しいメタデータを持つエントリについては
+`schema_version`/`engine_fingerprint`/`requested_depth`/`multipv` の分布を表示します。
+`cache verify` は壊れた(どちらの形式としてもパースできない)エントリを検出し、同じ
+legacy/現行の内訳を報告します。**スコープに関する注記**: どちらのコマンドも「このエントリは
+現在のエンジン/schemaと一致するか」という *ライブ* チェックは行いません — それには
+`--engine`/`--engine-fingerprint-mode` 引数をここに追加して現在のfingerprintを再計算し
+比較する必要があり、実在するものの別の機能です。それがなくても正当性の欠陥ではありません
+— `SCHEMA_VERSION` とengine fingerprintは既にcache key自体に組み込まれているため、schemaの
+変更やengineの変更は今後単に別のキーを生成するだけで、古いエントリが誤って再利用される
+ことはなく、単にディスク上の孤立したゴミになるだけです。これが
+`cache prune --older-than-days N` の役割です。`cache prune` はデフォルトでdry-runです
+(削除される内容を報告するだけ)— 実際に削除するには `--yes` を渡してください。
+`--corrupted-only`/`--legacy-only`/`--older-than-days` の少なくとも一つが必須です。
+複数指定した場合はいずれかに一致するものを削除します。`--legacy-only` はenvelope導入前の
+エントリのみを削除します — 新形式が完全に置き換わったと確信できた時のためのものです。
 
 ### `stability` — 安定度スコアの算出
 

@@ -1302,8 +1302,102 @@ fn cache_prune_requires_at_least_one_filter() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "requires --corrupted-only and/or --older-than-days",
+            "requires --corrupted-only, --legacy-only, and/or --older-than-days",
         ));
+}
+
+/// A bare-`Observation` JSON payload -- the cache format every entry used before the v2
+/// envelope existed, still readable via `parse_cache_entry`'s v1 fallback.
+fn legacy_v1_cache_payload() -> String {
+    serde_json::json!({
+        "engine": "FakeUsiEngine", "engine_version": null, "depth": 4,
+        "score": {"kind": "cp", "value": 50}, "bestmove": "7g7f",
+        "nodes": null, "time_ms": null, "pv": null
+    })
+    .to_string()
+}
+
+#[test]
+fn cache_write_path_produces_v2_envelope_not_bare_observation() {
+    let cache_dir = populate_cache_dir();
+    let entries = cache_entry_paths(cache_dir.path());
+    let content = std::fs::read_to_string(&entries[0]).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert!(
+        v.get("observation").is_some(),
+        "v2 entries wrap the Observation under an `observation` key, not at the top level"
+    );
+    assert_eq!(v["cache_schema_version"], 1);
+    assert_eq!(v["schema_version"], 8);
+}
+
+#[test]
+fn cache_verify_and_stats_distinguish_v1_legacy_from_v2_entries() {
+    let cache_dir = populate_cache_dir();
+    let entries = cache_entry_paths(cache_dir.path());
+    // Simulate a cache dir populated before this round: one pre-existing bare-Observation entry
+    // alongside the freshly-written v2 ones.
+    std::fs::write(&entries[0], legacy_v1_cache_payload()).unwrap();
+
+    shogiesa()
+        .args([
+            "cache",
+            "verify",
+            "--cache-dir",
+            cache_dir.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("corrupted     : 0"))
+        .stdout(predicate::str::contains("legacy (v1, no metadata): 1"));
+
+    shogiesa()
+        .args([
+            "cache",
+            "stats",
+            "--cache-dir",
+            cache_dir.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("legacy (v1, no metadata): 1"))
+        .stdout(predicate::str::contains(
+            "schema_version distribution (v2 entries only):",
+        ));
+}
+
+#[test]
+fn cache_prune_legacy_only_removes_only_v1_entries() {
+    let cache_dir = populate_cache_dir();
+    let entries = cache_entry_paths(cache_dir.path());
+    std::fs::write(&entries[0], legacy_v1_cache_payload()).unwrap();
+
+    shogiesa()
+        .args([
+            "cache",
+            "prune",
+            "--cache-dir",
+            cache_dir.path().to_str().unwrap(),
+            "--legacy-only",
+            "--yes",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "deleted 1/1 matched entries (10 total)",
+        ));
+    let remaining = cache_entry_paths(cache_dir.path());
+    assert_eq!(remaining.len(), 9);
+    assert!(
+        !remaining.contains(&entries[0]),
+        "the legacy v1 entry must be gone"
+    );
+    for surviving in &entries[1..] {
+        assert!(
+            remaining.contains(surviving),
+            "v2 entries must survive --legacy-only"
+        );
+    }
 }
 
 // --- filter ---

@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 
@@ -616,6 +617,10 @@ struct CachePruneArgs {
     /// Delete entries whose JSON fails to parse
     #[arg(long)]
     corrupted_only: bool,
+    /// Delete entries in the old (pre-envelope) bare-Observation cache format, once v2 has been
+    /// running long enough that the legacy bucket is confidently redundant
+    #[arg(long)]
+    legacy_only: bool,
     /// Delete entries whose file hasn't been written to in at least this many days
     #[arg(long)]
     older_than_days: Option<u64>,
@@ -762,6 +767,10 @@ struct LabelCache {
     /// otherwise, folding the engine binary itself into the cache key -- see
     /// `compute_engine_fingerprint`.
     engine_fingerprint: Option<u64>,
+    /// Which mode produced `engine_fingerprint` -- stored separately from the `Option<u64>` value
+    /// itself so a v2 `CacheEntry` can record it (an `Option<u64>` alone can't distinguish "no
+    /// fingerprint because mode is `none`" from "no fingerprint because computing it failed").
+    engine_fingerprint_mode: EngineFingerprintMode,
     hits: Arc<AtomicUsize>,
     misses: Arc<AtomicUsize>,
 }
@@ -770,7 +779,13 @@ struct LabelCache {
 /// USI-reported `id name`/`id version`. Those strings are controlled by the engine and aren't
 /// guaranteed to change after a local rebuild, so relying on them alone risks a cache hit
 /// silently reusing labels produced by a different executable.
-#[derive(Clone, Copy, PartialEq, Eq)]
+///
+/// Derives `Serialize`/`Deserialize` purely so a v2 `CacheEntry` (below) can store which mode
+/// produced its `engine_fingerprint` -- the existing hand-rolled `as_str`/`parse` below (used for
+/// CLI arg parsing and the `label --manifest` field) are untouched by this; `serde`'s
+/// `rename_all = "snake_case"` happens to already match those same literal strings.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 enum EngineFingerprintMode {
     /// blake3 of the engine binary's bytes, read once at probe launch. The strongest guarantee,
     /// and negligible cost next to actually running search across a dataset.
@@ -893,6 +908,82 @@ fn engine_options_hash(options: &[(String, String)]) -> u64 {
     hash_parts_u64(&parts)
 }
 
+/// Versions the on-disk cache-file *envelope* shape, distinct from `SCHEMA_VERSION` (which
+/// versions the JSONL/pack `Observation` data model -- the two change independently: an envelope
+/// shape change doesn't imply the `Observation` payload inside it changed, and vice versa).
+/// Deliberately does NOT participate in `label_cache_path`'s hash below: an old (v1) file at a
+/// given key is still a byte-truthful cache hit for that key's `Observation`, just read through
+/// the legacy branch in `parse_cache_entry` -- envelope format is a read-time parsing concern, not
+/// a cache-validity concern. `SCHEMA_VERSION` already changes the key (and therefore the file) by
+/// construction when it bumps; this constant only needs to change if `CacheEntry`'s own field set
+/// changes shape in a future round.
+const CACHE_SCHEMA_VERSION: u32 = 1;
+
+/// A cached label, plus the metadata that produced it. Introduced in this round specifically so
+/// `cache stats`/`verify`/`prune` can report real distributions (which schema/engine/fingerprint/
+/// depth/multipv a cache dir's entries were written under) instead of only corruption/size/age --
+/// the cache *key* already encodes all of this (see `label_cache_path`), but a key is a one-way
+/// hash: there's no way to recover "what schema version was this?" from the filename alone. Storing
+/// it in the payload too costs nothing at write time and unlocks introspection at read time.
+#[derive(Serialize, Deserialize)]
+struct CacheEntry {
+    cache_schema_version: u32,
+    /// Unix epoch seconds (`SystemTime::now()`). No chrono/time/humantime dependency exists
+    /// anywhere in this workspace (`time` is pulled in only transitively via the `csa` crate) --
+    /// adding one solely to format a timestamp string isn't justified when a plain integer works.
+    created_at: u64,
+    schema_version: u32,
+    engine_name: String,
+    engine_version: Option<String>,
+    engine_fingerprint: Option<u64>,
+    engine_fingerprint_mode: EngineFingerprintMode,
+    engine_options_hash: u64,
+    requested_depth: u32,
+    multipv: u32,
+    observation: Observation,
+}
+
+/// Parsed form of one cache file's JSON, regardless of which format wrote it. v2 (`CacheEntry`) is
+/// tried first; v1 (a bare `Observation`, this cache format's shape before this round) is the
+/// fallback. A v1 entry is old-format, not corrupted, and must never be misreported as corrupted
+/// by `cache verify` -- this is the one place every reader (the cache-hit path in
+/// `analyze_record`, and `cache stats`/`verify`/`prune`) goes through, so "v1 vs v2 vs actually
+/// corrupted" can't drift into disagreeing answers across those call sites.
+enum CacheRead {
+    V2(CacheEntry),
+    V1(Observation),
+}
+
+impl CacheRead {
+    fn observation(&self) -> &Observation {
+        match self {
+            Self::V2(entry) => &entry.observation,
+            Self::V1(obs) => obs,
+        }
+    }
+
+    fn into_observation(self) -> Observation {
+        match self {
+            Self::V2(entry) => entry.observation,
+            Self::V1(obs) => obs,
+        }
+    }
+}
+
+/// v2 tried first since it's the active write format (most reads will be a v2 hit) -- not because
+/// the reverse order would misparse: `CacheEntry`'s required fields (`cache_schema_version`,
+/// `observation`, ...) and `Observation`'s (`engine`, `depth`, `score`, `bestmove`, ...) don't
+/// overlap, so each format's JSON object correctly fails the other's shape and falls through
+/// either way (verified directly: swapping this order doesn't break any test).
+fn parse_cache_entry(json: &str) -> Option<CacheRead> {
+    if let Ok(entry) = serde_json::from_str::<CacheEntry>(json) {
+        return Some(CacheRead::V2(entry));
+    }
+    serde_json::from_str::<Observation>(json)
+        .ok()
+        .map(CacheRead::V1)
+}
+
 // Why cache at all: labeling (running the engine) is the dominant cost of the whole pipeline.
 // The same engine run against the same position at the same requested depth always produces the
 // same observation, so repeated experiments (tuning filter/select downstream, re-running after a
@@ -1001,7 +1092,8 @@ fn analyze_record(
         let cached: Option<Observation> = cache_path.as_ref().and_then(|path| {
             let hit = fs::read_to_string(path)
                 .ok()
-                .and_then(|s| serde_json::from_str(&s).ok());
+                .and_then(|s| parse_cache_entry(&s))
+                .map(CacheRead::into_observation);
             if let Some(c) = cache {
                 c.hits.fetch_add(hit.is_some() as usize, Ordering::Relaxed);
                 c.misses
@@ -1037,8 +1129,28 @@ fn analyze_record(
                         if let Some(parent) = path.parent() {
                             let _ = fs::create_dir_all(parent);
                         }
-                        if let Ok(json) = serde_json::to_string(&obs) {
-                            let _ = write_cache_entry_atomically(path, &json);
+                        // Cache writes always produce v2 (CacheEntry) -- only the read path needs
+                        // to understand v1, for cache dirs populated before this round.
+                        if let Some(c) = cache {
+                            let entry = CacheEntry {
+                                cache_schema_version: CACHE_SCHEMA_VERSION,
+                                created_at: std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_secs())
+                                    .unwrap_or(0),
+                                schema_version: SCHEMA_VERSION,
+                                engine_name: obs.engine.clone(),
+                                engine_version: obs.engine_version.clone(),
+                                engine_fingerprint: c.engine_fingerprint,
+                                engine_fingerprint_mode: c.engine_fingerprint_mode,
+                                engine_options_hash: c.engine_options_hash,
+                                requested_depth: depth,
+                                multipv: c.multipv,
+                                observation: obs.clone(),
+                            };
+                            if let Ok(json) = serde_json::to_string(&entry) {
+                                let _ = write_cache_entry_atomically(path, &json);
+                            }
                         }
                     }
                     Some(obs)
@@ -1139,6 +1251,7 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
                 engine_options_hash: engine_options_hash(&engine_options),
                 multipv: args.multipv,
                 engine_fingerprint,
+                engine_fingerprint_mode,
                 hits: Arc::new(AtomicUsize::new(0)),
                 misses: Arc::new(AtomicUsize::new(0)),
             }))
@@ -3838,9 +3951,16 @@ fn cmd_cache_stats(args: CacheStatsArgs) -> Result<()> {
     let mut total_bytes = 0u64;
     let mut oldest: Option<std::time::SystemTime> = None;
     let mut newest: Option<std::time::SystemTime> = None;
-    // Parsed straight from each entry's bare `Observation.engine` field -- genuinely present in
-    // every payload, not inferred from the (otherwise opaque, one-way-hashed) cache key/path.
+    // Parsed straight from each entry's `Observation.engine` field -- present in both v1 and v2
+    // payloads, not inferred from the (otherwise opaque, one-way-hashed) cache key/path.
     let mut engine_counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut legacy_v1_count = 0usize;
+    // These four distributions only exist for v2 entries -- a v1 payload is a bare `Observation`
+    // with no schema_version/engine_fingerprint/requested_depth/multipv of its own to report.
+    let mut schema_version_counts: BTreeMap<u32, usize> = BTreeMap::new();
+    let mut fingerprint_counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut requested_depth_counts: BTreeMap<u32, usize> = BTreeMap::new();
+    let mut multipv_counts: BTreeMap<u32, usize> = BTreeMap::new();
 
     for path in &entries {
         if let Ok(meta) = fs::metadata(path) {
@@ -3850,11 +3970,30 @@ fn cmd_cache_stats(args: CacheStatsArgs) -> Result<()> {
                 newest = Some(newest.map_or(modified, |n| n.max(modified)));
             }
         }
-        if let Some(obs) = fs::read_to_string(path)
+        if let Some(parsed) = fs::read_to_string(path)
             .ok()
-            .and_then(|s| serde_json::from_str::<Observation>(&s).ok())
+            .and_then(|s| parse_cache_entry(&s))
         {
-            *engine_counts.entry(obs.engine).or_default() += 1;
+            *engine_counts
+                .entry(parsed.observation().engine.clone())
+                .or_default() += 1;
+            match &parsed {
+                CacheRead::V1(_) => legacy_v1_count += 1,
+                CacheRead::V2(entry) => {
+                    *schema_version_counts
+                        .entry(entry.schema_version)
+                        .or_default() += 1;
+                    let fingerprint_key = entry
+                        .engine_fingerprint
+                        .map(|fp| format!("{fp:016x}"))
+                        .unwrap_or_else(|| "none".to_string());
+                    *fingerprint_counts.entry(fingerprint_key).or_default() += 1;
+                    *requested_depth_counts
+                        .entry(entry.requested_depth)
+                        .or_default() += 1;
+                    *multipv_counts.entry(entry.multipv).or_default() += 1;
+                }
+            }
         }
     }
 
@@ -3874,35 +4013,85 @@ fn cmd_cache_stats(args: CacheStatsArgs) -> Result<()> {
             println!("  {engine:<20} {count:>6}");
         }
     }
+    if legacy_v1_count > 0 {
+        println!("legacy (v1, no metadata): {legacy_v1_count} entries");
+    }
+    if !schema_version_counts.is_empty() {
+        println!("schema_version distribution (v2 entries only):");
+        for (v, count) in &schema_version_counts {
+            println!("  {v:<20} {count:>6}");
+        }
+    }
+    if !fingerprint_counts.is_empty() {
+        println!("engine_fingerprint distribution (v2 entries only):");
+        for (fp, count) in &fingerprint_counts {
+            println!("  {fp:<20} {count:>6}");
+        }
+    }
+    if !requested_depth_counts.is_empty() {
+        println!("requested_depth distribution (v2 entries only):");
+        for (d, count) in &requested_depth_counts {
+            println!("  {d:<20} {count:>6}");
+        }
+    }
+    if !multipv_counts.is_empty() {
+        println!("multipv distribution (v2 entries only):");
+        for (m, count) in &multipv_counts {
+            println!("  {m:<20} {count:>6}");
+        }
+    }
     Ok(())
 }
 
 fn cmd_cache_verify(args: CacheVerifyArgs) -> Result<()> {
     let entries = walk_cache_entries(&args.cache_dir)?;
     let mut corrupted = 0usize;
+    let mut legacy_v1_count = 0usize;
+    let mut schema_version_counts: BTreeMap<u32, usize> = BTreeMap::new();
+
     for path in &entries {
-        let ok = fs::read_to_string(path)
+        match fs::read_to_string(path)
             .ok()
-            .and_then(|s| serde_json::from_str::<Observation>(&s).ok())
-            .is_some();
-        if !ok {
-            corrupted += 1;
-            tracing::warn!(path = %path.display(), "corrupted cache entry");
+            .and_then(|s| parse_cache_entry(&s))
+        {
+            Some(CacheRead::V1(_)) => legacy_v1_count += 1,
+            Some(CacheRead::V2(entry)) => {
+                *schema_version_counts
+                    .entry(entry.schema_version)
+                    .or_default() += 1;
+            }
+            None => {
+                corrupted += 1;
+                tracing::warn!(path = %path.display(), "corrupted cache entry");
+            }
         }
     }
+
     println!("cache entries : {}", entries.len());
     println!("corrupted     : {corrupted}");
-    // Deliberately not claiming schema/fingerprint-staleness detection: label_cache_path already
-    // folds SCHEMA_VERSION and the engine fingerprint into the (one-way) cache key hash, so a
-    // schema bump or a different engine binary simply produces a different key -- a stale entry
-    // is never wrongly returned as a hit, it's just orphaned dead weight this command doesn't (and
-    // honestly can't, since the payload stores no schema_version/engine_fingerprint of its own)
-    // detect.
+    if legacy_v1_count > 0 {
+        println!("legacy (v1, no metadata): {legacy_v1_count} entries");
+    }
+    if !schema_version_counts.is_empty() {
+        println!("schema_version distribution (v2 entries only):");
+        for (v, count) in &schema_version_counts {
+            println!("  {v:<20} {count:>6}");
+        }
+    }
+    // Deliberately not claiming a LIVE staleness check ("does this entry match today's engine/
+    // schema"): label_cache_path already folds SCHEMA_VERSION and the engine fingerprint into the
+    // (one-way) cache key hash, so a schema bump or a different engine binary simply produces a
+    // different key -- a stale entry is never wrongly returned as a hit, it's just orphaned dead
+    // weight. A true live check would need this command to also take --engine/
+    // --engine-fingerprint-mode to recompute today's fingerprint and compare -- a real but
+    // separate feature, not built here; v1 legacy entries have no metadata to check against in
+    // the first place.
     println!(
-        "note: cache entries store no schema_version/engine_fingerprint metadata -- a schema \
-         bump or engine change already changes future cache keys by construction (see \
-         label_cache_path), so a stale entry is never wrongly reused, just orphaned; this command \
-         cannot and does not detect that staleness, only JSON corruption."
+        "note: v1 (legacy) entries store no schema_version/engine_fingerprint metadata; v2 \
+         entries do (see the distribution above). Neither format supports a live \"does this \
+         match today's engine/schema\" check here -- a schema bump or engine change already \
+         changes future cache keys by construction (see label_cache_path), so a stale entry is \
+         never wrongly reused, just orphaned."
     );
     Ok(())
 }
@@ -3916,8 +4105,10 @@ fn file_age(path: &Path, now: std::time::SystemTime) -> Option<std::time::Durati
 }
 
 fn cmd_cache_prune(args: CachePruneArgs) -> Result<()> {
-    if !args.corrupted_only && args.older_than_days.is_none() {
-        anyhow::bail!("cache prune requires --corrupted-only and/or --older-than-days");
+    if !args.corrupted_only && !args.legacy_only && args.older_than_days.is_none() {
+        anyhow::bail!(
+            "cache prune requires --corrupted-only, --legacy-only, and/or --older-than-days"
+        );
     }
     let entries = walk_cache_entries(&args.cache_dir)?;
     let now = std::time::SystemTime::now();
@@ -3928,13 +4119,14 @@ fn cmd_cache_prune(args: CachePruneArgs) -> Result<()> {
     let mut to_delete = Vec::new();
     for path in &entries {
         let mut matched = false;
-        if args.corrupted_only {
-            let ok = fs::read_to_string(path)
+        if args.corrupted_only || args.legacy_only {
+            let parsed = fs::read_to_string(path)
                 .ok()
-                .and_then(|s| serde_json::from_str::<Observation>(&s).ok())
-                .is_some();
-            if !ok {
-                matched = true;
+                .and_then(|s| parse_cache_entry(&s));
+            match &parsed {
+                None if args.corrupted_only => matched = true,
+                Some(CacheRead::V1(_)) if args.legacy_only => matched = true,
+                _ => {}
             }
         }
         if let Some(max_age) = max_age
@@ -4698,6 +4890,7 @@ mod fingerprint_tests {
             engine_options_hash: engine_options_hash(&[]),
             multipv: 1,
             engine_fingerprint: None,
+            engine_fingerprint_mode: EngineFingerprintMode::None,
             hits: Arc::new(AtomicUsize::new(0)),
             misses: Arc::new(AtomicUsize::new(0)),
         };
@@ -4718,6 +4911,11 @@ mod label_cache_correctness_tests {
             engine_options_hash: engine_options_hash(&[]),
             multipv: 1,
             engine_fingerprint: fp,
+            engine_fingerprint_mode: if fp.is_some() {
+                EngineFingerprintMode::Content
+            } else {
+                EngineFingerprintMode::None
+            },
             hits: Arc::new(AtomicUsize::new(0)),
             misses: Arc::new(AtomicUsize::new(0)),
         }

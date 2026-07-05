@@ -150,21 +150,34 @@ shogiesa cache stats  --cache-dir .shogiesa-cache
 shogiesa cache verify --cache-dir .shogiesa-cache
 shogiesa cache prune  --cache-dir .shogiesa-cache --older-than-days 30
 shogiesa cache prune  --cache-dir .shogiesa-cache --corrupted-only --yes
+shogiesa cache prune  --cache-dir .shogiesa-cache --legacy-only --yes
 ```
 
-`cache stats` reports entry count, total size, oldest/newest entry age (in days), and a per-engine
-distribution (read straight from each entry's stored `Observation.engine` field). `cache verify`
-detects corrupted (unparseable) entries. **Scope note**: the cache key
+Every new cache entry is written as a small envelope (`cache_schema_version`, `created_at`,
+`schema_version`, engine name/version/fingerprint/fingerprint-mode, `requested_depth`, `multipv`,
+and the `observation` itself) instead of a bare `Observation` — the cache *key*
 (`(sfen, engine name/version, engine options, engine binary fingerprint, requested depth, multipv,
-schema version)`) is a one-way hash — the cached JSON payload is a bare `Observation` with no
-stored schema-version/fingerprint metadata, so `verify` genuinely can't (and doesn't claim to)
-detect "this entry was cached under an old schema" or "this entry doesn't match today's engine."
-That's not a correctness gap: `SCHEMA_VERSION` and the engine fingerprint are already folded into
-the key itself, so a schema bump or engine change simply produces a different key going forward —
-a stale entry is never wrongly reused, it's just orphaned dead weight on disk, which is what `cache
-prune --older-than-days N` is for. `cache prune` is dry-run by default (reports what would be
-deleted) — pass `--yes` to actually delete. Requires at least one of `--corrupted-only`/
-`--older-than-days`; combining both deletes anything matching either.
+schema version)`) already encodes all of this, but it's a one-way hash: there's no way to recover
+"what schema version was this?" from the filename alone. Storing it in the payload too costs
+nothing at write time and unlocks real introspection at read time. Cache dirs populated before
+this envelope existed keep working unchanged — every read tries the new format first, falling back
+to the old bare-`Observation` shape, so nothing needs migrating and nothing you deleted needs
+re-labeling.
+
+`cache stats` reports entry count, total size, oldest/newest entry age (in days), a per-engine
+distribution, a legacy (pre-envelope) entry count, and — for entries with the new metadata —
+`schema_version`/`engine_fingerprint`/`requested_depth`/`multipv` distributions. `cache verify`
+detects corrupted (unparseable-as-either-format) entries and reports the same legacy/current split.
+**Scope note**: neither command does a *live* "does this entry match today's engine/schema" check
+— that would need `--engine`/`--engine-fingerprint-mode` arguments here to recompute the current
+fingerprint and compare, a real but separate feature. It's also not a correctness gap without it:
+`SCHEMA_VERSION` and the engine fingerprint are already folded into the cache key itself, so a
+schema bump or engine change simply produces a different key going forward — a stale entry is
+never wrongly reused, it's just orphaned dead weight on disk, which is what `cache prune
+--older-than-days N` is for. `cache prune` is dry-run by default (reports what would be deleted) —
+pass `--yes` to actually delete. Requires at least one of `--corrupted-only`/`--legacy-only`/
+`--older-than-days`; combining flags deletes anything matching any of them. `--legacy-only` deletes
+only pre-envelope entries, for once you're confident the new format has fully replaced them.
 
 ### `stability` — compute stability scores
 

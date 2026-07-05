@@ -5835,4 +5835,27 @@ mod merge_observations_tests {
         assert_eq!(collisions, 0);
         assert_eq!(base.len(), 2);
     }
+
+    #[test]
+    fn shallow_and_deep_same_engine_never_collide_under_any_policy() {
+        // The flagship use case this command exists for -- a shallow pass (depth 4) plus a
+        // deeper relabel (depth 12) of the same engine -- has DIFFERENT depths, so it never
+        // collides on (engine, engine_version, depth, requested_depth) no matter which
+        // --on-collision policy is chosen: both observations always survive. `--on-collision`
+        // only ever matters when two passes produced the exact same (engine, engine_version,
+        // depth, requested_depth) tuple (e.g. a flaky re-run at the identical depth) -- it is
+        // NOT a "the deeper one wins" switch, since depth is part of the key that determines
+        // whether there's a collision to resolve in the first place.
+        for policy in [
+            MergeObservationPolicy::KeepBoth,
+            MergeObservationPolicy::PreferPrimary,
+            MergeObservationPolicy::PreferSecondary,
+        ] {
+            let mut base = vec![obs("e1", 4, Some(4), "7g7f")];
+            let deep = vec![obs("e1", 12, Some(12), "3c3d")];
+            let collisions = merge_observations_into(&mut base, deep, policy);
+            assert_eq!(collisions, 0);
+            assert_eq!(base.len(), 2, "both depths must survive under every policy");
+        }
+    }
 }

@@ -233,8 +233,15 @@ shogiesa merge-observations --primary observations.jsonl --secondary deep_observ
 - `keep-both`(デフォルト)— 両方の観測値が残ります。データ損失なし。`label` 自身の
   `ExistingPolicy::Append` がデフォルトである規約と同じです。
 - `prefer-primary` — 衝突時に `--primary` 側の観測値が勝ちます。
-- `prefer-secondary` — 衝突時に `--secondary` 側の観測値が勝ちます(例:「深い再labelパスを
-  優先したい」場合)。
+- `prefer-secondary` — 衝突時に `--secondary` 側の観測値が勝ちます。
+
+**重要: `--on-collision` は「深いdepthが勝つ」スイッチではありません。** `depth` は衝突キーの
+一部であるため、浅いパス(depth 4)と深い再label(depth 12)は同一局面でもキーが異なり、
+衝突しません — どちらのポリシーでも両方残ります。これは `label --depths 4,12` を素で実行した
+場合と同じ結果です。`--on-collision` が解決するのはもっと狭いケース、つまり2つのパスが
+全く同じ `(engine, engine_version, depth, requested_depth)` の組を生成した場合だけです
+(例: 同一depthでのflakyな再実行)。深いパスで浅いパスを完全に置き換えたい場合は、マージする
+前に `--primary` 側から浅い観測値を自分で取り除いてください(例: `filter --min-depth-reached`)。
 
 マージされたレコードの `stability` はクリアされます — 片方の観測値だけから計算されたもので、
 統合後の集合を誤って表してしまうためです。マージ後に `stability` を再実行してください。

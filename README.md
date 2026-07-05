@@ -225,8 +225,16 @@ depth would be a real bug here.
 - `keep-both` (default) — both observations survive, no data loss. Matches `label`'s own
   `ExistingPolicy::Append`-is-default convention.
 - `prefer-primary` — the `--primary` file's observation wins on a collision.
-- `prefer-secondary` — the `--secondary` file's observation wins (e.g. "the deeper relabel pass
-  should win").
+- `prefer-secondary` — the `--secondary` file's observation wins on a collision.
+
+**Important: `--on-collision` is not a "the deeper depth wins" switch.** Because `depth` is part
+of the collision key, a shallow pass (depth 4) and a deeper relabel (depth 12) of the same
+position have *different* keys and never collide — both survive under every policy, same as
+`label --depths 4,12` would natively produce. `--on-collision` only resolves the narrower case of
+two passes landing on the exact same `(engine, engine_version, depth, requested_depth)` tuple
+(e.g. a flaky re-run at an identical depth). If you want a deeper pass to fully supersede a
+shallower one rather than accumulate alongside it, filter the shallow observations out of
+`--primary` yourself before merging (e.g. via `filter --min-depth-reached`).
 
 A merged record's `stability` is cleared — it was computed from only one side's observations and
 would otherwise silently misrepresent the combined set. Re-run `stability` after merging.

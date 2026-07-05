@@ -1861,6 +1861,13 @@ fn eval_black(rec: &PositionRecord) -> Option<i32> {
 /// restricted to labeled positions. Shared by `mine` (its original purpose) and
 /// `select --strategy hard` (one of several "worth a closer look" signals there), so the two
 /// commands' definition of "blunder-adjacent" can't drift apart.
+///
+/// ponytail: both callers still fully materialize their input (`load_records`), unlike
+/// `sample`/`select --strategy uncertain|coverage`/`balance`/`report`'s bounded-memory streaming.
+/// This needs a whole game's positions grouped together, which isn't safe to stream without
+/// assuming the input is contiguously grouped by source -- an assumption this codebase doesn't
+/// guarantee elsewhere. Upgrade path if this specific command is shown to actually hit a memory
+/// limit: require/verify source-contiguous input, then stream per-game windows instead.
 fn blunder_adjacent_indices(
     records: &[PositionRecord],
     blunder_threshold: i32,

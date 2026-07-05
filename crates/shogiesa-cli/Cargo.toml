@@ -14,11 +14,11 @@ name = "shogiesa"
 path = "src/main.rs"
 
 [dependencies]
-shogiesa-core = { path = "../shogiesa-core", version = "0.5" }
-shogiesa-csa = { path = "../shogiesa-csa", version = "0.5" }
-shogiesa-kif = { path = "../shogiesa-kif", version = "0.5" }
-shogiesa-usi = { path = "../shogiesa-usi", version = "0.5" }
-shogiesa-pack = { path = "../shogiesa-pack", version = "0.5" }
+shogiesa-core = { path = "../shogiesa-core", version = "0.6" }
+shogiesa-csa = { path = "../shogiesa-csa", version = "0.6" }
+shogiesa-kif = { path = "../shogiesa-kif", version = "0.6" }
+shogiesa-usi = { path = "../shogiesa-usi", version = "0.6" }
+shogiesa-pack = { path = "../shogiesa-pack", version = "0.6" }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

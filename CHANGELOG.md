@@ -6,7 +6,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ---
 
-## [Unreleased]
+## [0.6.0] — 2026-07-05
 
 ### Added
 - `shogiesa_core::requested_depth_underreached(obs: &Observation) -> bool` — the mate-exempt "did this observation fall short of the depth `label` asked it to reach" check, extracted from `evaluate_quality`'s `require_requested_depth_reached` gate and the CLI's `accumulate_requested_depth`, which each previously inlined the identical logic independently. No behavior change.

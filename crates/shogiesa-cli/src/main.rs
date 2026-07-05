@@ -8,8 +8,6 @@ use clap::{Parser, Subcommand};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 
-use std::hash::{Hash, Hasher};
-
 use shogiesa_core::{
     GamePhase, Observation, PositionRecord, QualityConfig, SCHEMA_VERSION, Score, SideToMove,
     SourceInfo, engine_bestmove_agreement, evaluate_quality, score_swing, sfen::Sfen,
@@ -525,17 +523,44 @@ struct LabelCache {
     misses: Arc<AtomicUsize>,
 }
 
+// Why blake3, not `std::collections::hash_map::DefaultHasher`: DefaultHasher is deterministic
+// within one build, but std's own docs disclaim stability *across Rust toolchain versions* --
+// every use below is persisted (a cache filename, a manifest fingerprint, or the outcome of a
+// split/sample/select decision written to an output file), so a future toolchain silently
+// changing the digest would break reproducibility with no error. blake3's digest for a fixed
+// input is stable forever by spec, which is the actual property this tool's reproducibility
+// mandate needs.
+
+/// Hashes each part with an explicit length prefix so a naive concatenation can't collide across
+/// a field boundary (e.g. `"ab"+"c"` vs `"a"+"bc"`) regardless of what the fields contain --
+/// used everywhere a persistent, multi-field fingerprint is built.
+fn hash_parts(parts: &[&[u8]]) -> blake3::Hash {
+    let mut h = blake3::Hasher::new();
+    for p in parts {
+        h.update(&(p.len() as u64).to_le_bytes());
+        h.update(p);
+    }
+    h.finalize()
+}
+
+/// Truncates a blake3 digest to a `u64` for callers that need a plain integer (a sort key, or an
+/// `f64` normalization) rather than a persisted filename/string -- blake3 is cryptographic
+/// strength, so the leading 8 bytes stay uniformly distributed after truncation.
+fn hash_parts_u64(parts: &[&[u8]]) -> u64 {
+    u64::from_le_bytes(hash_parts(parts).as_bytes()[..8].try_into().unwrap())
+}
+
 /// Hash of the resolved USI engine options, sorted so option order doesn't change the label
 /// cache key below.
 fn engine_options_hash(options: &[(String, String)]) -> u64 {
     let mut sorted: Vec<&(String, String)> = options.iter().collect();
     sorted.sort();
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    for (k, v) in sorted {
-        k.hash(&mut h);
-        v.hash(&mut h);
+    let mut parts: Vec<&[u8]> = Vec::with_capacity(sorted.len() * 2);
+    for (k, v) in &sorted {
+        parts.push(k.as_bytes());
+        parts.push(v.as_bytes());
     }
-    h.finish()
+    hash_parts_u64(&parts)
 }
 
 // Why cache at all: labeling (running the engine) is the dominant cost of the whole pipeline.
@@ -551,15 +576,28 @@ fn label_cache_path(
     engine_version: Option<&str>,
     requested_depth: u32,
 ) -> PathBuf {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    sfen.hash(&mut h);
-    engine_name.hash(&mut h);
-    engine_version.hash(&mut h);
-    cache.engine_options_hash.hash(&mut h);
-    requested_depth.hash(&mut h);
-    cache.multipv.hash(&mut h);
-    SCHEMA_VERSION.hash(&mut h);
-    let key = format!("{:016x}", h.finish());
+    // Why an explicit discriminant byte for `engine_version`, not a sentinel string: `None` must
+    // never collide with `Some("")` (or any other literal an engine could plausibly report).
+    let (version_tag, version_bytes): (&[u8], &[u8]) = match engine_version {
+        Some(v) => (&[1], v.as_bytes()),
+        None => (&[0], &[]),
+    };
+    let engine_options_hash_bytes = cache.engine_options_hash.to_le_bytes();
+    let requested_depth_bytes = requested_depth.to_le_bytes();
+    let multipv_bytes = cache.multipv.to_le_bytes();
+    let schema_version_bytes = SCHEMA_VERSION.to_le_bytes();
+    let key = hash_parts(&[
+        sfen.as_bytes(),
+        engine_name.as_bytes(),
+        version_tag,
+        version_bytes,
+        &engine_options_hash_bytes,
+        &requested_depth_bytes,
+        &multipv_bytes,
+        &schema_version_bytes,
+    ])
+    .to_hex()
+    .to_string();
     cache.dir.join(&key[0..2]).join(format!("{key}.json"))
 }
 
@@ -765,9 +803,15 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
     let done = Arc::new(AtomicUsize::new(0));
 
     // Reader: streams the input line-by-line so the whole dataset is never resident in memory --
-    // only ever `queue_depth` records at a time, enforced by the permit acquire below.
+    // only ever `queue_depth` records at a time, enforced by the permit acquire below. It also
+    // accumulates the manifest's `input_hash` over the same lines it's already reading -- calling
+    // `hash_file` afterward, like every other manifest-producing command does, would mean
+    // re-opening and re-reading the whole input a second time purely to hash it, defeating the
+    // point of streaming in the first place.
     let input_path = args.input.clone();
-    let reader_handle = std::thread::spawn(move || -> Result<(u64, usize)> {
+    let track_input_hash = args.manifest.is_some();
+    let reader_handle = std::thread::spawn(move || -> Result<(u64, usize, String)> {
+        let mut input_hasher = blake3::Hasher::new();
         let file =
             File::open(&input_path).with_context(|| format!("cannot open {input_path:?}"))?;
         let reader = BufReader::new(file);
@@ -775,6 +819,13 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
         let mut skipped = 0usize;
         for (i, line) in reader.lines().enumerate() {
             let line = line.with_context(|| format!("cannot read {input_path:?}"))?;
+            if track_input_hash {
+                // Hash every line, including blanks, before the empty-line skip below -- this has
+                // to match `hash_file`'s behavior exactly so the same input produces the same
+                // `input_hash` whether `label` or `sample`/`balance`/`pack`/`filter` computed it.
+                input_hasher.update(line.as_bytes());
+                input_hasher.update(b"\n");
+            }
             if line.trim().is_empty() {
                 continue;
             }
@@ -797,7 +848,11 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
                 }
             }
         }
-        Ok((job_id, skipped))
+        Ok((
+            job_id,
+            skipped,
+            input_hasher.finalize().to_hex().to_string(),
+        ))
     });
 
     // Workers: each owns one long-lived USI engine for its whole lifetime, launched lazily on
@@ -907,7 +962,7 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
     out_writer.flush()?;
     eprintln!();
 
-    let (total, skipped) = reader_handle
+    let (total, skipped, input_hash) = reader_handle
         .join()
         .map_err(|_| anyhow::anyhow!("label reader thread panicked"))??;
     for handle in worker_handles {
@@ -931,7 +986,7 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
         args.out
     );
     if let Some(mut manifest) = manifest {
-        manifest.input_hash = hash_file(&args.input)?;
+        manifest.input_hash = input_hash;
         manifest.records_read = total as usize;
         manifest.records_kept = written;
         manifest.records_dropped = skipped;
@@ -1075,7 +1130,7 @@ fn cmd_split(args: SplitArgs) -> Result<()> {
     Ok(())
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum SplitBucket {
     Test,
     Valid,
@@ -1106,10 +1161,8 @@ fn split_root_key(source: &SourceInfo) -> &str {
 }
 
 fn assign_split_bucket(seed: u64, root_key: &str, valid_frac: f64, test_frac: f64) -> SplitBucket {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    seed.hash(&mut h);
-    root_key.hash(&mut h);
-    let unit = h.finish() as f64 / u64::MAX as f64;
+    let seed_bytes = seed.to_le_bytes();
+    let unit = hash_parts_u64(&[&seed_bytes, root_key.as_bytes()]) as f64 / u64::MAX as f64;
     if unit < test_frac {
         SplitBucket::Test
     } else if unit < test_frac + valid_frac {
@@ -1219,10 +1272,14 @@ fn cmd_split_train_valid_test(args: SplitArgs) -> Result<()> {
     Ok(())
 }
 
-/// Opt-in run provenance, written when `--manifest PATH` is given. `input_hash` is a plain
-/// `DefaultHasher` digest (same mechanism already used by `assign_split_bucket`/`cmd_sample`),
-/// not a cryptographic SHA-256 — this is a "did the input change between runs" marker, not an
-/// integrity check against untrusted input, so it isn't worth a new dependency.
+/// Opt-in run provenance, written when `--manifest PATH` is given. `input_hash` is a blake3
+/// digest (same mechanism used everywhere else a persistent fingerprint is needed — see
+/// `hash_parts`) — this is a "did the input change between runs" marker, not an integrity check
+/// against untrusted input, but it still needs to be stable across Rust toolchain upgrades, which
+/// is exactly what blake3 (and not `std::collections::hash_map::DefaultHasher`) guarantees.
+/// `fingerprint_algorithm` records which algorithm produced `input_hash`, so a manifest from
+/// before this field existed (and thus hashed with the old, toolchain-unstable `DefaultHasher`)
+/// stays distinguishable from one produced after, rather than the two silently looking comparable.
 #[derive(serde::Serialize)]
 struct RunManifest {
     shogiesa_version: &'static str,
@@ -1233,6 +1290,7 @@ struct RunManifest {
     args: Vec<String>,
     input_path: String,
     input_hash: String,
+    fingerprint_algorithm: &'static str,
     records_read: usize,
     records_kept: usize,
     /// Meaning is command-specific: parse-skips for `pack`, not-selected for `sample`/
@@ -1282,6 +1340,7 @@ impl RunManifest {
             args: std::env::args().collect(),
             input_path: input_path.display().to_string(),
             input_hash: String::new(),
+            fingerprint_algorithm: "blake3",
             records_read: 0,
             records_kept: 0,
             records_dropped: 0,
@@ -1311,20 +1370,21 @@ fn write_manifest(path: &Path, manifest: &RunManifest) -> Result<()> {
         .with_context(|| format!("cannot write {path:?}"))
 }
 
-/// Hash a whole file's bytes with `DefaultHasher`. Only called when `--manifest` is given, on
-/// commands that already fully materialize their input (`sample`/`balance`) — an extra read is
-/// acceptable there since they aren't streaming to begin with.
-/// Hashes line-by-line (content + `\n` per line) to match `cmd_pack`/`cmd_filter`'s inline
-/// streaming hash exactly — so the same input file gets the same `input_hash` in a manifest
-/// regardless of which command produced it.
+/// Hashes a file's lines (content + `\n` per line) with blake3. Only called when `--manifest` is
+/// given, on commands that already fully materialize their input (`sample`/`balance`) — an extra
+/// read is acceptable there since they aren't streaming to begin with (`label` accumulates its
+/// own input hash while streaming instead of calling this, to avoid a redundant second read).
+/// Hashes line-by-line to match `cmd_pack`/`cmd_filter`'s inline streaming hash exactly — so the
+/// same input file gets the same `input_hash` in a manifest regardless of which command produced
+/// it.
 fn hash_file(path: &Path) -> Result<String> {
     let reader = BufReader::new(File::open(path).with_context(|| format!("cannot open {path:?}"))?);
-    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let mut h = blake3::Hasher::new();
     for line in reader.lines() {
-        h.write(line?.as_bytes());
-        h.write(b"\n");
+        h.update(line?.as_bytes());
+        h.update(b"\n");
     }
-    Ok(format!("{:016x}", h.finish()))
+    Ok(h.finalize().to_hex().to_string())
 }
 
 /// Tally labeled/unlabeled records, MultiPV candidate coverage, and score-bound distribution
@@ -1402,10 +1462,8 @@ fn accumulate_coverage(manifest: &mut RunManifest, records: &[PositionRecord]) {
 /// `sample` (to pick which positions) and `select` (to break ties within a rank), so "pick N
 /// deterministically" behaves identically wherever it's used.
 fn seeded_hash(seed: u64, s: &str) -> u64 {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    seed.hash(&mut h);
-    s.hash(&mut h);
-    h.finish()
+    let seed_bytes = seed.to_le_bytes();
+    hash_parts_u64(&[&seed_bytes, s.as_bytes()])
 }
 
 fn cmd_sample(args: SampleArgs) -> Result<()> {
@@ -1770,12 +1828,12 @@ fn cmd_pack(args: PackArgs) -> Result<()> {
         .manifest
         .is_some()
         .then(|| RunManifest::new("pack", &args.input));
-    let mut input_hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut input_hasher = blake3::Hasher::new();
     for (i, line) in reader.lines().enumerate() {
         let line = line?;
         if manifest.is_some() {
-            input_hasher.write(line.as_bytes());
-            input_hasher.write(b"\n");
+            input_hasher.update(line.as_bytes());
+            input_hasher.update(b"\n");
         }
         if line.trim().is_empty() {
             continue;
@@ -1797,7 +1855,7 @@ fn cmd_pack(args: PackArgs) -> Result<()> {
     writer.flush()?;
     eprintln!("done: {total} packed, {skipped} skipped → {:?}", args.out);
     if let (Some(mut m), Some(manifest_path)) = (manifest, &args.manifest) {
-        m.input_hash = format!("{:016x}", input_hasher.finish());
+        m.input_hash = input_hasher.finalize().to_hex().to_string();
         m.records_read = total + skipped;
         m.records_kept = total;
         m.records_dropped = skipped;
@@ -1897,13 +1955,13 @@ fn cmd_filter(args: FilterArgs) -> Result<()> {
         .manifest
         .is_some()
         .then(|| RunManifest::new("filter", &args.input));
-    let mut input_hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut input_hasher = blake3::Hasher::new();
 
     for (i, line) in reader.lines().enumerate() {
         let line = line?;
         if manifest.is_some() {
-            input_hasher.write(line.as_bytes());
-            input_hasher.write(b"\n");
+            input_hasher.update(line.as_bytes());
+            input_hasher.update(b"\n");
         }
         if line.trim().is_empty() {
             continue;
@@ -1963,7 +2021,7 @@ fn cmd_filter(args: FilterArgs) -> Result<()> {
         }
     }
     if let (Some(mut m), Some(manifest_path)) = (manifest, &args.manifest) {
-        m.input_hash = format!("{:016x}", input_hasher.finish());
+        m.input_hash = input_hasher.finalize().to_hex().to_string();
         m.records_read = total;
         m.records_kept = passed;
         m.records_dropped = skipped;
@@ -2616,5 +2674,54 @@ mod extract_zobrist_dedup_tests {
             &mut skipped
         ));
         assert_eq!(skipped, 0, "a real duplicate isn't counted as skipped");
+    }
+}
+
+#[cfg(test)]
+mod fingerprint_tests {
+    use super::*;
+
+    // Why hard-coded expected values, not just "assert it matches itself": blake3's digest for a
+    // fixed input is stable forever by spec (unlike the `DefaultHasher` this replaced, whose docs
+    // explicitly disclaim cross-toolchain stability) -- a literal expected value is a real
+    // regression guard, catching a future accidental change to the hashing scheme, not just
+    // confirming the function is self-consistent.
+    #[test]
+    fn assign_split_bucket_is_a_stable_golden_value() {
+        assert_eq!(
+            assign_split_bucket(42, "some-fixed-key", 0.1, 0.1),
+            SplitBucket::Train
+        );
+    }
+
+    #[test]
+    fn seeded_hash_is_a_stable_golden_value() {
+        assert_eq!(seeded_hash(7, "startpos"), 13402537162744184401);
+    }
+
+    #[test]
+    fn engine_options_hash_is_a_stable_golden_value() {
+        assert_eq!(
+            engine_options_hash(&[("MultiPV".to_string(), "4".to_string())]),
+            1923589341701319780
+        );
+    }
+
+    #[test]
+    fn label_cache_key_is_a_64_char_hex_digest() {
+        // Pins the format change from DefaultHasher's 16-hex-char digest to blake3's full
+        // 64-hex-char digest -- catches an accidental revert to the old hasher immediately, even
+        // before checking the golden value below.
+        let cache = LabelCache {
+            dir: PathBuf::from("/tmp/cache"),
+            engine_options_hash: engine_options_hash(&[]),
+            multipv: 1,
+            hits: Arc::new(AtomicUsize::new(0)),
+            misses: Arc::new(AtomicUsize::new(0)),
+        };
+        let path = label_cache_path(&cache, "startpos", "engine", Some("1.0"), 8);
+        let key = path.file_stem().unwrap().to_str().unwrap();
+        assert_eq!(key.len(), 64);
+        assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
     }
 }

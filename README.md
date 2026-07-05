@@ -268,15 +268,17 @@ Compact binary encoding of the JSONL schema for faster loading by trainers.
 
 `filter`/`balance`/`sample`/`pack`/`label` accept `--manifest PATH` to write a JSON provenance
 record alongside their normal output: shogiesa version, git sha (embedded at build time),
-schema/pack format version, the full command line, the input file's path and a content hash (a
-plain non-cryptographic digest for "did the input change between runs" — not a verifiable
-SHA-256 checksum), records read/kept/dropped, drop-reason counts, labeled/unlabeled record
-counts, MultiPV candidate coverage, `score_bound` distribution, requested-depth total/underreach
-counts, and (for `filter`) the resolved quality configuration or (for `label`) the engine
-name/depths/MultiPV/engine options/job count, engine-launch-failure count, and (when
-`--cache-dir` is used) cache hit/miss counts. It's opt-in and additive — no effect on the
-command's normal output when omitted. `split` doesn't have `--manifest`: it already writes its
-own tailored `manifest.json` (see above).
+schema/pack format version, the full command line, the input file's path and a content hash
+(`input_hash`, with `fingerprint_algorithm` naming the algorithm — `blake3`, chosen because its
+digest for a given input is stable across Rust toolchain versions, unlike the
+`std::collections::hash_map::DefaultHasher` used before; this is a "did the input change between
+runs" marker, not a verifiable integrity checksum), records read/kept/dropped, drop-reason
+counts, labeled/unlabeled record counts, MultiPV candidate coverage, `score_bound` distribution,
+requested-depth total/underreach counts, and (for `filter`) the resolved quality configuration or
+(for `label`) the engine name/depths/MultiPV/engine options/job count, engine-launch-failure
+count, and (when `--cache-dir` is used) cache hit/miss counts. It's opt-in and additive — no
+effect on the command's normal output when omitted. `split` doesn't have `--manifest`: it already
+writes its own tailored `manifest.json` (see above).
 
 ### `report` — dataset statistics
 

@@ -2372,6 +2372,97 @@ fn source_record(path: &str, ply: u32) -> serde_json::Value {
 }
 
 #[test]
+fn split_by_source_survives_forced_eviction_with_more_sources_than_max_open_writers() {
+    use std::io::Write;
+    // 5 sources, interleaved (a1,b1,c1,d1,e1,a2,b2,c2,d2,e2), --max-open-writers 2 -- by the
+    // time each source's 2nd record arrives, at least 2 other sources have opened in between,
+    // forcing every source's writer to be evicted and later reopened in append mode.
+    let sources = [
+        "game_a.csa",
+        "game_b.csa",
+        "game_c.csa",
+        "game_d.csa",
+        "game_e.csa",
+    ];
+    let mut f = NamedTempFile::new().unwrap();
+    for ply in [1u32, 2] {
+        for src in sources {
+            writeln!(f, "{}", source_record(src, ply)).unwrap();
+        }
+    }
+    f.flush().unwrap();
+
+    let out_dir = tempfile::tempdir().unwrap();
+    shogiesa()
+        .args([
+            "split",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--by-source",
+            "--out-dir",
+            out_dir.path().to_str().unwrap(),
+            "--max-open-writers",
+            "2",
+        ])
+        .assert()
+        .success();
+
+    for src in sources {
+        let content = std::fs::read_to_string(out_dir.path().join(format!("{src}.jsonl"))).unwrap();
+        let plies: Vec<serde_json::Value> = content
+            .lines()
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()["source"]["ply"].clone())
+            .collect();
+        assert_eq!(
+            plies,
+            vec![serde_json::json!(1), serde_json::json!(2)],
+            "source {src} lost or reordered a record across an eviction+reopen cycle"
+        );
+    }
+
+    let manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(out_dir.path().join("manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["total_positions"], 10);
+}
+
+#[test]
+fn split_by_source_truncates_stale_file_on_first_touch_this_run() {
+    use std::io::Write;
+    let mut f = NamedTempFile::new().unwrap();
+    writeln!(f, "{}", source_record("game_a.csa", 1)).unwrap();
+    f.flush().unwrap();
+
+    let out_dir = tempfile::tempdir().unwrap();
+    // Simulate a stale file left over from an unrelated previous run in the same --out-dir
+    std::fs::write(
+        out_dir.path().join("game_a.csa.jsonl"),
+        "STALE LEFTOVER LINE\n",
+    )
+    .unwrap();
+
+    shogiesa()
+        .args([
+            "split",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--by-source",
+            "--out-dir",
+            out_dir.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let content = std::fs::read_to_string(out_dir.path().join("game_a.csa.jsonl")).unwrap();
+    assert!(
+        !content.contains("STALE LEFTOVER LINE"),
+        "first touch this run must truncate, not append to, a pre-existing file"
+    );
+    assert_eq!(content.lines().count(), 1);
+}
+
+#[test]
 fn split_train_valid_test_no_leakage() {
     use std::io::Write;
     let mut f = NamedTempFile::new().unwrap();

@@ -283,8 +283,13 @@ shogiesa split \
 shogiesa sample --input positions.jsonl --count 10000 --seed 1 --out sample.jsonl
 ```
 
-`split --by-source` は source ゲームごとに1ファイル出力し、`manifest.json`（入力パス・
-スキーマバージョン・ファイル別件数）も書き出します。`split --train/--valid/--test` は代わりに
+`split --by-source` は source ゲームごとに1ファイル出力し、`manifest.json`(入力パス・
+スキーマバージョン・ファイル別件数)も書き出します。同時に開く出力ファイルは最大
+`--max-open-writers`件(デフォルト256)に制限されます — 異なるsourceゲーム数がこれを
+超える場合は、最後に書き込んでから最も時間が経ったファイルハンドルを再利用します
+(クローズし、そのsourceが再度出現すればappendモードで再オープンします)。これにより
+sourceゲーム数によらずFD使用量が一定に保たれます。
+`split --train/--valid/--test` は代わりに
 シード付き比率分割を行います — 同じ source ゲームの局面は必ず3つの分割のうち1つだけに
 割り当てられます（train/valid/test間の同一ゲームからのリークを防止。KIF `変化` の局面も、
 親局面を共有する本譜と同じ扱いになり、独立には扱われません — `source.root_id` が

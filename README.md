@@ -278,7 +278,11 @@ shogiesa sample --input positions.jsonl --count 10000 --seed 1 --out sample.json
 ```
 
 `split --by-source` writes one file per source game plus a `manifest.json` (input path, schema
-version, per-file counts). `split --train/--valid/--test` does a seeded ratio split instead —
+version, per-file counts). Keeps at most `--max-open-writers` (default 256) output files open at
+once — a corpus with more distinct source games than that reuses the least-recently-written file
+handle, closing (and, if that source is seen again, reopening in append mode) whichever source
+wrote longest ago, so FD usage stays bounded regardless of source-game count.
+`split --train/--valid/--test` does a seeded ratio split instead —
 every position from the same source game is assigned to exactly one of the three splits (no
 same-game leakage across train/valid/test — this includes a KIF `変化` variation's positions,
 which are assigned alongside their mainline rather than independently, since they share a parent

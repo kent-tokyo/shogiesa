@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
@@ -192,6 +192,12 @@ struct SplitArgs {
     by_source: bool,
     #[arg(long = "out-dir")]
     out_dir: Option<PathBuf>,
+    /// (--by-source) Maximum number of per-source output files held open at once. A source
+    /// beyond this limit reuses the least-recently-written file handle, closing (and later
+    /// reopening, in append mode) whichever source wrote longest ago -- keeps FD usage bounded on
+    /// corpora with many more distinct source games than a process's FD limit.
+    #[arg(long, default_value = "256")]
+    max_open_writers: usize,
     /// Train-split output JSONL — enables the train/valid/test ratio-split mode
     /// (requires --valid and --test too)
     #[arg(long)]
@@ -1208,6 +1214,89 @@ fn cmd_stability(args: StabilityArgs) -> Result<()> {
     Ok(())
 }
 
+/// One resident file handle in `WriterPool`, tagged with the tick it was last written at so the
+/// pool can find its least-recently-used entry in a bounded linear scan (fine at ≤`max_open`
+/// entries -- a dedicated LRU crate would be over-engineering for this bound).
+struct WriterPoolEntry {
+    writer: BufWriter<File>,
+    last_used: u64,
+}
+
+/// Bounded pool of per-source output file handles for `split --by-source`, so a corpus with far
+/// more distinct source games than a process's FD limit doesn't exhaust it. On a miss at
+/// capacity, evicts (and explicitly flushes -- so a write error surfaces here, not silently
+/// swallowed by `BufWriter`'s `Drop`) whichever resident file was written to longest ago, then
+/// opens the target. `opened_this_run` is tracked separately from the (evictable) `writers` map:
+/// a source's *first* touch this run truncates (matching this command's previous fresh-file
+/// behavior), but every later open -- whether still resident or evicted-and-reopened -- must
+/// append, or a re-open after eviction would silently discard everything written before it.
+struct WriterPool {
+    max_open: usize,
+    writers: HashMap<String, WriterPoolEntry>,
+    opened_this_run: HashSet<String>,
+    tick: u64,
+}
+
+impl WriterPool {
+    fn new(max_open: usize) -> Self {
+        Self {
+            max_open,
+            writers: HashMap::new(),
+            opened_this_run: HashSet::new(),
+            tick: 0,
+        }
+    }
+
+    fn write_line(&mut self, out_path: &Path, key: &str, rec: &PositionRecord) -> Result<()> {
+        self.tick += 1;
+        let tick = self.tick;
+        if let Some(entry) = self.writers.get_mut(key) {
+            serde_json::to_writer(&mut entry.writer, rec)?;
+            entry.writer.write_all(b"\n")?;
+            entry.last_used = tick;
+            return Ok(());
+        }
+
+        if self.writers.len() >= self.max_open {
+            let lru_key = self
+                .writers
+                .iter()
+                .min_by_key(|(_, e)| e.last_used)
+                .map(|(k, _)| k.clone())
+                .expect("writers is non-empty when at capacity");
+            let mut evicted = self.writers.remove(&lru_key).unwrap();
+            evicted.writer.flush()?;
+        }
+
+        let first_touch = self.opened_this_run.insert(key.to_string());
+        let file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(first_touch)
+            .append(!first_touch)
+            .open(out_path)
+            .with_context(|| format!("cannot open {out_path:?}"))?;
+        let mut writer = BufWriter::new(file);
+        serde_json::to_writer(&mut writer, rec)?;
+        writer.write_all(b"\n")?;
+        self.writers.insert(
+            key.to_string(),
+            WriterPoolEntry {
+                writer,
+                last_used: tick,
+            },
+        );
+        Ok(())
+    }
+
+    fn flush_all(&mut self) -> Result<()> {
+        for entry in self.writers.values_mut() {
+            entry.writer.flush()?;
+        }
+        Ok(())
+    }
+}
+
 fn cmd_split(args: SplitArgs) -> Result<()> {
     if args.train.is_some() || args.valid.is_some() || args.test.is_some() {
         return cmd_split_train_valid_test(args);
@@ -1226,8 +1315,8 @@ fn cmd_split(args: SplitArgs) -> Result<()> {
         File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
     );
 
-    // Group records by source path, writing into per-source output files
-    let mut writers: HashMap<String, BufWriter<File>> = HashMap::new();
+    // Group records by source path, writing into per-source output files via a bounded LRU pool
+    let mut pool = WriterPool::new(args.max_open_writers.max(1));
     let mut file_names: HashMap<String, String> = HashMap::new();
     let mut file_counts: BTreeMap<String, usize> = BTreeMap::new();
     let mut total = 0usize;
@@ -1246,30 +1335,28 @@ fn cmd_split(args: SplitArgs) -> Result<()> {
         };
 
         let key = rec.source.path.clone();
-        if !writers.contains_key(&key) {
-            let safe: String = key
-                .chars()
-                .map(|c| {
-                    if c.is_alphanumeric() || c == '.' || c == '-' {
-                        c
-                    } else {
-                        '_'
-                    }
-                })
-                .collect();
-            let file_name = format!("{safe}.jsonl");
-            let out_path = out_dir.join(&file_name);
-            let f =
-                File::create(&out_path).with_context(|| format!("cannot create {out_path:?}"))?;
-            writers.insert(key.clone(), BufWriter::new(f));
-            file_names.insert(key.clone(), file_name);
-        }
-        let w = writers.get_mut(&key).unwrap();
-        serde_json::to_writer(&mut *w, &rec)?;
-        w.write_all(b"\n")?;
-        *file_counts.entry(file_names[&key].clone()).or_default() += 1;
+        let file_name = file_names
+            .entry(key.clone())
+            .or_insert_with(|| {
+                let safe: String = key
+                    .chars()
+                    .map(|c| {
+                        if c.is_alphanumeric() || c == '.' || c == '-' {
+                            c
+                        } else {
+                            '_'
+                        }
+                    })
+                    .collect();
+                format!("{safe}.jsonl")
+            })
+            .clone();
+        let out_path = out_dir.join(&file_name);
+        pool.write_line(&out_path, &key, &rec)?;
+        *file_counts.entry(file_name).or_default() += 1;
         total += 1;
     }
+    pool.flush_all()?;
 
     let manifest = serde_json::json!({
         "shogiesa_version": env!("CARGO_PKG_VERSION"),
@@ -1285,7 +1372,7 @@ fn cmd_split(args: SplitArgs) -> Result<()> {
 
     eprintln!(
         "done: {total} positions split into {} files → {:?}",
-        writers.len(),
+        file_counts.len(),
         out_dir
     );
     Ok(())

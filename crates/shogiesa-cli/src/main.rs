@@ -2653,13 +2653,11 @@ fn cmd_filter(args: FilterArgs) -> Result<()> {
     Ok(())
 }
 
-/// One swept threshold value's outcome under `evaluate_quality` -- the base config plus this one
-/// field overridden to `value`, everything else held fixed. Lets `calibrate` show "what does
-/// raising this specific gate do to coverage" in isolation, reusing `evaluate_quality` itself
-/// rather than re-deriving its judgment logic.
-struct SweepRow {
-    param: &'static str,
-    value: i32,
+/// Tallies how many records pass/fail `evaluate_quality` under one `QualityConfig` -- shared by
+/// `SweepRow` (one swept threshold value, `calibrate`) and `TuneCell` (one grid cell of two
+/// combined thresholds, `tune`) so neither command reimplements the same three-line bookkeeping.
+#[derive(Default)]
+struct CoverageTally {
     total: usize,
     kept: usize,
     dropped: usize,
@@ -2668,18 +2666,7 @@ struct SweepRow {
     drop_reasons: BTreeMap<&'static str, usize>,
 }
 
-impl SweepRow {
-    fn new(param: &'static str, value: i32) -> Self {
-        Self {
-            param,
-            value,
-            total: 0,
-            kept: 0,
-            dropped: 0,
-            drop_reasons: BTreeMap::new(),
-        }
-    }
-
+impl CoverageTally {
     fn record(&mut self, decision: &QualityDecision) {
         self.total += 1;
         match decision.reasons.first() {
@@ -2688,6 +2675,44 @@ impl SweepRow {
                 self.dropped += 1;
                 *self.drop_reasons.entry(reason.as_str()).or_default() += 1;
             }
+        }
+    }
+
+    fn coverage_pct(&self) -> f64 {
+        if self.total > 0 {
+            self.kept as f64 / self.total as f64 * 100.0
+        } else {
+            0.0
+        }
+    }
+
+    /// `;`-joined `reason=count` pairs, deterministic order (`BTreeMap`) -- the CSV cell format
+    /// both `calibrate` and `tune` write.
+    fn drop_reasons_csv_cell(&self) -> String {
+        self.drop_reasons
+            .iter()
+            .map(|(r, c)| format!("{r}={c}"))
+            .collect::<Vec<_>>()
+            .join(";")
+    }
+}
+
+/// One swept threshold value's outcome under `evaluate_quality` -- the base config plus this one
+/// field overridden to `value`, everything else held fixed. Lets `calibrate` show "what does
+/// raising this specific gate do to coverage" in isolation, reusing `evaluate_quality` itself
+/// rather than re-deriving its judgment logic.
+struct SweepRow {
+    param: &'static str,
+    value: i32,
+    coverage: CoverageTally,
+}
+
+impl SweepRow {
+    fn new(param: &'static str, value: i32) -> Self {
+        Self {
+            param,
+            value,
+            coverage: CoverageTally::default(),
         }
     }
 }
@@ -2700,6 +2725,103 @@ fn parse_int_list(s: &str) -> Result<Vec<i32>> {
                 .with_context(|| format!("invalid integer {p:?} in sweep list"))
         })
         .collect()
+}
+
+/// Dataset-wide diagnostics independent of any swept/gridded threshold -- accumulated once per
+/// record regardless of how many `QualityConfig` variants are being evaluated against it (not
+/// duplicated per sweep row/grid cell, which would wrongly imply they vary by threshold), then
+/// printed once. Shared by `calibrate` and `tune` so this bookkeeping can't diverge between them.
+#[derive(Default)]
+struct DatasetDiagnostics {
+    labeled: usize,
+    special_bestmove: usize,
+    // 50cp buckets, same convention as `report`'s swing/eval histograms -- bucket-and-count, not
+    // percentiles.
+    margin_buckets: BTreeMap<i32, usize>,
+    swing_buckets: BTreeMap<i32, usize>,
+    obs_score_bound_counts: BTreeMap<&'static str, usize>,
+    requested_depth_total: usize,
+    requested_depth_underreach: usize,
+}
+
+impl DatasetDiagnostics {
+    fn record(&mut self, rec: &PositionRecord) {
+        if rec.observations.is_empty() {
+            return;
+        }
+        self.labeled += 1;
+        if has_special_bestmove(&rec.observations) {
+            self.special_bestmove += 1;
+        }
+        let mut cp_scores = Vec::new();
+        for obs in &rec.observations {
+            if let Some(margin) = obs.policy_margin_cp {
+                *self
+                    .margin_buckets
+                    .entry((margin.div_euclid(50)) * 50)
+                    .or_default() += 1;
+            }
+            if let Score::Cp { value } = obs.score {
+                cp_scores.push(value);
+            }
+            let bound_key = score_bound_str(obs.score_bound);
+            *self.obs_score_bound_counts.entry(bound_key).or_default() += 1;
+        }
+        if let Some(swing) = score_swing(&cp_scores) {
+            *self
+                .swing_buckets
+                .entry((swing.div_euclid(50)) * 50)
+                .or_default() += 1;
+        }
+        accumulate_requested_depth(
+            rec,
+            &mut self.requested_depth_total,
+            &mut self.requested_depth_underreach,
+        );
+    }
+
+    fn print(&self) {
+        // Destructured (not `self.field` inline) so the `{name:>6}`-style inline-capture format
+        // strings below are byte-identical to before this was extracted out of `cmd_calibrate`.
+        let DatasetDiagnostics {
+            labeled,
+            special_bestmove,
+            margin_buckets,
+            swing_buckets,
+            obs_score_bound_counts,
+            requested_depth_total,
+            requested_depth_underreach,
+        } = self;
+        eprintln!("dataset-wide diagnostics (independent of swept thresholds):");
+        eprintln!(
+            "  special bestmove: {special_bestmove:>6}  ({:.1}% of labeled)",
+            *special_bestmove as f64 / (*labeled).max(1) as f64 * 100.0
+        );
+        if *requested_depth_total > 0 {
+            eprintln!(
+                "  requested-depth underreach: {requested_depth_underreach:>6}  ({:.1}% of {requested_depth_total} observations with a requested_depth)",
+                *requested_depth_underreach as f64 / *requested_depth_total as f64 * 100.0
+            );
+        }
+        if !obs_score_bound_counts.is_empty() {
+            eprintln!("  score bound (observations):");
+            for (bound, count) in obs_score_bound_counts {
+                eprintln!("    {bound:<10} : {count:>6}");
+            }
+        }
+        if !margin_buckets.is_empty() {
+            eprintln!("  policy_margin_cp distribution (50cp buckets):");
+            for (&key, &count) in margin_buckets {
+                eprintln!("    {key:>5}..{:<4}: {count:>6}", key + 49);
+            }
+        }
+        if !swing_buckets.is_empty() {
+            eprintln!("  score_swing_cp distribution (50cp buckets, per record):");
+            for (&key, &count) in swing_buckets {
+                eprintln!("    {key:>5}..{:<4}: {count:>6}", key + 49);
+            }
+        }
+    }
 }
 
 fn cmd_calibrate(args: CalibrateArgs) -> Result<()> {
@@ -2755,15 +2877,7 @@ fn cmd_calibrate(args: CalibrateArgs) -> Result<()> {
     );
 
     let mut total = 0usize;
-    let mut labeled = 0usize;
-    // 50cp buckets, same convention as `report`'s swing/eval histograms -- bucket-and-count, not
-    // percentiles.
-    let mut margin_buckets: BTreeMap<i32, usize> = BTreeMap::new();
-    let mut swing_buckets: BTreeMap<i32, usize> = BTreeMap::new();
-    let mut obs_score_bound_counts: BTreeMap<&'static str, usize> = BTreeMap::new();
-    let mut requested_depth_total = 0usize;
-    let mut requested_depth_underreach = 0usize;
-    let mut special_bestmove = 0usize;
+    let mut diagnostics = DatasetDiagnostics::default();
 
     for (i, line) in reader.lines().enumerate() {
         let line = line?;
@@ -2787,48 +2901,19 @@ fn cmd_calibrate(args: CalibrateArgs) -> Result<()> {
                 min_policy_margin_cp: Some(row.value),
                 ..base_config.clone()
             };
-            row.record(&evaluate_quality(&rec, &config));
+            row.coverage.record(&evaluate_quality(&rec, &config));
         }
         for row in &mut score_swing_rows {
             let config = QualityConfig {
                 max_score_swing_cp: Some(row.value),
                 ..base_config.clone()
             };
-            row.record(&evaluate_quality(&rec, &config));
+            row.coverage.record(&evaluate_quality(&rec, &config));
         }
 
-        // Dataset-wide diagnostics: sweep-independent, so accumulated once per record regardless
-        // of threshold, not duplicated per sweep row (which would wrongly imply they vary by
-        // threshold).
-        if !rec.observations.is_empty() {
-            labeled += 1;
-            if has_special_bestmove(&rec.observations) {
-                special_bestmove += 1;
-            }
-            let mut cp_scores = Vec::new();
-            for obs in &rec.observations {
-                if let Some(margin) = obs.policy_margin_cp {
-                    *margin_buckets
-                        .entry((margin.div_euclid(50)) * 50)
-                        .or_default() += 1;
-                }
-                if let Score::Cp { value } = obs.score {
-                    cp_scores.push(value);
-                }
-                let bound_key = score_bound_str(obs.score_bound);
-                *obs_score_bound_counts.entry(bound_key).or_default() += 1;
-            }
-            if let Some(swing) = score_swing(&cp_scores) {
-                *swing_buckets
-                    .entry((swing.div_euclid(50)) * 50)
-                    .or_default() += 1;
-            }
-            accumulate_requested_depth(
-                &rec,
-                &mut requested_depth_total,
-                &mut requested_depth_underreach,
-            );
-        }
+        // Sweep-independent, so accumulated once per record regardless of threshold, not
+        // duplicated per sweep row (which would wrongly imply it varies by threshold).
+        diagnostics.record(&rec);
     }
 
     let out_file =
@@ -2839,55 +2924,25 @@ fn cmd_calibrate(args: CalibrateArgs) -> Result<()> {
         "sweep_param,sweep_value,total,kept,dropped,coverage_pct,drop_reasons"
     )?;
     for row in policy_margin_rows.iter().chain(score_swing_rows.iter()) {
-        let coverage_pct = if row.total > 0 {
-            row.kept as f64 / row.total as f64 * 100.0
-        } else {
-            0.0
-        };
-        let drop_reasons_cell = row
-            .drop_reasons
-            .iter()
-            .map(|(r, c)| format!("{r}={c}"))
-            .collect::<Vec<_>>()
-            .join(";");
         writeln!(
             writer,
             "{},{},{},{},{},{:.2},{}",
-            row.param, row.value, row.total, row.kept, row.dropped, coverage_pct, drop_reasons_cell
+            row.param,
+            row.value,
+            row.coverage.total,
+            row.coverage.kept,
+            row.coverage.dropped,
+            row.coverage.coverage_pct(),
+            row.coverage.drop_reasons_csv_cell()
         )?;
     }
     writer.flush()?;
 
-    eprintln!("done: {total} read, {labeled} labeled → {:?}", args.out);
-    eprintln!("dataset-wide diagnostics (independent of swept thresholds):");
     eprintln!(
-        "  special bestmove: {special_bestmove:>6}  ({:.1}% of labeled)",
-        special_bestmove as f64 / labeled.max(1) as f64 * 100.0
+        "done: {total} read, {} labeled → {:?}",
+        diagnostics.labeled, args.out
     );
-    if requested_depth_total > 0 {
-        eprintln!(
-            "  requested-depth underreach: {requested_depth_underreach:>6}  ({:.1}% of {requested_depth_total} observations with a requested_depth)",
-            requested_depth_underreach as f64 / requested_depth_total as f64 * 100.0
-        );
-    }
-    if !obs_score_bound_counts.is_empty() {
-        eprintln!("  score bound (observations):");
-        for (bound, count) in &obs_score_bound_counts {
-            eprintln!("    {bound:<10} : {count:>6}");
-        }
-    }
-    if !margin_buckets.is_empty() {
-        eprintln!("  policy_margin_cp distribution (50cp buckets):");
-        for (&key, &count) in &margin_buckets {
-            eprintln!("    {key:>5}..{:<4}: {count:>6}", key + 49);
-        }
-    }
-    if !swing_buckets.is_empty() {
-        eprintln!("  score_swing_cp distribution (50cp buckets, per record):");
-        for (&key, &count) in &swing_buckets {
-            eprintln!("    {key:>5}..{:<4}: {count:>6}", key + 49);
-        }
-    }
+    diagnostics.print();
 
     Ok(())
 }
@@ -4164,5 +4219,72 @@ mod label_cache_correctness_tests {
             path_a, path_b,
             "a rebuilt engine binary must not collide with a stale cache entry"
         );
+    }
+}
+
+#[cfg(test)]
+mod calibrate_helper_tests {
+    use super::*;
+    use shogiesa_core::QualityReason;
+
+    fn decision(reasons: Vec<QualityReason>) -> QualityDecision {
+        QualityDecision {
+            keep: reasons.is_empty(),
+            score: 1.0,
+            reasons,
+            score_swing_cp: None,
+            bestmove_agreement: true,
+            cp_count: 0,
+            mate_count: 0,
+        }
+    }
+
+    #[test]
+    fn coverage_tally_records_kept_and_first_reason_only() {
+        let mut tally = CoverageTally::default();
+        tally.record(&decision(vec![]));
+        tally.record(&decision(vec![
+            QualityReason::PolicyMargin,
+            QualityReason::ScoreSwing,
+        ]));
+        assert_eq!(tally.total, 2);
+        assert_eq!(tally.kept, 1);
+        assert_eq!(tally.dropped, 1);
+        // Only the first reason counts, matching evaluate_quality's own documented convention --
+        // ScoreSwing must not also appear even though this decision failed both gates.
+        assert_eq!(tally.drop_reasons_csv_cell(), "policy_margin=1");
+        assert_eq!(tally.coverage_pct(), 50.0);
+    }
+
+    #[test]
+    fn dataset_diagnostics_skips_unlabeled_records() {
+        let rec: PositionRecord = serde_json::from_str(
+            r#"{"schema_version":8,"sfen":"x","source":{"kind":"csa","path":"g.csa","ply":1},
+                "tags":{"phase":"opening","side_to_move":"black","in_check":false,"has_capture":false},
+                "observations":[]}"#,
+        )
+        .unwrap();
+        let mut diagnostics = DatasetDiagnostics::default();
+        diagnostics.record(&rec);
+        assert_eq!(
+            diagnostics.labeled, 0,
+            "empty observations must not count as labeled"
+        );
+    }
+
+    #[test]
+    fn dataset_diagnostics_buckets_a_labeled_record() {
+        let rec: PositionRecord = serde_json::from_str(
+            r#"{"schema_version":8,"sfen":"x","source":{"kind":"csa","path":"g.csa","ply":1},
+                "tags":{"phase":"opening","side_to_move":"black","in_check":false,"has_capture":false},
+                "observations":[{"engine":"e","engine_version":null,"depth":4,"score":{"kind":"cp","value":50},
+                "bestmove":"7g7f","nodes":null,"time_ms":null,"pv":null,"policy_margin_cp":80}]}"#,
+        )
+        .unwrap();
+        let mut diagnostics = DatasetDiagnostics::default();
+        diagnostics.record(&rec);
+        assert_eq!(diagnostics.labeled, 1);
+        assert_eq!(diagnostics.margin_buckets.get(&50), Some(&1)); // 80.div_euclid(50)*50 == 50
+        assert_eq!(diagnostics.obs_score_bound_counts.get("exact"), Some(&1));
     }
 }

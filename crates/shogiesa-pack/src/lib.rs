@@ -3,7 +3,7 @@
 //! ```text
 //! Header (10 bytes):
 //!   magic[8]  = b"SHOGIESA"
-//!   version   = u16 le  (= 7)
+//!   version   = u16 le  (= 8)
 //!
 //! Record (variable, repeated until EOF):
 //!   sfen              u16le + bytes
@@ -38,8 +38,10 @@
 //!     req_depth       u32le          [if req_depth_tag=1]
 //!     score_kind      u8 (0=cp 1=mate)
 //!     score_val       i32le
+//!     score_perspective u8 (0=side_to_move 1=black)
 //!     score_bound     u8 (0=exact 1=lowerbound 2=upperbound)
 //!     bestmove        u8le  + bytes
+//!     bestmove_kind   u8 (0=none 1=resign 2=win 3=no_move)
 //!     nodes_tag       u8 (0/1)
 //!     nodes           u64le          [if nodes_tag=1]
 //!     time_tag        u8 (0/1)
@@ -64,12 +66,12 @@
 use std::io::{self, Read, Write};
 
 use shogiesa_core::{
-    CandidateMove, GamePhase, Observation, PositionRecord, PositionTags, SCHEMA_VERSION, Score,
-    ScoreBound, SideToMove, SourceInfo, StabilityInfo,
+    BestMoveKind, CandidateMove, GamePhase, Observation, PositionRecord, PositionTags,
+    SCHEMA_VERSION, Score, ScoreBound, ScorePerspective, SideToMove, SourceInfo, StabilityInfo,
 };
 
 pub const MAGIC: &[u8; 8] = b"SHOGIESA";
-pub const FORMAT_VERSION: u16 = 7;
+pub const FORMAT_VERSION: u16 = 8;
 
 // ── write helpers ─────────────────────────────────────────────────────────────
 
@@ -276,6 +278,13 @@ pub fn encode_record(rec: &PositionRecord, w: &mut impl Write) -> io::Result<()>
         }
         wu8(
             w,
+            match obs.score_perspective {
+                ScorePerspective::SideToMove => 0,
+                ScorePerspective::Black => 1,
+            },
+        )?;
+        wu8(
+            w,
             match obs.score_bound {
                 ScoreBound::Exact => 0,
                 ScoreBound::Lowerbound => 1,
@@ -283,6 +292,15 @@ pub fn encode_record(rec: &PositionRecord, w: &mut impl Write) -> io::Result<()>
             },
         )?;
         ws8(w, &obs.bestmove)?;
+        wu8(
+            w,
+            match obs.bestmove_kind {
+                None => 0,
+                Some(BestMoveKind::Resign) => 1,
+                Some(BestMoveKind::Win) => 2,
+                Some(BestMoveKind::NoMove) => 3,
+            },
+        )?;
         match obs.nodes {
             None => wu8(w, 0)?,
             Some(v) => {
@@ -416,6 +434,11 @@ pub fn decode_record(r: &mut impl Read) -> io::Result<PositionRecord> {
             1 => Score::Mate { moves: ri32(r)? },
             _ => return Err(bad("bad score kind")),
         };
+        let score_perspective = match ru8(r)? {
+            0 => ScorePerspective::SideToMove,
+            1 => ScorePerspective::Black,
+            _ => return Err(bad("bad score perspective")),
+        };
         let obs_score_bound = match ru8(r)? {
             0 => ScoreBound::Exact,
             1 => ScoreBound::Lowerbound,
@@ -423,6 +446,13 @@ pub fn decode_record(r: &mut impl Read) -> io::Result<PositionRecord> {
             _ => return Err(bad("bad score bound")),
         };
         let bestmove = rs8(r)?;
+        let bestmove_kind = match ru8(r)? {
+            0 => None,
+            1 => Some(BestMoveKind::Resign),
+            2 => Some(BestMoveKind::Win),
+            3 => Some(BestMoveKind::NoMove),
+            _ => return Err(bad("bad bestmove kind")),
+        };
         let nodes = if ru8(r)? == 0 { None } else { Some(ru64(r)?) };
         let time_ms = if ru8(r)? == 0 { None } else { Some(ru64(r)?) };
         let pv = if ru8(r)? == 0 {
@@ -476,8 +506,10 @@ pub fn decode_record(r: &mut impl Read) -> io::Result<PositionRecord> {
             depth,
             requested_depth,
             score,
+            score_perspective,
             score_bound: obs_score_bound,
             bestmove,
+            bestmove_kind,
             nodes,
             time_ms,
             pv,
@@ -548,8 +580,10 @@ mod tests {
                     depth: 8,
                     requested_depth: Some(12),
                     score: Score::Cp { value: 42 },
+                    score_perspective: ScorePerspective::Black,
                     score_bound: ScoreBound::Lowerbound,
                     bestmove: "7g7f".to_string(),
+                    bestmove_kind: None,
                     nodes: Some(12345),
                     time_ms: Some(100),
                     pv: Some(vec!["7g7f".to_string(), "3c3d".to_string()]),
@@ -584,8 +618,10 @@ mod tests {
                     depth: 12,
                     requested_depth: None,
                     score: Score::Mate { moves: 3 },
+                    score_perspective: ScorePerspective::SideToMove,
                     score_bound: ScoreBound::Exact,
-                    bestmove: "2b3c".to_string(),
+                    bestmove: "resign".to_string(),
+                    bestmove_kind: Some(BestMoveKind::Resign),
                     nodes: None,
                     time_ms: None,
                     pv: None,
@@ -624,7 +660,12 @@ mod tests {
         assert_eq!(got.observations[0].depth, 8);
         assert_eq!(got.observations[0].requested_depth, Some(12));
         assert!(matches!(got.observations[0].score, Score::Cp { value: 42 }));
+        assert_eq!(
+            got.observations[0].score_perspective,
+            ScorePerspective::Black
+        );
         assert_eq!(got.observations[0].score_bound, ScoreBound::Lowerbound);
+        assert_eq!(got.observations[0].bestmove_kind, None);
         assert_eq!(got.observations[0].engine_version, Some("1.0".to_string()));
         assert_eq!(got.observations[0].nodes, Some(12345));
         assert_eq!(
@@ -671,7 +712,16 @@ mod tests {
             Score::Mate { moves: 3 }
         ));
         assert_eq!(got.observations[1].policy_margin_cp, None);
+        assert_eq!(
+            got.observations[1].score_perspective,
+            ScorePerspective::SideToMove
+        );
         assert_eq!(got.observations[1].score_bound, ScoreBound::Exact);
+        assert_eq!(got.observations[1].bestmove, "resign");
+        assert_eq!(
+            got.observations[1].bestmove_kind,
+            Some(BestMoveKind::Resign)
+        );
         assert!(got.observations[1].candidates.is_empty());
         let stab = got.stability.as_ref().unwrap();
         assert_eq!(stab.score_swing_cp, Some(100));

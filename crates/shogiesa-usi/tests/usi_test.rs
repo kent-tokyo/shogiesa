@@ -41,6 +41,25 @@ fn analyse_returns_cp_score() {
     assert!(matches!(result.score, Score::Cp { value: 100 }));
     assert_eq!(result.bestmove, "7g7f");
     assert_eq!(result.depth, 4);
+    assert_eq!(result.bestmove_kind, None);
+    engine.quit();
+}
+
+#[test]
+fn analyse_classifies_resign_bestmove() {
+    let mut engine = UsiEngine::launch(
+        &fake_usi_engine_bin(),
+        String::new(),
+        TIMEOUT,
+        &[("Bestmove".to_string(), "resign".to_string())],
+    )
+    .unwrap();
+    let result = engine.analyse(STARTPOS, 4, TIMEOUT).unwrap();
+    assert_eq!(result.bestmove, "resign");
+    assert_eq!(
+        result.bestmove_kind,
+        Some(shogiesa_core::BestMoveKind::Resign)
+    );
     engine.quit();
 }
 

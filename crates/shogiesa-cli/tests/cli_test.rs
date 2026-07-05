@@ -440,6 +440,22 @@ fn schema_v6_source_root_id_round_trips() {
 }
 
 #[test]
+fn schema_v7_score_perspective_and_bestmove_kind_round_trips() {
+    // v8: adds Observation.score_perspective/bestmove_kind. Neither key is present here --
+    // proves #[serde(default)] still loads them as SideToMove/None.
+    assert_schema_compat(position_with_version(
+        7,
+        serde_json::json!([obs_with_margin("7g7f", 50, 4, 30)]),
+        Some(serde_json::json!({
+            "score_swing_cp": null,
+            "bestmove_agreement": true,
+            "engine_bestmove_agreement": true,
+            "engine_score_swing_cp": 20
+        })),
+    ));
+}
+
+#[test]
 fn validate_broken_json_shows_warn_but_exits_0() {
     let mut f = NamedTempFile::new().unwrap();
     writeln!(f, "{{not valid json}}").unwrap();

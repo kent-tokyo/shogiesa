@@ -324,7 +324,7 @@ Checks: broken JSON, invalid SFENs, duplicate SFENs, `side_to_move` tag vs SFEN 
 
 ```json
 {
-  "schema_version": 7,
+  "schema_version": 8,
   "sfen": "lnsgkgsnl/1r5b1/p1ppppppp/1p7/9/2P6/PP1PPPPPP/1B5R1/LNSGKGSNL b - 2",
   "source": {
     "kind": "csa",
@@ -344,6 +344,7 @@ Checks: broken JSON, invalid SFENs, duplicate SFENs, `side_to_move` tag vs SFEN 
       "depth": 8,
       "requested_depth": 8,
       "score": { "kind": "cp", "value": 43 },
+      "score_perspective": "side_to_move",
       "score_bound": "exact",
       "bestmove": "7g7f",
       "nodes": 123456,
@@ -359,13 +360,21 @@ Checks: broken JSON, invalid SFENs, duplicate SFENs, `side_to_move` tag vs SFEN 
 }
 ```
 
-Score is either `{"kind":"cp","value":N}` or `{"kind":"mate","moves":N}`. `score_bound`
+Score is either `{"kind":"cp","value":N}` or `{"kind":"mate","moves":N}`. `score_perspective`
+(`side_to_move`/`black`) says which side a `cp` value's sign is relative to — USI's `info score
+cp` is side-to-move-relative by protocol convention and `label` never converts it, so this is
+always `side_to_move` on data `label` produces; it defaults to `side_to_move` on older JSONL that
+predates this field, which is exactly what that data always meant. `score_bound`
 (`exact`/`lowerbound`/`upperbound`) marks whether the bestmove's own score is a confirmed
 evaluation or a search bound, independent of MultiPV — it defaults to `exact` on older JSONL that
 predates this field. `requested_depth` is the depth `label` asked the engine to search to
 (`depth` is what it actually reached — they can differ, e.g. a forced mate found short of the
 request); it's absent/`null` on JSONL labeled before this field existed. `policy_margin_cp` and
-`candidates` are only present when `label --multipv 2` (or higher) was used.
+`candidates` are only present when `label --multipv 2` (or higher) was used. `bestmove_kind`
+(absent for an ordinary move) is `"resign"`/`"win"`/`"no_move"` when the engine's `bestmove` line
+is one of those literal USI tokens rather than an ordinary move string, so consumers can tell "the
+engine considers the position decided" apart from "the engine picked a normal move" without
+string-matching `bestmove` themselves.
 
 `source` also carries optional `root_id`/`variation_id`/`branch_from_ply` fields, e.g. for a KIF
 `変化` branch:

@@ -3,7 +3,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA_VERSION: u32 = 7;
+pub const SCHEMA_VERSION: u32 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -101,6 +101,35 @@ pub enum Score {
     Mate { moves: i32 },
 }
 
+/// Which side `Score::Cp`'s sign is relative to. USI's `info score cp` is side-to-move-relative
+/// by protocol convention (positive = good for whoever is on move), and `shogiesa-usi` stores
+/// that raw value with no sign-flipping -- so every `Observation` produced before this field
+/// existed, and every one produced by `label` today, is implicitly `SideToMove`. This field makes
+/// that convention explicit in the schema instead of leaving it an undocumented assumption that
+/// every consumer has to independently get right.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ScorePerspective {
+    #[default]
+    SideToMove,
+    Black,
+}
+
+/// Classifies a `bestmove` response into "no move at all" categories, distinct from an ordinary
+/// move string. USI defines `resign`/`win`/`none` as literal non-move tokens; comparing them as
+/// if they were moves (as plain `bestmove` string equality does) conflates "the engine considers
+/// the position decided" with "the engines disagree on the best move" -- two different things
+/// that `bestmove_agreement`-style checks need to tell apart. `NoMove` names the literal USI
+/// token `"none"`, distinct from Rust's `Option::None` (which instead means "an ordinary move,
+/// no special handling needed" on `Observation.bestmove_kind` below).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BestMoveKind {
+    Resign,
+    Win,
+    NoMove,
+}
+
 /// Whether a USI `info` line's score is a confirmed evaluation or a search bound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -134,12 +163,25 @@ pub struct Observation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requested_depth: Option<u32>,
     pub score: Score,
+    /// Which side `score`'s cp sign is relative to. `#[serde(default)]` without
+    /// `skip_serializing_if`, unlike this struct's other optional fields -- every future
+    /// observation should self-describe its perspective explicitly rather than leave a reader to
+    /// assume the default forever. Old JSONL still parses unchanged (absent → `SideToMove`,
+    /// exactly what that data always meant).
+    #[serde(default)]
+    pub score_perspective: ScorePerspective,
     /// Whether `score` is a confirmed evaluation or a search bound (e.g. an aspiration-window
     /// fail-high/low). Only ever set from the engine's own bestmove line, independent of
     /// whether MultiPV was used — `CandidateMove.score_bound` covers runner-up ranks.
     #[serde(default)]
     pub score_bound: ScoreBound,
     pub bestmove: String,
+    /// Set only when `bestmove` is a special USI token (`resign`/`win`/`none`) rather than an
+    /// ordinary move -- `None` for the common case, matching this struct's convention for
+    /// `policy_margin_cp`/`candidates`. `None` on records labeled before this field existed, even
+    /// if `bestmove` happens to hold one of those literal strings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bestmove_kind: Option<BestMoveKind>,
     pub nodes: Option<u64>,
     pub time_ms: Option<u64>,
     pub pv: Option<Vec<String>>,
@@ -561,8 +603,10 @@ mod tests {
             depth,
             requested_depth: None,
             score: Score::Cp { value: cp },
+            score_perspective: ScorePerspective::SideToMove,
             score_bound: ScoreBound::Exact,
             bestmove: bestmove.to_string(),
+            bestmove_kind: None,
             nodes: None,
             time_ms: None,
             pv: None,
@@ -638,8 +682,10 @@ mod tests {
             depth,
             requested_depth: None,
             score: Score::Mate { moves },
+            score_perspective: ScorePerspective::SideToMove,
             score_bound: ScoreBound::Exact,
             bestmove: bestmove.to_string(),
+            bestmove_kind: None,
             nodes: None,
             time_ms: None,
             pv: None,

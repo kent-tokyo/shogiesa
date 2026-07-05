@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 
 use shogiesa_core::{
-    GamePhase, Observation, PositionRecord, QualityConfig, SCHEMA_VERSION, Score, SideToMove,
-    SourceInfo, engine_bestmove_agreement, evaluate_quality, score_swing, sfen::Sfen,
+    GamePhase, Observation, PositionRecord, QualityConfig, SCHEMA_VERSION, Score, ScorePerspective,
+    SideToMove, SourceInfo, engine_bestmove_agreement, evaluate_quality, score_swing, sfen::Sfen,
     zobrist_from_sfen,
 };
 use shogiesa_pack as pack;
@@ -794,8 +794,13 @@ fn analyze_record(
                         depth: result.depth,
                         requested_depth: Some(depth),
                         score: result.score,
+                        // `label` never converts the engine's raw side-to-move-relative cp, so
+                        // every observation it produces is explicitly `SideToMove`, not just
+                        // implicitly so.
+                        score_perspective: ScorePerspective::SideToMove,
                         score_bound: result.score_bound,
                         bestmove: result.bestmove,
+                        bestmove_kind: result.bestmove_kind,
                         nodes: result.nodes,
                         time_ms: result.time_ms,
                         pv: result.pv,

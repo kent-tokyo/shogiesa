@@ -6,8 +6,21 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use shogiesa_core::{CandidateMove, Score, ScoreBound};
+use shogiesa_core::{BestMoveKind, CandidateMove, Score, ScoreBound};
 use thiserror::Error;
+
+/// Classifies a raw USI `bestmove` token. `None` for an ordinary move -- kept out of storage via
+/// `Option` since that's the overwhelming common case. USI defines exactly these three tokens as
+/// "there is no move" responses; anything else is treated as an ordinary move string (no
+/// validation that it's a *legal* move -- that's out of scope here, same as today).
+pub fn classify_bestmove(token: &str) -> Option<BestMoveKind> {
+    match token {
+        "resign" => Some(BestMoveKind::Resign),
+        "win" => Some(BestMoveKind::Win),
+        "none" => Some(BestMoveKind::NoMove),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum UsiError {
@@ -39,6 +52,9 @@ pub struct AnalysisResult {
     /// Always set, independent of MultiPV -- this is what a plain single-PV label would
     /// otherwise silently discard (only `candidates[0].score_bound` carried it before).
     pub score_bound: ScoreBound,
+    /// Set when `bestmove` is a special USI token (`resign`/`win`/`none`) rather than an
+    /// ordinary move. See `classify_bestmove`.
+    pub bestmove_kind: Option<BestMoveKind>,
 }
 
 struct InfoLine {
@@ -282,6 +298,7 @@ impl UsiEngine {
                 } else {
                     Vec::new()
                 };
+                let bestmove_kind = classify_bestmove(&bestmove);
                 return Ok(AnalysisResult {
                     depth: info.depth.unwrap_or(depth),
                     score: info.score.clone().ok_or(UsiError::InvalidResponse)?,
@@ -292,6 +309,7 @@ impl UsiEngine {
                     policy_margin_cp,
                     candidates,
                     score_bound: info.bound,
+                    bestmove_kind,
                 });
             } else if line.starts_with("info ")
                 && let Some(info) = parse_info(&line)
@@ -373,5 +391,17 @@ mod tests {
     fn parse_info_detects_upperbound() {
         let info = parse_info("info depth 8 score cp 39 upperbound nodes 1 time 1").unwrap();
         assert_eq!(info.bound, ScoreBound::Upperbound);
+    }
+
+    #[test]
+    fn classify_bestmove_recognizes_all_three_special_tokens() {
+        assert_eq!(classify_bestmove("resign"), Some(BestMoveKind::Resign));
+        assert_eq!(classify_bestmove("win"), Some(BestMoveKind::Win));
+        assert_eq!(classify_bestmove("none"), Some(BestMoveKind::NoMove));
+    }
+
+    #[test]
+    fn classify_bestmove_is_none_for_an_ordinary_move() {
+        assert_eq!(classify_bestmove("7g7f"), None);
     }
 }

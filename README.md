@@ -114,14 +114,27 @@ recorded `requested_depth` still matches on achieved depth alone, for older JSON
 stats) — see "Run manifests" further down.
 
 `--cache-dir PATH` caches each observation as a small JSON file, sharded into subdirectories by
-the first byte of a content hash over `(sfen, engine name, engine version, engine options,
-requested depth, multipv, schema version)` — no database, just files you can inspect or delete by
-hand. Labeling (running the engine) is the dominant cost of the whole pipeline, so repeated
-experiments over the same positions (tuning a downstream filter config, resuming after a crash,
-sharing a labeling budget across datasets) reuse a cached observation instead of re-running the
-engine. Cache hit/miss counts appear in `--manifest`. The engine must still be launchable even on
-a run that hits the cache on every position — the cache saves search time, not engine
-availability (the probe launch and each worker's engine start happen regardless of hit rate).
+the first two hex characters of a content hash over `(sfen, engine name, engine version, engine
+options, engine binary fingerprint, requested depth, multipv, schema version)` — no database,
+just files you can inspect or delete by hand. Cache writes are atomic (temp file + rename), so a
+crash mid-write can never leave a torn file visible to a concurrent reader — relevant since a
+cache dir is meant to be shared across simultaneous `label` runs. Labeling (running the engine)
+is the dominant cost of the whole pipeline, so repeated experiments over the same positions
+(tuning a downstream filter config, resuming after a crash, sharing a labeling budget across
+datasets) reuse a cached observation instead of re-running the engine. Cache hit/miss counts
+appear in `--manifest`. The engine must still be launchable even on a run that hits the cache on
+every position — the cache saves search time, not engine availability (the probe launch and each
+worker's engine start happen regardless of hit rate).
+
+`--engine-fingerprint-mode content|metadata|none` (default `content`) controls whether the engine
+binary itself also contributes to the cache key, on top of its USI-reported `id name`/`id
+version` — those strings are controlled by the engine and aren't guaranteed to change after a
+local rebuild, so relying on them alone risks a cache hit silently reusing labels produced by a
+different executable. `content` hashes the binary's bytes (read once, negligible next to actually
+running search); `metadata` hashes its canonical path/size/mtime instead (cheaper, but
+invalidates on every rebuild into a fresh path even when the bytes are identical — e.g. a CI job
+that builds into a new directory each run); `none` restores the original behavior of trusting the
+USI id strings alone.
 
 ### `stability` — compute stability scores
 
@@ -276,9 +289,9 @@ runs" marker, not a verifiable integrity checksum), records read/kept/dropped, d
 counts, labeled/unlabeled record counts, MultiPV candidate coverage, `score_bound` distribution,
 requested-depth total/underreach counts, and (for `filter`) the resolved quality configuration or
 (for `label`) the engine name/depths/MultiPV/engine options/job count, engine-launch-failure
-count, and (when `--cache-dir` is used) cache hit/miss counts. It's opt-in and additive — no
-effect on the command's normal output when omitted. `split` doesn't have `--manifest`: it already
-writes its own tailored `manifest.json` (see above).
+count, and (when `--cache-dir` is used) cache hit/miss counts and `engine_fingerprint_mode`. It's
+opt-in and additive — no effect on the command's normal output when omitted. `split` doesn't have
+`--manifest`: it already writes its own tailored `manifest.json` (see above).
 
 ### `report` — dataset statistics
 

@@ -150,6 +150,18 @@ struct LabelArgs {
     /// positions reuse a cached observation instead of re-running the engine
     #[arg(long)]
     cache_dir: Option<PathBuf>,
+    /// How the engine binary itself contributes to the label cache key, on top of its USI id
+    /// name/version (which aren't guaranteed to change after a local rebuild): `content` hashes
+    /// the binary's bytes (read once at startup); `metadata` hashes its path/size/mtime (cheaper,
+    /// but invalidates on every rebuild into a fresh path even if the bytes are identical);
+    /// `none` relies solely on the USI id strings (today's original behavior). No effect without
+    /// `--cache-dir`.
+    #[arg(
+        long,
+        default_value = "content",
+        value_parser = ["content", "metadata", "none"]
+    )]
+    engine_fingerprint_mode: String,
 }
 
 #[derive(Clone, Copy)]
@@ -519,8 +531,80 @@ struct LabelCache {
     dir: PathBuf,
     engine_options_hash: u64,
     multipv: u32,
+    /// `None` under `--engine-fingerprint-mode none` (today's behavior: engine identity relies
+    /// solely on the USI-reported `id name`/`id version` strings folded in separately). `Some`
+    /// otherwise, folding the engine binary itself into the cache key -- see
+    /// `compute_engine_fingerprint`.
+    engine_fingerprint: Option<u64>,
     hits: Arc<AtomicUsize>,
     misses: Arc<AtomicUsize>,
+}
+
+/// How (if at all) the engine binary itself contributes to the label cache key, on top of its
+/// USI-reported `id name`/`id version`. Those strings are controlled by the engine and aren't
+/// guaranteed to change after a local rebuild, so relying on them alone risks a cache hit
+/// silently reusing labels produced by a different executable.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EngineFingerprintMode {
+    /// blake3 of the engine binary's bytes, read once at probe launch. The strongest guarantee,
+    /// and negligible cost next to actually running search across a dataset.
+    Content,
+    /// Canonical path + file size + mtime. Cheaper than reading the whole binary, but path- and
+    /// mtime-sensitive: a CI job that rebuilds the byte-identical binary into a fresh build
+    /// directory every run would invalidate the cache every time despite nothing changing.
+    Metadata,
+    /// Today's behavior: identity relies solely on the USI id name/version strings.
+    None,
+}
+
+impl EngineFingerprintMode {
+    fn parse(s: &str) -> Self {
+        match s {
+            "content" => Self::Content,
+            "metadata" => Self::Metadata,
+            _ => Self::None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Content => "content",
+            Self::Metadata => "metadata",
+            Self::None => "none",
+        }
+    }
+}
+
+fn compute_engine_fingerprint(
+    mode: EngineFingerprintMode,
+    engine_path: &Path,
+) -> Result<Option<u64>> {
+    match mode {
+        EngineFingerprintMode::None => Ok(None),
+        EngineFingerprintMode::Content => {
+            let bytes = fs::read(engine_path)
+                .with_context(|| format!("cannot read engine binary {engine_path:?}"))?;
+            Ok(Some(hash_parts_u64(&[&bytes])))
+        }
+        EngineFingerprintMode::Metadata => {
+            let canonical = fs::canonicalize(engine_path)
+                .with_context(|| format!("cannot canonicalize {engine_path:?}"))?;
+            let meta =
+                fs::metadata(&canonical).with_context(|| format!("cannot stat {canonical:?}"))?;
+            let mtime_nanos = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0);
+            let path_bytes = canonical.to_string_lossy().into_owned();
+            Ok(Some(hash_parts_u64(&[
+                path_bytes.as_bytes(),
+                &meta.len().to_le_bytes(),
+                &mtime_nanos.to_le_bytes(),
+            ])))
+        }
+    }
 }
 
 // Why blake3, not `std::collections::hash_map::DefaultHasher`: DefaultHasher is deterministic
@@ -586,6 +670,16 @@ fn label_cache_path(
     let requested_depth_bytes = requested_depth.to_le_bytes();
     let multipv_bytes = cache.multipv.to_le_bytes();
     let schema_version_bytes = SCHEMA_VERSION.to_le_bytes();
+    // Same Option-discriminant pattern as `engine_version` above: under
+    // `--engine-fingerprint-mode none`, every run has `engine_fingerprint: None`, so this
+    // contributes the same constant bytes regardless of which binary is running -- i.e. cache
+    // identity is exactly today's "USI id name/version only" behavior for that mode.
+    let fingerprint_tag: &[u8] = if cache.engine_fingerprint.is_some() {
+        &[1]
+    } else {
+        &[0]
+    };
+    let fingerprint_bytes = cache.engine_fingerprint.unwrap_or(0).to_le_bytes();
     let key = hash_parts(&[
         sfen.as_bytes(),
         engine_name.as_bytes(),
@@ -595,10 +689,38 @@ fn label_cache_path(
         &requested_depth_bytes,
         &multipv_bytes,
         &schema_version_bytes,
+        fingerprint_tag,
+        &fingerprint_bytes,
     ])
     .to_hex()
     .to_string();
     cache.dir.join(&key[0..2]).join(format!("{key}.json"))
+}
+
+/// Writes a cache entry via temp-file-then-rename instead of a direct `fs::write`, so a crash,
+/// kill, or disk-full mid-write can never leave a torn file visible at `path`. This matters
+/// because `--cache-dir` is documented as shareable across concurrent `label` processes (e.g.
+/// several experiments pointed at the same cache) -- a torn file could be read by a *different*
+/// process mid-write, not just self-heal on a later run of the same one (which already tolerates
+/// a missing or corrupt file as a plain cache miss).
+fn write_cache_entry_atomically(path: &Path, json: &str) -> std::io::Result<()> {
+    let tmp = path.with_file_name(format!(
+        "{}.tmp.{}.{:?}",
+        path.file_name().unwrap_or_default().to_string_lossy(),
+        std::process::id(),
+        std::thread::current().id(),
+    ));
+    fs::write(&tmp, json)?;
+    match fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        // Someone else already wrote this exact key -- fine, since the key is content-addressed,
+        // whoever got there first wrote the same bytes we would have.
+        Err(_) if path.exists() => {
+            let _ = fs::remove_file(&tmp);
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
 }
 
 fn analyze_record(
@@ -665,7 +787,7 @@ fn analyze_record(
                             let _ = fs::create_dir_all(parent);
                         }
                         if let Ok(json) = serde_json::to_string(&obs) {
-                            let _ = fs::write(path, json);
+                            let _ = write_cache_entry_atomically(path, &json);
                         }
                     }
                     Some(obs)
@@ -754,15 +876,24 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
     } else {
         ExistingPolicy::Append
     };
-    let cache: Option<Arc<LabelCache>> = args.cache_dir.as_ref().map(|dir| {
-        Arc::new(LabelCache {
-            dir: dir.clone(),
-            engine_options_hash: engine_options_hash(&engine_options),
-            multipv: args.multipv,
-            hits: Arc::new(AtomicUsize::new(0)),
-            misses: Arc::new(AtomicUsize::new(0)),
-        })
-    });
+    let engine_fingerprint_mode = EngineFingerprintMode::parse(&args.engine_fingerprint_mode);
+    let cache: Option<Arc<LabelCache>> = match &args.cache_dir {
+        Some(dir) => {
+            // Read once, before any workers spawn -- negligible next to actually running search
+            // across a dataset, and every worker shares this same value via `LabelCache`.
+            let engine_fingerprint =
+                compute_engine_fingerprint(engine_fingerprint_mode, &engine_path)?;
+            Some(Arc::new(LabelCache {
+                dir: dir.clone(),
+                engine_options_hash: engine_options_hash(&engine_options),
+                multipv: args.multipv,
+                engine_fingerprint,
+                hits: Arc::new(AtomicUsize::new(0)),
+                misses: Arc::new(AtomicUsize::new(0)),
+            }))
+        }
+        None => None,
+    };
 
     // Verify the engine launches before committing to any pipeline work.
     let probe = UsiEngine::launch(
@@ -999,6 +1130,7 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
         if let Some((hits, misses)) = cache_counts {
             manifest.cache_hits = Some(hits);
             manifest.cache_misses = Some(misses);
+            manifest.engine_fingerprint_mode = Some(engine_fingerprint_mode.as_str());
         }
         write_manifest(args.manifest.as_ref().unwrap(), &manifest)?;
     }
@@ -1327,6 +1459,8 @@ struct RunManifest {
     cache_hits: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cache_misses: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    engine_fingerprint_mode: Option<&'static str>,
 }
 
 impl RunManifest {
@@ -1361,6 +1495,7 @@ impl RunManifest {
             engine_launch_failures: None,
             cache_hits: None,
             cache_misses: None,
+            engine_fingerprint_mode: None,
         }
     }
 }
@@ -2716,6 +2851,7 @@ mod fingerprint_tests {
             dir: PathBuf::from("/tmp/cache"),
             engine_options_hash: engine_options_hash(&[]),
             multipv: 1,
+            engine_fingerprint: None,
             hits: Arc::new(AtomicUsize::new(0)),
             misses: Arc::new(AtomicUsize::new(0)),
         };
@@ -2723,5 +2859,106 @@ mod fingerprint_tests {
         let key = path.file_stem().unwrap().to_str().unwrap();
         assert_eq!(key.len(), 64);
         assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+}
+
+#[cfg(test)]
+mod label_cache_correctness_tests {
+    use super::*;
+
+    fn cache_with_fingerprint(fp: Option<u64>) -> LabelCache {
+        LabelCache {
+            dir: PathBuf::from("/tmp/cache"),
+            engine_options_hash: engine_options_hash(&[]),
+            multipv: 1,
+            engine_fingerprint: fp,
+            hits: Arc::new(AtomicUsize::new(0)),
+            misses: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    #[test]
+    fn atomic_cache_write_never_leaves_a_torn_file_under_concurrent_writers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shared_key.json");
+
+        // Several threads race to write the same content-addressed key -- exactly the
+        // documented "sharing a labeling budget across datasets" scenario, just compressed onto
+        // one machine. None of them should ever leave a partially-written file visible.
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    write_cache_entry_atomically(&path, &format!(r#"{{"n":{i}}}"#))
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap().unwrap();
+        }
+
+        let content = fs::read_to_string(&path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content)
+            .expect("file must always be complete, valid JSON, never a torn partial write");
+        assert!(parsed["n"].is_number());
+
+        let leftover_temp_files = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+            .count();
+        assert_eq!(leftover_temp_files, 0, "no temp files should remain behind");
+    }
+
+    #[test]
+    fn engine_fingerprint_content_mode_differs_for_different_binaries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path_a = dir.path().join("engine_a");
+        let path_b = dir.path().join("engine_b");
+        fs::write(&path_a, b"binary A content").unwrap();
+        fs::write(&path_b, b"binary B content").unwrap();
+
+        let fp_a = compute_engine_fingerprint(EngineFingerprintMode::Content, &path_a).unwrap();
+        let fp_b = compute_engine_fingerprint(EngineFingerprintMode::Content, &path_b).unwrap();
+        assert!(fp_a.is_some());
+        assert_ne!(
+            fp_a, fp_b,
+            "two different binaries must not silently share a cache identity"
+        );
+    }
+
+    #[test]
+    fn engine_fingerprint_none_mode_produces_no_fingerprint() {
+        // The escape hatch: identical to today's original behavior of relying solely on the
+        // USI-reported id name/version, regardless of what the binary on disk actually contains.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("engine");
+        fs::write(&path, b"anything").unwrap();
+        assert_eq!(
+            compute_engine_fingerprint(EngineFingerprintMode::None, &path).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn label_cache_path_differs_when_engine_fingerprint_differs() {
+        let path_a = label_cache_path(
+            &cache_with_fingerprint(Some(111)),
+            "startpos",
+            "engine",
+            Some("1.0"),
+            8,
+        );
+        let path_b = label_cache_path(
+            &cache_with_fingerprint(Some(222)),
+            "startpos",
+            "engine",
+            Some("1.0"),
+            8,
+        );
+        assert_ne!(
+            path_a, path_b,
+            "a rebuilt engine binary must not collide with a stale cache entry"
+        );
     }
 }

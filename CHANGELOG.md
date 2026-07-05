@@ -16,6 +16,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 - `select` command — picks positions worth a closer look/re-label instead of re-labeling an entire dataset at higher depth. `--strategy uncertain` ranks by `evaluate_quality`'s pass-fraction (reusing `filter`'s exact gates); `--strategy hard` ranks by eval swing/bestmove disagreement/blunder-adjacency (reusing `mine`'s blunder-window detection); `--strategy coverage` prioritizes the thinnest phase/side/eval-bucket combinations (reusing `balance`'s bucket key). Outputs in ranked order, not restored to input order.
 - `label --cache-dir PATH` caches each observation as a sharded, content-addressed JSON file keyed on `(sfen, engine name, engine version, engine options, requested depth, multipv, schema version)`, so repeated experiments over the same positions reuse a cached observation instead of re-running the engine. No database — plain files. Cache hit/miss counts appear in `--manifest`.
 - `SourceInfo.root_id`/`variation_id`/`branch_from_ply` (all `Option`) — `root_id` is shared by a KIF game's mainline and every variation branching from it; `variation_id`/`branch_from_ply` are set on variation records only. `None` on CSA-extracted positions (no variation concept) and on JSONL predating this field.
+- `label --engine-fingerprint-mode content|metadata|none` (default `content`) folds the engine binary itself into the `--cache-dir` cache key, on top of its USI-reported `id name`/`id version` — those strings are controlled by the engine and aren't guaranteed to change after a local rebuild, so relying on them alone risked a cache hit silently reusing labels produced by a different executable. `content` hashes the binary's bytes (read once at startup); `metadata` hashes its canonical path/size/mtime instead (cheaper, but invalidates on every rebuild into a fresh path even when the bytes are unchanged); `none` restores the original identity-strings-only behavior. `--manifest` gains `engine_fingerprint_mode` when `--cache-dir` is used.
 
 ### Changed
 - `SCHEMA_VERSION` bumped to 6 and pack `FORMAT_VERSION` bumped to 6 for the new `Observation.requested_depth` field; old `.shgpk` files are not readable by this version
@@ -28,6 +29,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ### Fixed
 - `extract --dedup-zobrist` no longer collapses every unparseable SFEN into a single sentinel hash (`0`); each unparseable position is now individually warned about and counted as skipped, instead of the first bad SFEN silently absorbing all later, unrelated bad SFENs as "duplicates"
+- `label --cache-dir` writes are now atomic (temp file + rename) instead of a direct `fs::write`, so a crash/kill/disk-full mid-write can no longer leave a torn JSON file visible to a concurrent `label` process sharing the same cache dir
 
 ---
 

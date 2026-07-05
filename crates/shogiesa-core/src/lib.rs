@@ -130,6 +130,19 @@ pub enum BestMoveKind {
     NoMove,
 }
 
+/// Classifies a literal USI `bestmove` token, `None` for an ordinary move string. The single
+/// source of truth for the resign/win/none token set -- `shogiesa-usi`'s live classification and
+/// `effective_bestmove_kind`'s legacy-JSONL fallback below both call this instead of each keeping
+/// their own copy of the match.
+pub fn classify_bestmove_token(token: &str) -> Option<BestMoveKind> {
+    match token {
+        "resign" => Some(BestMoveKind::Resign),
+        "win" => Some(BestMoveKind::Win),
+        "none" => Some(BestMoveKind::NoMove),
+        _ => None,
+    }
+}
+
 /// Whether a USI `info` line's score is a confirmed evaluation or a search bound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -268,15 +281,50 @@ fn deepest_per_engine(observations: &[Observation]) -> Vec<&Observation> {
     by_engine.into_values().collect()
 }
 
-/// Whether every distinct engine's deepest observation agrees on bestmove.
+/// `obs.bestmove_kind` if set, else classifies the literal `bestmove` string -- so older JSONL
+/// (labeled before `bestmove_kind` existed) gets the same resign/win/none handling as freshly
+/// labeled data, instead of only benefiting records re-labeled after this existed.
+pub fn effective_bestmove_kind(obs: &Observation) -> Option<BestMoveKind> {
+    obs.bestmove_kind
+        .or_else(|| classify_bestmove_token(&obs.bestmove))
+}
+
+/// True if any observation's bestmove is a special token (resign/win/none) rather than an
+/// ordinary move.
+pub fn has_special_bestmove(observations: &[Observation]) -> bool {
+    observations
+        .iter()
+        .any(|o| effective_bestmove_kind(o).is_some())
+}
+
+/// Bestmove agreement over an iterator of observations, considering only ordinary moves --
+/// shared by `bestmove_agreement` (all observations) and `engine_bestmove_agreement` (one
+/// per-engine "vote" each). Vacuously true when fewer than 2 ordinary-move observations remain,
+/// matching this codebase's existing "agreement" convention for 0-or-1-observation records.
+fn ordinary_bestmove_agreement<'a>(observations: impl Iterator<Item = &'a Observation>) -> bool {
+    let ordinary: Vec<&Observation> = observations
+        .filter(|o| effective_bestmove_kind(o).is_none())
+        .collect();
+    ordinary.len() < 2 || ordinary.iter().all(|o| o.bestmove == ordinary[0].bestmove)
+}
+
+/// Whether every observation agrees on bestmove, excluding special tokens (resign/win/none) from
+/// the comparison -- one engine giving up isn't an opinion about which move is best, so folding a
+/// resign in as "disagreement" would corrupt agreement-based gates with false positives unrelated
+/// to actual position ambiguity.
+pub fn bestmove_agreement(observations: &[Observation]) -> bool {
+    ordinary_bestmove_agreement(observations.iter())
+}
+
+/// Whether every distinct engine's deepest observation agrees on bestmove, excluding special
+/// tokens the same way `bestmove_agreement` does.
 /// `None` if fewer than 2 distinct engines are represented in `observations`.
 pub fn engine_bestmove_agreement(observations: &[Observation]) -> Option<bool> {
     let deepest = deepest_per_engine(observations);
     if deepest.len() < 2 {
         return None;
     }
-    let first = deepest[0].bestmove.as_str();
-    Some(deepest.iter().all(|o| o.bestmove == first))
+    Some(ordinary_bestmove_agreement(deepest.into_iter()))
 }
 
 /// Cp swing across each distinct engine's deepest observation.
@@ -543,7 +591,7 @@ pub fn evaluate_quality(rec: &PositionRecord, config: &QualityConfig) -> Quality
         }
     }
 
-    let bestmove_agreement = obs.is_empty() || obs.iter().all(|o| o.bestmove == obs[0].bestmove);
+    let bestmove_agreement = bestmove_agreement(obs);
     if config.require_bestmove_agreement {
         configured_gates += 1;
         if obs.len() >= 2 && !bestmove_agreement {
@@ -609,8 +657,7 @@ impl PositionRecord {
                 Score::Mate { .. } => None,
             })
             .collect();
-        let first = &self.observations[0].bestmove;
-        let bestmove_agreement = self.observations.iter().all(|o| &o.bestmove == first);
+        let bestmove_agreement = bestmove_agreement(&self.observations);
         self.stability = Some(StabilityInfo {
             score_swing_cp: score_swing(&cp_scores),
             bestmove_agreement,
@@ -716,6 +763,55 @@ mod tests {
             obs("b", 4, 12, "7g7f"),
         ];
         assert_eq!(engine_bestmove_agreement(&observations), Some(false));
+    }
+
+    #[test]
+    fn bestmove_agreement_true_when_all_observations_are_resign() {
+        // legacy JSONL: bestmove_kind absent, falls back to classifying the literal string
+        let observations = vec![obs("a", 4, 10, "resign"), obs("b", 4, 12, "resign")];
+        assert!(bestmove_agreement(&observations));
+    }
+
+    #[test]
+    fn bestmove_agreement_true_when_one_resigns_and_one_moves() {
+        // vacuous: only one ordinary-move observation remains after excluding the resign
+        let observations = vec![obs("a", 4, 10, "resign"), obs("b", 4, 12, "7g7f")];
+        assert!(bestmove_agreement(&observations));
+    }
+
+    #[test]
+    fn bestmove_agreement_false_when_two_ordinary_moves_differ() {
+        let observations = vec![
+            obs("a", 4, 10, "resign"),
+            obs("b", 4, 12, "7g7f"),
+            obs("c", 4, 12, "2g2f"),
+        ];
+        assert!(!bestmove_agreement(&observations));
+    }
+
+    #[test]
+    fn has_special_bestmove_true_when_any_observation_is_special() {
+        let observations = vec![obs("a", 4, 10, "7g7f"), obs("b", 4, 12, "resign")];
+        assert!(has_special_bestmove(&observations));
+    }
+
+    #[test]
+    fn has_special_bestmove_false_for_ordinary_moves_only() {
+        let observations = vec![obs("a", 4, 10, "7g7f"), obs("b", 4, 12, "2g2f")];
+        assert!(!has_special_bestmove(&observations));
+    }
+
+    #[test]
+    fn effective_bestmove_kind_prefers_explicit_field_over_literal_string() {
+        let mut o = obs("a", 4, 10, "not_actually_resign");
+        o.bestmove_kind = Some(BestMoveKind::Resign);
+        assert_eq!(effective_bestmove_kind(&o), Some(BestMoveKind::Resign));
+    }
+
+    #[test]
+    fn engine_bestmove_agreement_ignores_a_resigning_engine() {
+        let observations = vec![obs("a", 4, 10, "7g7f"), obs("b", 4, 12, "resign")];
+        assert_eq!(engine_bestmove_agreement(&observations), Some(true));
     }
 
     #[test]

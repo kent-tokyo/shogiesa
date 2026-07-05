@@ -149,7 +149,9 @@ to each record. If the record was labeled by 2+ distinct engines (see `label --e
 also adds `stability.engine_bestmove_agreement` and `stability.engine_score_swing_cp` — computed
 from each engine's *deepest* observation, so a depth mismatch between engines can itself surface
 as disagreement (intentional: it's each engine's best-available answer). `None` with fewer than
-2 engines represented.
+2 engines represented. Both agreement checks exclude special bestmove tokens (`resign`/`win`/`none`,
+see `bestmove_kind` under "JSONL Schema") from the comparison — one engine giving up isn't an
+opinion about which move is best, so it's neither counted as agreement nor disagreement.
 
 ### `filter` — stability-based filtering
 
@@ -313,9 +315,12 @@ reflects `Observation.score_bound`, so it's meaningful even without MultiPV), av
 (plus a histogram), average policy margin, an eval-bucket histogram plus eval-bucket × phase /
 eval-bucket × side cross-tabs (bucketed on Black-perspective cp, so the histogram/cross-tabs share
 one reference frame regardless of whose turn each position was), (for positions labeled by 2+
-distinct engines) an engine-disagreement rate, (when `label --multipv N` (N≥2) was used)
-MultiPV-candidate coverage and a separate `score_bound` distribution scoped to those candidates,
-and (when any observation has a recorded `requested_depth`) a requested-depth underreach rate.
+distinct engines) an engine-disagreement rate, a special-bestmove rate (fraction of labeled
+positions with at least one `resign`/`win`/`none` observation — excluded from both disagreement
+rates above, not counted as either agreement or disagreement), (when `label --multipv N` (N≥2)
+was used) MultiPV-candidate coverage and a separate `score_bound` distribution scoped to those
+candidates, and (when any observation has a recorded `requested_depth`) a requested-depth
+underreach rate.
 
 ### `validate` — data integrity
 

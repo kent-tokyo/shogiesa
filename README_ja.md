@@ -154,7 +154,10 @@ shogiesa stability --input observations.jsonl --out observations.jsonl
 --engine-name` 参照）は `stability.engine_bestmove_agreement` と `stability.engine_score_swing_cp`
 も追加されます — 各エンジンの *最も深い* 観測から計算されるため、エンジン間の深さの違い自体が
 不一致として現れることがあります（意図的な仕様: 各エンジンの最善の回答同士を比較するため）。
-エンジンが2つ未満の場合は `None` になります。
+エンジンが2つ未満の場合は `None` になります。どちらの一致判定も特殊bestmoveトークン
+（`resign`/`win`/`none`、「JSONLスキーマ」の `bestmove_kind` 参照）を比較対象から除外します —
+どちらかのエンジンが投了しただけでは「どの手が最善か」についての意見表明にはならないため、
+一致とも不一致ともカウントしません。
 
 ### `filter` — 安定度に基づくフィルタリング
 
@@ -318,6 +321,8 @@ MultiPV を使っていなくても意味があります）、score swing 平均
 policy margin 平均、eval-bucketヒストグラムと eval-bucket × phase / eval-bucket × side の
 クロス集計（いずれも先手視点のcpでバケット分けするため、手番に関わらず同じ基準で
 比較できます）、（2つ以上の異なるエンジンでラベル付けされた局面については）エンジン不一致率、
+特殊bestmove率（`resign`/`win`/`none` の観測を1件以上含むラベル付き局面の割合 —
+上記の不一致率からは除外され、一致・不一致のどちらにもカウントされません）、
 （`label --multipv N`（N≥2）を使った場合は）MultiPV候補カバレッジと、
 その候補に限定した別の `score_bound` 分布、そして（`requested_depth` が記録された観測が
 1件以上あれば）requested_depth の未達率を表示します。

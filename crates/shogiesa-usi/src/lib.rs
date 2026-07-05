@@ -10,16 +10,11 @@ use shogiesa_core::{BestMoveKind, CandidateMove, Score, ScoreBound};
 use thiserror::Error;
 
 /// Classifies a raw USI `bestmove` token. `None` for an ordinary move -- kept out of storage via
-/// `Option` since that's the overwhelming common case. USI defines exactly these three tokens as
-/// "there is no move" responses; anything else is treated as an ordinary move string (no
-/// validation that it's a *legal* move -- that's out of scope here, same as today).
+/// `Option` since that's the overwhelming common case. Delegates to `shogiesa-core` so the token
+/// set (resign/win/none) is defined in exactly one place, shared with `effective_bestmove_kind`'s
+/// legacy-JSONL fallback.
 pub fn classify_bestmove(token: &str) -> Option<BestMoveKind> {
-    match token {
-        "resign" => Some(BestMoveKind::Resign),
-        "win" => Some(BestMoveKind::Win),
-        "none" => Some(BestMoveKind::NoMove),
-        _ => None,
-    }
+    shogiesa_core::classify_bestmove_token(token)
 }
 
 #[derive(Debug, Error)]

@@ -1260,6 +1260,205 @@ fn filter_bestmove_disagreement_excluded() {
 }
 
 #[test]
+fn filter_bestmove_agreement_excludes_resign_from_comparison() {
+    // one observation resigns, the other gives an ordinary move -- a resign isn't an opinion
+    // about which move is best, so only one ordinary-move observation remains: vacuous agreement.
+    let f = make_labeled_jsonl(&[position(
+        "middlegame",
+        serde_json::json!([obs("resign", 50, 4), obs("7g7f", 55, 6)]),
+    )]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--require-bestmove-agreement",
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 1);
+}
+
+#[test]
+fn label_then_filter_keeps_record_when_one_engine_resigns() {
+    let pos = NamedTempFile::new().unwrap();
+    let obs1 = NamedTempFile::new().unwrap();
+    let obs2 = NamedTempFile::new().unwrap();
+    let filtered = NamedTempFile::new().unwrap();
+
+    shogiesa()
+        .args([
+            "extract",
+            "--input",
+            fixture("sample.csa").to_str().unwrap(),
+            "--out",
+            pos.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            pos.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--engine-name",
+            "engineA",
+            "--depths",
+            "4",
+            "--out",
+            obs1.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    // engineB always resigns -- a real USI-reported bestmove_kind, not the legacy-string fallback
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            obs1.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--engine-name",
+            "engineB",
+            "--engine-option",
+            "Bestmove=resign",
+            "--depths",
+            "4",
+            "--out",
+            obs2.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            obs2.path().to_str().unwrap(),
+            "--out",
+            filtered.path().to_str().unwrap(),
+            "--require-bestmove-agreement",
+        ])
+        .assert()
+        .success();
+
+    // all 5 positions kept: engineB's resign is excluded from the comparison, not counted as
+    // disagreeing with engineA's ordinary move
+    let content = std::fs::read_to_string(filtered.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 5);
+}
+
+#[test]
+fn report_engine_disagreement_excludes_resign() {
+    let pos = NamedTempFile::new().unwrap();
+    let obs1 = NamedTempFile::new().unwrap();
+    let obs2 = NamedTempFile::new().unwrap();
+
+    shogiesa()
+        .args([
+            "extract",
+            "--input",
+            fixture("sample.csa").to_str().unwrap(),
+            "--out",
+            pos.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            pos.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--engine-name",
+            "engineA",
+            "--depths",
+            "4",
+            "--out",
+            obs1.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            obs1.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--engine-name",
+            "engineB",
+            "--engine-option",
+            "Bestmove=resign",
+            "--depths",
+            "4",
+            "--out",
+            obs2.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    shogiesa()
+        .args(["report", "--input", obs2.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "engine disagree:      0  (0.0% of 5 multi-engine positions)",
+        ));
+}
+
+#[test]
+fn report_shows_special_bestmove_rate() {
+    let f = make_labeled_jsonl(&[
+        position("middlegame", serde_json::json!([obs("resign", 50, 4)])),
+        position("middlegame", serde_json::json!([obs("7g7f", 50, 4)])),
+    ]);
+    shogiesa()
+        .args(["report", "--input", f.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("special bestmove"))
+        .stdout(predicate::str::contains("50.0% of labeled"));
+}
+
+#[test]
+fn stability_excludes_resign_from_bestmove_agreement() {
+    let f = make_labeled_jsonl(&[position(
+        "middlegame",
+        serde_json::json!([obs("resign", 50, 4), obs("2b3c", 300, 6)]),
+    )]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "stability",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    let v: serde_json::Value = serde_json::from_str(content.lines().next().unwrap()).unwrap();
+    assert_eq!(
+        v["stability"]["bestmove_agreement"], true,
+        "a resign isn't a disagreeing move -- only one ordinary-move observation remains"
+    );
+}
+
+#[test]
 fn filter_score_swing_excluded() {
     let f = make_labeled_jsonl(&[position(
         "middlegame",

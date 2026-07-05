@@ -10,8 +10,9 @@ use std::sync::{Arc, Mutex, mpsc};
 
 use shogiesa_core::{
     GamePhase, Observation, PositionRecord, QualityConfig, SCHEMA_VERSION, Score, ScorePerspective,
-    SideToMove, SourceInfo, cp_from_black_perspective, engine_bestmove_agreement, evaluate_quality,
-    score_swing, sfen::Sfen, zobrist_from_sfen,
+    SideToMove, SourceInfo, bestmove_agreement, cp_from_black_perspective,
+    engine_bestmove_agreement, evaluate_quality, has_special_bestmove, score_swing, sfen::Sfen,
+    zobrist_from_sfen,
 };
 use shogiesa_pack as pack;
 use shogiesa_usi::UsiEngine;
@@ -336,7 +337,8 @@ struct FilterArgs {
     /// --manifest to get a structured preview of a filter config's effect.
     #[arg(long)]
     dry_run: bool,
-    /// Require all observations to agree on bestmove
+    /// Require all observations to agree on bestmove, excluding resign/win/none tokens from the
+    /// comparison
     #[arg(long)]
     require_bestmove_agreement: bool,
     /// Exclude positions where any observation has a mate score
@@ -1932,10 +1934,7 @@ fn cmd_select(args: SelectArgs) -> Result<()> {
                     })
                     .collect();
                 let swing = score_swing(&cp_scores).unwrap_or(0);
-                let disagreement = rec
-                    .observations
-                    .first()
-                    .is_some_and(|f| rec.observations.iter().any(|o| o.bestmove != f.bestmove));
+                let disagreement = !bestmove_agreement(&rec.observations);
                 (blunder_set.contains(&i), disagreement, swing)
             };
             ranked.sort_by(|&a, &b| {
@@ -2270,6 +2269,7 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
     let mut depth_disagree = 0usize;
     let mut multi_engine = 0usize;
     let mut engine_disagree = 0usize;
+    let mut special_bestmove = 0usize;
     let mut depth_counts: BTreeMap<u32, usize> = BTreeMap::new();
     // eval buckets: key = floor(cp / 200) * 200; special keys: i32::MIN = unlabeled, i32::MAX = mate
     let mut eval_buckets: BTreeMap<i32, usize> = BTreeMap::new();
@@ -2327,10 +2327,13 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
                 .or_default() += 1;
         } else {
             labeled += 1;
-            // depth disagreement
-            let first = &rec.observations[0].bestmove;
-            if rec.observations.iter().any(|o| &o.bestmove != first) {
+            // bestmove disagreement, excluding resign/win/none tokens (one engine giving up isn't
+            // an opinion about which move is best)
+            if !bestmove_agreement(&rec.observations) {
                 depth_disagree += 1;
+            }
+            if has_special_bestmove(&rec.observations) {
+                special_bestmove += 1;
             }
             if let Some(agree) = engine_bestmove_agreement(&rec.observations) {
                 multi_engine += 1;
@@ -2516,6 +2519,10 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
                 engine_disagree as f64 / multi_engine as f64 * 100.0
             );
         }
+        println!(
+            "  special bestmove: {special_bestmove:>5}  ({:.1}% of labeled; resign/win/none)",
+            special_bestmove as f64 / labeled as f64 * 100.0
+        );
         println!("  depth counts:");
         for (&depth, &count) in &depth_counts {
             println!("    depth {depth:>2}     : {count:>6}");

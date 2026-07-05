@@ -465,10 +465,17 @@ JSONLスキーマをコンパクトなバイナリ形式にエンコードし、
 読み込み/採用/棄却件数、
 棄却理由別カウント、ラベル済み/未ラベル件数、MultiPV候補カバレッジ、`score_bound` 分布、
 requested_depth の合計数/未達数、そして（`filter` の場合は）解決済みの品質設定、（`label` の場合は）エンジン名/深さ/MultiPV/
-エンジンオプション/ジョブ数/エンジン起動失敗数、（`--cache-dir` 使用時は）cache hit/miss件数と
-`engine_fingerprint_mode` です。オプトインかつ加算的な機能であり、
+エンジンオプション/ジョブ数/エンジン起動失敗数、`records_per_sec`(壁時計時間ベース。読み込み
+件数ではなく実際に書き出された件数を基準にします — 読み込み件数だと、エンジンまで届かなかった
+skip/パース不能行の分だけ数値が水増しされるため)、`average_engine_time_ms`(書き出した各
+レコードの `Observation.time_ms` から算出した平均値。`--skip-existing`/`--replace-existing`/
+デフォルトのappendポリシーでは、同じファイルへの前回の `label` 実行で追加された観測も
+含まれます — 今回の実行純粋な処理速度を見るには `records_per_sec` を使ってください)、
+`unordered_output`、そして(`--cache-dir` 使用時は)cache hit/miss件数、`cache_hit_rate`、
+`engine_fingerprint_mode` です。`worker_count` という別フィールドはありません —
+既存の `jobs` がまさにその値だからです。オプトインかつ加算的な機能であり、
 省略時はコマンドの通常動作に影響しません。`split` には `--manifest` はありません
-— 既に専用の `manifest.json` を書き出しているためです（前述）。
+— 既に専用の `manifest.json` を書き出しているためです(前述)。
 
 ### `report` — 統計レポート
 

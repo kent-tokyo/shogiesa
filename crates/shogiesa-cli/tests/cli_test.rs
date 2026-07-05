@@ -1105,6 +1105,132 @@ fn label_cache_dir_hits_on_second_run_and_output_matches() {
     );
 }
 
+#[test]
+fn label_manifest_reports_throughput_metrics() {
+    let pos = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "extract",
+            "--input",
+            fixture("sample.csa").to_str().unwrap(),
+            "--out",
+            pos.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let out = NamedTempFile::new().unwrap();
+    let manifest = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            pos.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4,6",
+            "--unordered-output",
+            "--out",
+            out.path().to_str().unwrap(),
+            "--manifest",
+            manifest.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("rec/s"));
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest.path()).unwrap()).unwrap();
+
+    assert!(
+        manifest["records_per_sec"].as_f64().unwrap() > 0.0,
+        "records_per_sec must be a positive rate"
+    );
+    // fake-usi-engine always reports a fixed time_ms -- confirms the average is computed from
+    // real Observation.time_ms values, not a placeholder.
+    assert_eq!(manifest["average_engine_time_ms"], 50.0);
+    assert_eq!(manifest["unordered_output"], true);
+    assert!(
+        manifest.get("cache_hit_rate").is_none(),
+        "cache_hit_rate must be absent without --cache-dir"
+    );
+    assert!(
+        manifest.get("worker_count").is_none(),
+        "worker_count would duplicate the existing jobs field -- must not exist"
+    );
+    assert_eq!(manifest["jobs"], 1);
+}
+
+#[test]
+fn label_manifest_cache_hit_rate_reflects_hits_and_misses() {
+    let pos = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "extract",
+            "--input",
+            fixture("sample.csa").to_str().unwrap(),
+            "--out",
+            pos.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let cache_dir = TempDir::new().unwrap();
+    let out1 = NamedTempFile::new().unwrap();
+    let manifest1 = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            pos.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4,6",
+            "--cache-dir",
+            cache_dir.path().to_str().unwrap(),
+            "--out",
+            out1.path().to_str().unwrap(),
+            "--manifest",
+            manifest1.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let manifest1: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest1.path()).unwrap()).unwrap();
+    assert_eq!(
+        manifest1["cache_hit_rate"], 0.0,
+        "first run: nothing cached yet"
+    );
+
+    let out2 = NamedTempFile::new().unwrap();
+    let manifest2 = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            pos.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4,6",
+            "--cache-dir",
+            cache_dir.path().to_str().unwrap(),
+            "--out",
+            out2.path().to_str().unwrap(),
+            "--manifest",
+            manifest2.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let manifest2: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest2.path()).unwrap()).unwrap();
+    assert_eq!(
+        manifest2["cache_hit_rate"], 1.0,
+        "second run: every observation cached"
+    );
+}
+
 // --- cache ---
 
 /// Populates a real `label --cache-dir` cache (5 positions x 2 depths = 10 entries, one engine)

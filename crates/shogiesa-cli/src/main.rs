@@ -1208,6 +1208,10 @@ fn reorder_push(
 }
 
 fn cmd_label(args: LabelArgs) -> Result<()> {
+    // Bounded-pipeline changes (worker count, cache usage, ordering) can't be judged without
+    // measuring their actual effect on throughput -- this run's wall-clock start, used for
+    // `records_per_sec` below.
+    let run_start = std::time::Instant::now();
     let depths: Vec<u32> = args
         .depths
         .split(',')
@@ -1425,6 +1429,10 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
     let mut next_id = 0u64;
     let mut pending: BTreeMap<u64, PositionRecord> = BTreeMap::new();
     let mut written = 0usize;
+    // Accumulated here (not a second pass) since write_one already sees every written record's
+    // observations once, right before writing.
+    let mut time_ms_sum = 0u64;
+    let mut time_ms_count = 0usize;
 
     let mut write_one =
         |record: &PositionRecord, manifest: &mut Option<RunManifest>| -> Result<()> {
@@ -1432,6 +1440,12 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
             out_writer.write_all(b"\n")?;
             if let Some(m) = manifest.as_mut() {
                 accumulate_coverage(m, std::slice::from_ref(record));
+            }
+            for obs in &record.observations {
+                if let Some(t) = obs.time_ms {
+                    time_ms_sum += t;
+                    time_ms_count += 1;
+                }
             }
             // Release the permit only now that the record is durably written -- this is the other
             // half of the dispatch window: it caps how far ahead of the writer the pipeline can get.
@@ -1473,11 +1487,22 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
         )
     });
 
+    let elapsed_secs = run_start.elapsed().as_secs_f64();
+    let records_per_sec = (elapsed_secs > 0.0).then(|| written as f64 / elapsed_secs);
+    let cache_hit_rate = cache_counts.and_then(|(hits, misses)| {
+        (hits + misses > 0).then(|| hits as f64 / (hits + misses) as f64)
+    });
+    let average_engine_time_ms =
+        (time_ms_count > 0).then(|| time_ms_sum as f64 / time_ms_count as f64);
+
     let cache_suffix = cache_counts
         .map(|(hits, misses)| format!(", {hits} cache hits, {misses} cache misses"))
         .unwrap_or_default();
+    let throughput_suffix = records_per_sec
+        .map(|r| format!(", {r:.1} rec/s"))
+        .unwrap_or_default();
     eprintln!(
-        "done [{engine_display_name}, jobs={jobs}]: {total} in, {written} labeled, {skipped} skipped, {engine_launch_failures} engine launch failures{cache_suffix} → {:?}",
+        "done [{engine_display_name}, jobs={jobs}]: {total} in, {written} labeled, {skipped} skipped, {engine_launch_failures} engine launch failures{cache_suffix}{throughput_suffix} → {:?}",
         args.out
     );
     if let Some(mut manifest) = manifest {
@@ -1491,8 +1516,12 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
         manifest.engine_options = Some(args.engine_options.clone());
         manifest.jobs = Some(jobs);
         manifest.engine_launch_failures = Some(engine_launch_failures);
+        manifest.records_per_sec = records_per_sec;
+        manifest.average_engine_time_ms = average_engine_time_ms;
+        manifest.unordered_output = Some(args.unordered_output);
         if let Some((hits, misses)) = cache_counts {
             manifest.cache_hits = Some(hits);
+            manifest.cache_hit_rate = cache_hit_rate;
             manifest.cache_misses = Some(misses);
             manifest.engine_fingerprint_mode = Some(engine_fingerprint_mode.as_str());
         }
@@ -1906,6 +1935,25 @@ struct RunManifest {
     cache_misses: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     engine_fingerprint_mode: Option<&'static str>,
+    /// `label`-only throughput diagnostics -- bounded pipeline changes (worker count, cache
+    /// usage, ordering) can't be judged without measuring their actual effect, so this round
+    /// surfaces the measurements instead of guessing. `jobs` above already *is* the worker count
+    /// -- no separate field for that, to avoid two fields that could drift out of sync.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    records_per_sec: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_hit_rate: Option<f64>,
+    /// Average `Observation.time_ms` across every observation in each written record. Under
+    /// `--skip-existing`/`--replace-existing`/the default `Append` policy, a record re-labeled on
+    /// top of prior observations includes THOSE observations' `time_ms` too, not only this
+    /// invocation's own engine calls -- getting that fully precise would mean threading "which
+    /// observations this call actually added" back through `Job`/the worker/writer channels, not
+    /// justified for a diagnostic average. Use `records_per_sec` to judge this run's actual
+    /// throughput.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    average_engine_time_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unordered_output: Option<bool>,
 }
 
 impl RunManifest {
@@ -1941,6 +1989,10 @@ impl RunManifest {
             cache_hits: None,
             cache_misses: None,
             engine_fingerprint_mode: None,
+            records_per_sec: None,
+            cache_hit_rate: None,
+            average_engine_time_ms: None,
+            unordered_output: None,
         }
     }
 }

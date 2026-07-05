@@ -456,9 +456,16 @@ runs" marker, not a verifiable integrity checksum), records read/kept/dropped, d
 counts, labeled/unlabeled record counts, MultiPV candidate coverage, `score_bound` distribution,
 requested-depth total/underreach counts, and (for `filter`) the resolved quality configuration or
 (for `label`) the engine name/depths/MultiPV/engine options/job count, engine-launch-failure
-count, and (when `--cache-dir` is used) cache hit/miss counts and `engine_fingerprint_mode`. It's
-opt-in and additive — no effect on the command's normal output when omitted. `split` doesn't have
-`--manifest`: it already writes its own tailored `manifest.json` (see above).
+count, `records_per_sec` (wall-clock, based on records durably written — not records read, which
+would inflate the rate with skipped/unparseable rows that never reached the engine),
+`average_engine_time_ms` (averaged from `Observation.time_ms` across each written record; under
+`--skip-existing`/`--replace-existing`/the default append policy this includes any observations
+inherited from a prior `label` run on the same file, not purely this invocation's own engine
+calls — use `records_per_sec` to judge this run's actual throughput), `unordered_output`, and
+(when `--cache-dir` is used) cache hit/miss counts, `cache_hit_rate`, and
+`engine_fingerprint_mode`. There's no separate `worker_count` field — `jobs` already is that
+value. It's opt-in and additive — no effect on the command's normal output when omitted. `split`
+doesn't have `--manifest`: it already writes its own tailored `manifest.json` (see above).
 
 ### `report` — dataset statistics
 

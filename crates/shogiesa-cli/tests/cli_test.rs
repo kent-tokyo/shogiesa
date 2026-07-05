@@ -2122,6 +2122,222 @@ fn calibrate_sweep_and_hold_flag_on_the_same_field_are_mutually_exclusive() {
         .stderr(predicate::str::contains("cannot be used with"));
 }
 
+// --- audit ---
+
+/// Full-control observation builder for `audit` tests -- unlike `obs`/`obs_mate`/`obs_with_margin`
+/// (which never set `requested_depth`, always exercising the `depth`-fallback match rule), this
+/// lets a test set an explicit `requested_depth` distinct from `depth` (e.g. to simulate a
+/// mate-early-stop, or to prove the primary requested_depth-based match rule specifically).
+fn audit_obs(
+    engine: &str,
+    bestmove: &str,
+    score: serde_json::Value,
+    depth: u32,
+    requested_depth: Option<u32>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "engine": engine,
+        "engine_version": null,
+        "depth": depth,
+        "requested_depth": requested_depth,
+        "score": score,
+        "bestmove": bestmove,
+        "nodes": null,
+        "time_ms": null,
+        "pv": null
+    })
+}
+
+fn cp(value: i32) -> serde_json::Value {
+    serde_json::json!({ "kind": "cp", "value": value })
+}
+
+fn mate(moves: i32) -> serde_json::Value {
+    serde_json::json!({ "kind": "mate", "moves": moves })
+}
+
+#[test]
+fn audit_groups_by_engine_not_across_engines() {
+    let f = make_labeled_jsonl(&[position(
+        "opening",
+        serde_json::json!([
+            audit_obs("engineA", "7g7f", cp(100), 14, Some(14)),
+            audit_obs("engineA", "7g7f", cp(100), 6, Some(6)),
+            audit_obs("engineB", "2g2f", cp(-500), 14, Some(14)),
+            audit_obs("engineB", "7g7f", cp(100), 6, Some(6)),
+        ]),
+    )]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "audit",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--teacher-depth",
+            "14",
+            "--student-depths",
+            "6",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("2 pairs compared"));
+
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    let lines: Vec<serde_json::Value> = content
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(
+        lines.len(),
+        2,
+        "one pair per engine, not a cross-engine product"
+    );
+    let by_engine: std::collections::HashMap<&str, &serde_json::Value> = lines
+        .iter()
+        .map(|v| (v["engine"].as_str().unwrap(), v))
+        .collect();
+    assert_eq!(by_engine["engineA"]["bestmove_match"], true);
+    assert_eq!(by_engine["engineA"]["score_error_cp"], 0);
+    assert_eq!(by_engine["engineB"]["bestmove_match"], false);
+    assert_eq!(by_engine["engineB"]["score_error_cp"], -600);
+}
+
+#[test]
+fn audit_falls_back_to_achieved_depth_when_requested_depth_is_absent() {
+    // Legacy pre-schema-v6 data: requested_depth is always null, so the match must fall back to
+    // matching on the achieved `depth` directly.
+    let f = make_labeled_jsonl(&[position(
+        "opening",
+        serde_json::json!([
+            audit_obs("engineA", "7g7f", cp(100), 14, None),
+            audit_obs("engineA", "7g7f", cp(80), 6, None),
+        ]),
+    )]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "audit",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--teacher-depth",
+            "14",
+            "--student-depths",
+            "6",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("1 pairs compared"));
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().count(), 1);
+    let v: serde_json::Value = serde_json::from_str(content.lines().next().unwrap()).unwrap();
+    assert_eq!(v["score_error_cp"], 20);
+}
+
+#[test]
+fn audit_uses_a_short_mate_teacher_without_flagging_underreach() {
+    // Teacher requested depth 14 but stopped at 9 on a forced mate -- still used as the teacher,
+    // and NOT flagged as underreach (mate-exemption, same as evaluate_quality's own gate).
+    let f = make_labeled_jsonl(&[position(
+        "opening",
+        serde_json::json!([
+            audit_obs("engineA", "7g7f", mate(3), 9, Some(14)),
+            audit_obs("engineA", "7g7f", cp(100), 6, Some(6)),
+        ]),
+    )]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "audit",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--teacher-depth",
+            "14",
+            "--student-depths",
+            "6",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    let v: serde_json::Value = serde_json::from_str(content.lines().next().unwrap()).unwrap();
+    assert_eq!(v["teacher_depth"], 9);
+    assert_eq!(v["teacher_underreach"], false);
+    assert!(
+        v["score_error_cp"].is_null(),
+        "mate teacher has no cp to compare"
+    );
+}
+
+#[test]
+fn audit_bestmove_match_is_vacuous_when_student_resigns() {
+    // Reuses bestmove_agreement's existing resign-exclusion semantics, not a new audit-specific
+    // rule: only one ordinary-move observation remains once the resign is excluded, so it's a
+    // vacuous match despite the literal bestmove strings differing.
+    let f = make_labeled_jsonl(&[position(
+        "opening",
+        serde_json::json!([
+            audit_obs("engineA", "7g7f", cp(100), 14, Some(14)),
+            audit_obs("engineA", "resign", cp(100), 6, Some(6)),
+        ]),
+    )]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "audit",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--teacher-depth",
+            "14",
+            "--student-depths",
+            "6",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    let v: serde_json::Value = serde_json::from_str(content.lines().next().unwrap()).unwrap();
+    assert_eq!(v["bestmove_match"], true);
+}
+
+#[test]
+fn audit_score_error_cp_normalizes_through_black_perspective() {
+    // White to move: teacher raw cp 100 (good for White) -> black-perspective -100; student raw
+    // cp -50 (bad for White) -> black-perspective +50. score_error = -100 - 50 = -150, NOT the raw
+    // difference (100 - (-50) = 150, wrong sign) -- proves the comparison goes through
+    // cp_from_black_perspective rather than subtracting raw side-to-move-relative values.
+    let f = make_labeled_jsonl(&[position_white_to_move(
+        "opening",
+        serde_json::json!([
+            audit_obs("engineA", "7g7f", cp(100), 14, Some(14)),
+            audit_obs("engineA", "7g7f", cp(-50), 6, Some(6)),
+        ]),
+    )]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "audit",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--teacher-depth",
+            "14",
+            "--student-depths",
+            "6",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    let v: serde_json::Value = serde_json::from_str(content.lines().next().unwrap()).unwrap();
+    assert_eq!(v["score_error_cp"], -150);
+}
+
 // --- stability ---
 
 #[test]

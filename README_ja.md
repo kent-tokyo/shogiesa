@@ -236,6 +236,42 @@ CSV1行)。もう一方の次元は `--min-policy-margin-cp`/`--max-score-swing-
 同じ規約)、観測レベルの `score_bound` 件数、`requested_depth` 未達率、特殊bestmove率 —
 掃引結果を解釈する際の文脈情報であり、閾値によって変わる値ではありません。
 
+### `audit` — 浅いラベルと深いラベルを比較する
+
+```bash
+shogiesa audit \
+  --input observations.jsonl \
+  --teacher-depth 14 \
+  --student-depths 6,8,10 \
+  --out audit.jsonl
+```
+
+「このデータセットで、浅い深さでラベル付けすると実際にエンジンごとにどれだけのコストが
+かかるか」に答えます — 既に手元にあるデータに対する純粋な分析コマンドです。1回の
+`label --depths 6,8,10,14` 実行で、既に1レコードあたり深さごとに複数の同一エンジンの
+`Observation` が生成されています(`Observation.depth` 参照)。各レコードについて観測を
+`engine` でグループ化し(2つ以上のエンジンでラベル付けされたデータセットで、engine Aの
+浅い観測とengine Bの深い観測を比較することは絶対にありません)、各エンジンの
+`--teacher-depth` の観測(`requested_depth` で一致、レガシーなschema v6未満のデータでは
+達成された `depth` にフォールバック)と各 `--student-depths` の観測を同じ規則で探し、
+両方が存在する(engine, student_depth)の組み合わせごとに `audit.jsonl` に1行書き出します:
+```json
+{"sfen": "...", "source": {...}, "engine": "sekirei",
+ "teacher_requested_depth": 14, "teacher_depth": 14, "teacher_score_bound": "exact",
+ "teacher_underreach": false, "teacher_bestmove_kind": null,
+ "student_requested_depth": 8, "student_depth": 8, "student_score_bound": "exact",
+ "student_underreach": false, "student_bestmove_kind": null,
+ "bestmove_match": true, "score_error_cp": -35}
+```
+`bestmove_match` は `bestmove_agreement` を再利用します(他の箇所と同様に resign/win/none を
+比較から除外)。`score_error_cp`(どちらかが詰みの場合は `None`)は両辺を
+`cp_from_black_perspective` で正規化してから差を取ります — 手番相対値の生の差ではありません。
+教師観測自体が強制詰みにより `--teacher-depth` に届かなかった場合でも、そのまま教師として
+使われます(`filter` の深さゲートと同じ詰み除外規約)— `teacher_underreach` は正しく
+`false` になります(バグではありません)。student_depth ごとおよび全体の stderr サマリーを
+表示します: 比較件数、bestmove不一致率、`|score_error_cp|` の平均/最大値、教師/生徒の
+非exact率、教師/生徒の未達率、教師/生徒の特殊bestmove率。
+
 ### `mine` — 難局面のマイニング
 
 ```bash

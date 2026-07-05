@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use shogiesa_core::{
     GamePhase, Observation, PositionRecord, QualityConfig, QualityDecision, SCHEMA_VERSION, Score,
     ScorePerspective, SideToMove, SourceInfo, bestmove_agreement, cp_from_black_perspective,
-    engine_bestmove_agreement, evaluate_quality, has_special_bestmove,
+    effective_bestmove_kind, engine_bestmove_agreement, evaluate_quality, has_special_bestmove,
     requested_depth_underreached, score_swing, sfen::Sfen, zobrist_from_sfen,
 };
 use shogiesa_pack as pack;
@@ -56,6 +56,9 @@ enum Commands {
     /// Sweep quality-gate thresholds and report coverage/drop-reasons/distributions per value,
     /// to calibrate a filter config against a specific dataset/engine instead of guessing
     Calibrate(CalibrateArgs),
+    /// Compare shallow ("student") observations against a deep ("teacher") observation from the
+    /// same engine, within an already-labeled file
+    Audit(AuditArgs),
     /// Report statistics about a positions dataset
     Report(ReportArgs),
     /// Validate data integrity of a positions dataset
@@ -480,6 +483,23 @@ struct CalibrateArgs {
     require_requested_depth_reached: bool,
 }
 
+#[derive(clap::Args)]
+struct AuditArgs {
+    /// Input labeled positions JSONL (must already contain both the teacher and student depths,
+    /// e.g. from one `label --depths 6,8,10,14` run)
+    #[arg(short, long)]
+    input: PathBuf,
+    /// The depth treated as ground truth for each engine
+    #[arg(long)]
+    teacher_depth: u32,
+    /// Comma-separated shallower depths to compare against the teacher depth (e.g. "6,8,10")
+    #[arg(long)]
+    student_depths: String,
+    /// Output JSONL: one line per (record, engine, student_depth) pair with both depths present
+    #[arg(short, long)]
+    out: PathBuf,
+}
+
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -500,6 +520,7 @@ fn main() -> Result<()> {
         Commands::Unpack(args) => cmd_unpack(args),
         Commands::Filter(args) => cmd_filter(args),
         Commands::Calibrate(args) => cmd_calibrate(args),
+        Commands::Audit(args) => cmd_audit(args),
         Commands::Report(args) => cmd_report(args),
         Commands::Validate(args) => cmd_validate(args),
     }
@@ -1701,6 +1722,17 @@ fn hash_file(path: &Path) -> Result<String> {
     Ok(h.finalize().to_hex().to_string())
 }
 
+/// String form of `ScoreBound`, shared by every stat-reporting call site (`report`, `calibrate`,
+/// `audit`, `accumulate_candidate_coverage` below) that prints a score-bound distribution or a
+/// single bound's label, so the string mapping can't drift between them.
+fn score_bound_str(bound: shogiesa_core::ScoreBound) -> &'static str {
+    match bound {
+        shogiesa_core::ScoreBound::Exact => "exact",
+        shogiesa_core::ScoreBound::Lowerbound => "lowerbound",
+        shogiesa_core::ScoreBound::Upperbound => "upperbound",
+    }
+}
+
 /// Tally labeled/unlabeled records, MultiPV candidate coverage, and score-bound distribution
 /// across a batch of records — the same descriptive stats `report` computes ad hoc, shared here
 /// for `RunManifest`. Not a quality *decision* (no pass/fail judgment), so it lives in the CLI
@@ -1719,11 +1751,7 @@ fn accumulate_candidate_coverage(
         if !obs.candidates.is_empty() {
             *with_candidates += 1;
             for c in &obs.candidates {
-                let key = match c.score_bound {
-                    shogiesa_core::ScoreBound::Exact => "exact",
-                    shogiesa_core::ScoreBound::Lowerbound => "lowerbound",
-                    shogiesa_core::ScoreBound::Upperbound => "upperbound",
-                };
+                let key = score_bound_str(c.score_bound);
                 *score_bound_distribution.entry(key).or_default() += 1;
             }
         }
@@ -2732,11 +2760,7 @@ fn cmd_calibrate(args: CalibrateArgs) -> Result<()> {
                 if let Score::Cp { value } = obs.score {
                     cp_scores.push(value);
                 }
-                let bound_key = match obs.score_bound {
-                    shogiesa_core::ScoreBound::Exact => "exact",
-                    shogiesa_core::ScoreBound::Lowerbound => "lowerbound",
-                    shogiesa_core::ScoreBound::Upperbound => "upperbound",
-                };
+                let bound_key = score_bound_str(obs.score_bound);
                 *obs_score_bound_counts.entry(bound_key).or_default() += 1;
             }
             if let Some(swing) = score_swing(&cp_scores) {
@@ -2809,6 +2833,263 @@ fn cmd_calibrate(args: CalibrateArgs) -> Result<()> {
             eprintln!("    {key:>5}..{:<4}: {count:>6}", key + 49);
         }
     }
+
+    Ok(())
+}
+
+/// Finds the observation (already filtered to one engine) matching `target_depth` -- primary
+/// match on `requested_depth` (what `label` was actually asked to reach), falling back to the
+/// achieved `depth` for legacy pre-schema-v6 data (or any observation whose recorded
+/// `requested_depth` simply doesn't match `target_depth`).
+fn find_at_depth<'a>(
+    observations: &[&'a Observation],
+    target_depth: u32,
+) -> Option<&'a Observation> {
+    observations
+        .iter()
+        .find(|o| o.requested_depth == Some(target_depth))
+        .or_else(|| observations.iter().find(|o| o.depth == target_depth))
+        .copied()
+}
+
+fn parse_u32_list(s: &str) -> Result<Vec<u32>> {
+    s.split(',')
+        .map(|p| {
+            p.trim()
+                .parse::<u32>()
+                .with_context(|| format!("invalid unsigned integer {p:?} in depth list"))
+        })
+        .collect()
+}
+
+/// Aggregate stats for one student depth (or overall, across every student depth) -- shared
+/// accumulation so `cmd_audit`'s per-depth and overall summaries can't diverge.
+#[derive(Default)]
+struct AuditStats {
+    pairs: usize,
+    bestmove_mismatches: usize,
+    abs_score_error_sum: f64,
+    abs_score_error_count: usize,
+    abs_score_error_max: i32,
+    teacher_non_exact: usize,
+    student_non_exact: usize,
+    teacher_underreach: usize,
+    student_underreach: usize,
+    teacher_special_bestmove: usize,
+    student_special_bestmove: usize,
+}
+
+impl AuditStats {
+    fn record(
+        &mut self,
+        bestmove_match: bool,
+        score_error_cp: Option<i32>,
+        teacher: &Observation,
+        student: &Observation,
+    ) {
+        self.pairs += 1;
+        if !bestmove_match {
+            self.bestmove_mismatches += 1;
+        }
+        if let Some(err) = score_error_cp {
+            let abs_err = err.abs();
+            self.abs_score_error_sum += abs_err as f64;
+            self.abs_score_error_count += 1;
+            self.abs_score_error_max = self.abs_score_error_max.max(abs_err);
+        }
+        if teacher.score_bound != shogiesa_core::ScoreBound::Exact {
+            self.teacher_non_exact += 1;
+        }
+        if student.score_bound != shogiesa_core::ScoreBound::Exact {
+            self.student_non_exact += 1;
+        }
+        if requested_depth_underreached(teacher) {
+            self.teacher_underreach += 1;
+        }
+        if requested_depth_underreached(student) {
+            self.student_underreach += 1;
+        }
+        if effective_bestmove_kind(teacher).is_some() {
+            self.teacher_special_bestmove += 1;
+        }
+        if effective_bestmove_kind(student).is_some() {
+            self.student_special_bestmove += 1;
+        }
+    }
+
+    fn print(&self, label: &str) {
+        if self.pairs == 0 {
+            return;
+        }
+        eprintln!("  {label}:");
+        eprintln!("    pairs compared      : {:>6}", self.pairs);
+        eprintln!(
+            "    bestmove mismatch   : {:>6}  ({:.1}%)",
+            self.bestmove_mismatches,
+            self.bestmove_mismatches as f64 / self.pairs as f64 * 100.0
+        );
+        if self.abs_score_error_count > 0 {
+            eprintln!(
+                "    avg |score error|   : {:.1}cp  (max {}cp, over {} mate-free pairs)",
+                self.abs_score_error_sum / self.abs_score_error_count as f64,
+                self.abs_score_error_max,
+                self.abs_score_error_count
+            );
+        }
+        eprintln!(
+            "    teacher non-exact   : {:>6}  ({:.1}%)",
+            self.teacher_non_exact,
+            self.teacher_non_exact as f64 / self.pairs as f64 * 100.0
+        );
+        eprintln!(
+            "    student non-exact   : {:>6}  ({:.1}%)",
+            self.student_non_exact,
+            self.student_non_exact as f64 / self.pairs as f64 * 100.0
+        );
+        eprintln!(
+            "    teacher underreach  : {:>6}  ({:.1}%)",
+            self.teacher_underreach,
+            self.teacher_underreach as f64 / self.pairs as f64 * 100.0
+        );
+        eprintln!(
+            "    student underreach  : {:>6}  ({:.1}%)",
+            self.student_underreach,
+            self.student_underreach as f64 / self.pairs as f64 * 100.0
+        );
+        eprintln!(
+            "    teacher special bm  : {:>6}  ({:.1}%)",
+            self.teacher_special_bestmove,
+            self.teacher_special_bestmove as f64 / self.pairs as f64 * 100.0
+        );
+        eprintln!(
+            "    student special bm  : {:>6}  ({:.1}%)",
+            self.student_special_bestmove,
+            self.student_special_bestmove as f64 / self.pairs as f64 * 100.0
+        );
+    }
+}
+
+fn cmd_audit(args: AuditArgs) -> Result<()> {
+    let student_depths = parse_u32_list(&args.student_depths)?;
+
+    let reader = BufReader::new(
+        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
+    );
+    let out_file =
+        File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
+    let mut writer = BufWriter::new(out_file);
+
+    let mut total_records = 0usize;
+    let mut overall = AuditStats::default();
+    let mut per_depth: BTreeMap<u32, AuditStats> = BTreeMap::new();
+
+    for (i, line) in reader.lines().enumerate() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let rec: PositionRecord = match serde_json::from_str(&line) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(line = i + 1, "parse error: {e}");
+                continue;
+            }
+        };
+        total_records += 1;
+
+        // Group by engine -- a dataset labeled by 2+ engines must not compare engine A's shallow
+        // observation against engine B's deep one; each engine's own student/teacher pair is the
+        // only comparison that means "did going shallower cost this engine anything."
+        let mut by_engine: HashMap<&str, Vec<&Observation>> = HashMap::new();
+        for obs in &rec.observations {
+            by_engine.entry(obs.engine.as_str()).or_default().push(obs);
+        }
+
+        for observations in by_engine.values() {
+            let Some(teacher) = find_at_depth(observations, args.teacher_depth) else {
+                continue;
+            };
+            for &student_depth in &student_depths {
+                // Comparing the teacher depth against itself (if it's also listed as a student
+                // depth) is degenerate -- always a "match" with zero error, not a real comparison.
+                if student_depth == args.teacher_depth {
+                    continue;
+                }
+                let Some(student) = find_at_depth(observations, student_depth) else {
+                    continue;
+                };
+
+                let bestmove_match = bestmove_agreement(&[teacher.clone(), student.clone()]);
+                // Normalize both sides through the record's shared side_to_move rather than
+                // assuming they already share ScorePerspective::SideToMove -- correct by
+                // construction, not by coincidence. None (not compared) if either side is mate.
+                let score_error_cp = match (&teacher.score, &student.score) {
+                    (Score::Cp { value: t }, Score::Cp { value: s }) => {
+                        let t_black = cp_from_black_perspective(
+                            *t,
+                            teacher.score_perspective,
+                            rec.tags.side_to_move,
+                        );
+                        let s_black = cp_from_black_perspective(
+                            *s,
+                            student.score_perspective,
+                            rec.tags.side_to_move,
+                        );
+                        Some(t_black - s_black)
+                    }
+                    _ => None,
+                };
+
+                overall.record(bestmove_match, score_error_cp, teacher, student);
+                per_depth.entry(student_depth).or_default().record(
+                    bestmove_match,
+                    score_error_cp,
+                    teacher,
+                    student,
+                );
+
+                serde_json::to_writer(
+                    &mut writer,
+                    &serde_json::json!({
+                        "sfen": &rec.sfen,
+                        "source": &rec.source,
+                        "engine": &teacher.engine,
+                        "teacher_requested_depth": teacher.requested_depth,
+                        "teacher_depth": teacher.depth,
+                        "teacher_score_bound": score_bound_str(teacher.score_bound),
+                        "teacher_underreach": requested_depth_underreached(teacher),
+                        "teacher_bestmove_kind": effective_bestmove_kind(teacher),
+                        "student_requested_depth": student.requested_depth,
+                        "student_depth": student.depth,
+                        "student_score_bound": score_bound_str(student.score_bound),
+                        "student_underreach": requested_depth_underreached(student),
+                        "student_bestmove_kind": effective_bestmove_kind(student),
+                        "bestmove_match": bestmove_match,
+                        "score_error_cp": score_error_cp,
+                    }),
+                )?;
+                writer.write_all(b"\n")?;
+            }
+        }
+    }
+
+    writer.flush()?;
+    eprintln!(
+        "done: {total_records} records read, {} pairs compared → {:?}",
+        overall.pairs, args.out
+    );
+    if overall.pairs == 0 {
+        eprintln!(
+            "(no (engine, student_depth) pair had both a teacher_depth={} and a listed student depth observation present)",
+            args.teacher_depth
+        );
+        return Ok(());
+    }
+    eprintln!("per student depth:");
+    for (&depth, stats) in &per_depth {
+        stats.print(&format!("student_depth={depth}"));
+    }
+    overall.print("overall");
 
     Ok(())
 }
@@ -2984,11 +3265,7 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
                     margin_sum += margin as f64;
                     margin_count += 1;
                 }
-                let bound_key = match obs.score_bound {
-                    shogiesa_core::ScoreBound::Exact => "exact",
-                    shogiesa_core::ScoreBound::Lowerbound => "lowerbound",
-                    shogiesa_core::ScoreBound::Upperbound => "upperbound",
-                };
+                let bound_key = score_bound_str(obs.score_bound);
                 *obs_score_bound_counts.entry(bound_key).or_default() += 1;
             }
             if let Some(swing) = score_swing(&cp_scores) {

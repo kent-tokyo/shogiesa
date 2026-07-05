@@ -233,6 +233,42 @@ one-time, sweep-independent stderr summary: `policy_margin_cp`/`score_swing_cp` 
 `requested_depth` underreach rate, and special-bestmove rate — context for interpreting the sweep,
 not something that varies by threshold.
 
+### `audit` — compare shallow vs. deep observations
+
+```bash
+shogiesa audit \
+  --input observations.jsonl \
+  --teacher-depth 14 \
+  --student-depths 6,8,10 \
+  --out audit.jsonl
+```
+
+Answers "how much does labeling at a shallower depth actually cost, per engine, on this dataset" —
+a pure analysis command over data you already have: one `label --depths 6,8,10,14` run already
+produces multiple same-engine `Observation`s per record, one per depth (see `Observation.depth`).
+For each record, groups observations by `engine` (a dataset labeled by 2+ engines never compares
+engine A's shallow observation against engine B's deep one), finds each engine's `--teacher-depth`
+observation (matched by `requested_depth`, falling back to achieved `depth` for legacy pre-schema-v6
+data) and each `--student-depths` observation under the same rule, and for every (engine,
+student_depth) pair where both exist, writes one `audit.jsonl` line:
+```json
+{"sfen": "...", "source": {...}, "engine": "sekirei",
+ "teacher_requested_depth": 14, "teacher_depth": 14, "teacher_score_bound": "exact",
+ "teacher_underreach": false, "teacher_bestmove_kind": null,
+ "student_requested_depth": 8, "student_depth": 8, "student_score_bound": "exact",
+ "student_underreach": false, "student_bestmove_kind": null,
+ "bestmove_match": true, "score_error_cp": -35}
+```
+`bestmove_match` reuses `bestmove_agreement` (excludes resign/win/none from the comparison, same as
+everywhere else); `score_error_cp` (`None` when either side is mate) normalizes both sides through
+`cp_from_black_perspective` before subtracting, not a raw difference of side-to-move-relative
+values. A teacher observation that itself fell short of `--teacher-depth` on a forced mate is still
+used as the teacher (same mate-exemption convention as `filter`'s depth gates) — its
+`teacher_underreach` correctly reads `false`, not a bug. Prints a per-student-depth and overall
+stderr summary: pairs compared, bestmove-mismatch rate, average/max `|score_error_cp|`,
+teacher/student non-exact rate, teacher/student underreach rate, teacher/student special-bestmove
+rate.
+
 ### `mine` — hard-position mining
 
 ```bash

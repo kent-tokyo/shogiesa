@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex, mpsc};
 use shogiesa_core::{
     GamePhase, Observation, PositionRecord, QualityConfig, SCHEMA_VERSION, Score, ScorePerspective,
     SideToMove, SourceInfo, bestmove_agreement, cp_from_black_perspective,
-    engine_bestmove_agreement, evaluate_quality, has_special_bestmove, score_swing, sfen::Sfen,
-    zobrist_from_sfen,
+    engine_bestmove_agreement, evaluate_quality, has_special_bestmove,
+    requested_depth_underreached, score_swing, sfen::Sfen, zobrist_from_sfen,
 };
 use shogiesa_pack as pack;
 use shogiesa_usi::UsiEngine;
@@ -1694,9 +1694,9 @@ fn accumulate_requested_depth(
     underreach: &mut usize,
 ) {
     for obs in &rec.observations {
-        if let Some(rd) = obs.requested_depth {
+        if obs.requested_depth.is_some() {
             *total_with_requested += 1;
-            if obs.depth < rd && !matches!(obs.score, shogiesa_core::Score::Mate { .. }) {
+            if requested_depth_underreached(obs) {
                 *underreach += 1;
             }
         }

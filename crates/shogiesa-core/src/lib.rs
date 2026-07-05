@@ -297,6 +297,15 @@ pub fn has_special_bestmove(observations: &[Observation]) -> bool {
         .any(|o| effective_bestmove_kind(o).is_some())
 }
 
+/// Whether `obs` fell short of the depth `label` asked it to reach, excluding mate results (a
+/// forced mate found short of the requested depth is a confirmed, high-confidence result, not a
+/// weak search -- same exemption `evaluate_quality`'s `require_requested_depth_reached` gate
+/// applies). `false` when `requested_depth` is `None` (legacy pre-schema-v6 data, or an
+/// observation `label` wasn't asked to reach a specific depth).
+pub fn requested_depth_underreached(obs: &Observation) -> bool {
+    obs.requested_depth.is_some_and(|rd| obs.depth < rd) && !matches!(obs.score, Score::Mate { .. })
+}
+
 /// Bestmove agreement over an iterator of observations, considering only ordinary moves --
 /// shared by `bestmove_agreement` (all observations) and `engine_bestmove_agreement` (one
 /// per-engine "vote" each). Vacuously true when fewer than 2 ordinary-move observations remain,
@@ -583,10 +592,7 @@ pub fn evaluate_quality(rec: &PositionRecord, config: &QualityConfig) -> Quality
 
     if config.require_requested_depth_reached {
         configured_gates += 1;
-        if obs.iter().any(|o| {
-            o.requested_depth.is_some_and(|rd| o.depth < rd)
-                && !matches!(o.score, Score::Mate { .. })
-        }) {
+        if obs.iter().any(requested_depth_underreached) {
             reasons.push(QualityReason::RequestedDepthNotReached);
         }
     }
@@ -1208,6 +1214,31 @@ mod tests {
         let observations = vec![obs("a", 6, 10, "7g7f")];
         let decision = evaluate_quality(&simple_rec(observations), &config);
         assert!(decision.keep);
+    }
+
+    #[test]
+    fn requested_depth_underreached_true_when_short_of_a_non_mate_request() {
+        let o = obs_with_requested_depth("a", 8, 12, 10, "7g7f");
+        assert!(requested_depth_underreached(&o));
+    }
+
+    #[test]
+    fn requested_depth_underreached_false_when_met() {
+        let o = obs_with_requested_depth("a", 12, 12, 10, "7g7f");
+        assert!(!requested_depth_underreached(&o));
+    }
+
+    #[test]
+    fn requested_depth_underreached_false_when_no_requested_depth_recorded() {
+        let o = obs("a", 6, 10, "7g7f");
+        assert!(!requested_depth_underreached(&o));
+    }
+
+    #[test]
+    fn requested_depth_underreached_false_for_a_short_mate() {
+        let mut o = obs_mate("a", 8, 3, "7g7f");
+        o.requested_depth = Some(12);
+        assert!(!requested_depth_underreached(&o));
     }
 
     #[test]

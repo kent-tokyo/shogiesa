@@ -10,8 +10,8 @@ keywords = ["shogi", "nnue", "sfen", "training-data", "usi"]
 categories = ["command-line-utilities", "game-engines"]
 
 [dependencies]
-shogiesa-core = { path = "../shogiesa-core", version = "0.6" }
-shogiesa-csa  = { path = "../shogiesa-csa",  version = "0.6" }
-shogiesa-kif  = { path = "../shogiesa-kif",  version = "0.6" }
-shogiesa-usi  = { path = "../shogiesa-usi",  version = "0.6" }
-shogiesa-pack = { path = "../shogiesa-pack", version = "0.6" }
+shogiesa-core = { path = "../shogiesa-core", version = "0.7" }
+shogiesa-csa  = { path = "../shogiesa-csa",  version = "0.7" }
+shogiesa-kif  = { path = "../shogiesa-kif",  version = "0.7" }
+shogiesa-usi  = { path = "../shogiesa-usi",  version = "0.7" }
+shogiesa-pack = { path = "../shogiesa-pack", version = "0.7" }

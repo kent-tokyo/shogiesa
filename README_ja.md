@@ -599,6 +599,36 @@ policy margin 平均、eval-bucketヒストグラムと eval-bucket × phase / e
 レコード集合自体はメモリに載せません — メモリ使用量は総レコード数ではなく、
 異なるSFEN数・source数に比例します。
 
+### `distribution` — bucketカバレッジ診断
+
+```bash
+shogiesa distribution --input observations.jsonl
+```
+
+`report` と `select --strategy coverage` を補完するコマンドです。どちらも既に phase/side/
+eval-bucket の分布統計を出しますが、どちらも**完全に空(0件)のbucketを報告することは
+できません** — 両方とも実際に見たレコードからのみ集計マップを埋めるため、0件の組み合わせは
+そもそもマップにエントリすら作られず、出力から静かに欠落します。`distribution` は期待される
+bucket空間を*完全に*列挙し、空のものも含めて全ての組み合わせを表示するので、欠落が
+サイレントに消えるのではなく可視化されます。`coverage` という名前は使いません —
+その単語は既に `select --strategy coverage`(既存レコードを薄いbucket所属でランク付けし、
+再ラベル付け候補を選ぶ機能)と、MultiPV/品質ゲート通過率を意味する別概念(`report`/
+`calibrate`/`audit`/`tune`)の両方で使われているため、このコマンドはそのどちらでもありません。
+
+3つのセクションがあります: **phase × side × eval-bucket coverage**(`balance`/`select
+--strategy coverage` と同じ `bucket_key` バケット化ロジックを再利用しているため、bucketの
+定義がずれることはありません — 観測されたcp範囲内の全200cp bucketを phase/side の組み合わせ
+ごとに列挙し、加えて `mate`/`unlabeled` の sentinel セルも全phase/side組み合わせと掛け合わせて
+列挙します。cp幅が50bucket(±5000cp)を超える場合は観測済みbucketのみ表示するフォールバック
+になります — それ以上列挙すると巨大な表になるか、異常なエンジンスコア範囲を「完全にカバー
+済み」と誤って示してしまうためです)。**ply distribution**(ヒストグラム、bucket幅は
+`--ply-bucket-size` で指定、同じ欠落検出ロジック)。**source-root distribution**(distinct
+root数とdominance% — `split --train/--valid/--test` のリーク防止と同じ `root_id` 対応の
+グルーピングキーを使用します。`report` 自身のsource統計は生の path でグルーピングするため、
+1つのゲームのmainlineとその変化を別々のsourceとして数えてしまいます)。既存のbucketは平均
+bucket数との比較で `UNDER`/`OVER` フラグも付きます(`--under-ratio`/`--over-ratio`、
+デフォルト 0.5/2.0)。診断専用コマンドです — `--out`/`--manifest` はなく、`report` と同じ形です。
+
 ### `validate` — データ整合性チェック
 
 ```bash

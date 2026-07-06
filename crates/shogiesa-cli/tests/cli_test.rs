@@ -5689,6 +5689,216 @@ fn merge_observations_prefer_secondary_replaces_primary_on_collision() {
     assert_eq!(observations[0]["bestmove"], serde_json::json!("3c3d"));
 }
 
+// --- distribution ---
+
+/// Mirrors `distribution`'s `print_coverage_row` format (`"{label:<32}{count:>6}  {flag}"`,
+/// minus the 2-space println indent, which `contains` doesn't need) so assertions don't have to
+/// hand-compute column padding.
+fn coverage_row_contains(label: &str, count: usize, flag: &str) -> String {
+    format!("{label:<32}{count:>6}  {flag}")
+}
+
+/// Mirrors `distribution`'s `print_ply_histogram` row format
+/// (`"{b:>4}..{:<4}{count:>6}  {flag}"`).
+fn ply_row_contains(b: u32, bucket_size: u32, count: usize, flag: &str) -> String {
+    format!("{b:>4}..{:<4}{count:>6}  {flag}", b + bucket_size - 1)
+}
+
+#[test]
+fn distribution_shows_basic_sections() {
+    let pos = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "extract",
+            "--input",
+            fixture("sample.csa").to_str().unwrap(),
+            "--out",
+            pos.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    shogiesa()
+        .args(["distribution", "--input", pos.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("=== shogiesa distribution ==="))
+        .stdout(predicate::str::contains(
+            "phase x side x eval-bucket coverage",
+        ))
+        .stdout(predicate::str::contains("ply distribution"))
+        .stdout(predicate::str::contains("source-root distribution"))
+        .stdout(predicate::str::contains("distinct roots"))
+        // Sentinel cells (mate/unlabeled x phase/side) are a separate code path from the cp grid
+        // -- these positions are unlabeled (extract only, no `label` step), so every sentinel row
+        // for phases/sides that don't occur in this 5-ply game must still print, flagged MISSING.
+        .stdout(predicate::str::contains(coverage_row_contains(
+            "opening:black:mate",
+            0,
+            "MISSING",
+        )))
+        .stdout(predicate::str::contains(coverage_row_contains(
+            "middlegame:black:unlabeled",
+            0,
+            "MISSING",
+        )))
+        .stdout(predicate::str::contains(
+            "(sentinel cells (mate/unlabeled x phase/side): 12 cells, 10 empty)",
+        ));
+}
+
+#[test]
+fn distribution_flags_missing_eval_bucket_as_missing() {
+    // -250cp -> bucket -400 ("-400..-201"); 250cp -> bucket 200 ("+200..+399"). The span between
+    // them (-400, -200, 0, 200) means -200 and 0 are enumerated but never observed for
+    // middlegame:black -- exactly the gap this command exists to surface.
+    let input = make_labeled_jsonl(&[
+        position("middlegame", serde_json::json!([obs("7g7f", -250, 4)])),
+        position("middlegame", serde_json::json!([obs("3c3d", 250, 4)])),
+    ]);
+
+    shogiesa()
+        .args(["distribution", "--input", input.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(coverage_row_contains(
+            "middlegame:black:-400..-201",
+            1,
+            "OK",
+        )))
+        .stdout(predicate::str::contains(coverage_row_contains(
+            "middlegame:black:-200..-1",
+            0,
+            "MISSING",
+        )))
+        .stdout(predicate::str::contains(coverage_row_contains(
+            "middlegame:black:+0..+199",
+            0,
+            "MISSING",
+        )))
+        .stdout(predicate::str::contains(coverage_row_contains(
+            "middlegame:black:+200..+399",
+            1,
+            "OK",
+        )));
+}
+
+#[test]
+fn distribution_ply_histogram_flags_missing_bucket() {
+    // Plies 1 and 5 fall in bucket 0..19; ply 45 falls in bucket 40..59. Bucket 20..39 is
+    // enumerated (it's within the observed span) but has zero records.
+    let input = make_labeled_jsonl(&[
+        position_at_ply(1, serde_json::json!([obs("7g7f", 50, 4)])),
+        position_at_ply(5, serde_json::json!([obs("7g7f", 50, 4)])),
+        position_at_ply(45, serde_json::json!([obs("7g7f", 50, 4)])),
+    ]);
+
+    shogiesa()
+        .args([
+            "distribution",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--ply-bucket-size",
+            "20",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(ply_row_contains(0, 20, 2, "OK")))
+        .stdout(predicate::str::contains(ply_row_contains(
+            20, 20, 0, "MISSING",
+        )))
+        .stdout(predicate::str::contains(ply_row_contains(40, 20, 1, "OK")));
+}
+
+#[test]
+fn distribution_source_root_dominance_uses_root_id_not_path() {
+    fn record_with_root(path: &str, root_id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "schema_version": 8,
+            "sfen": "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+            "source": { "kind": "kif", "path": path, "ply": 1, "root_id": root_id },
+            "tags": { "phase": "opening", "side_to_move": "black", "in_check": false, "has_capture": false },
+            "observations": []
+        })
+    }
+    // 3 records share root_a (distinct paths -- proving root_id, not path, decides "distinct
+    // roots"); 1 record has its own root_b. 3/4 = 75.0% dominance, over the 50% WARN threshold.
+    let input = make_labeled_jsonl(&[
+        record_with_root("game1.kif", "root_a"),
+        record_with_root("game1.kif#var1@2", "root_a"),
+        record_with_root("game1.kif#var2@3", "root_a"),
+        record_with_root("game2.kif", "root_b"),
+    ]);
+
+    shogiesa()
+        .args(["distribution", "--input", input.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("distinct roots : 2"))
+        .stdout(predicate::str::contains("75.0%"))
+        .stdout(predicate::str::contains("WARN"));
+}
+
+#[test]
+fn distribution_flags_under_and_over_represented_buckets() {
+    // All records share side=black, cp=100 (bucket 0, "+0..+199"), differing only by phase --
+    // counts 1/1/20 skew the mean (7.33) so opening/middlegame read UNDER and endgame reads OVER.
+    let mut records: Vec<serde_json::Value> = vec![position(
+        "opening",
+        serde_json::json!([obs("7g7f", 100, 4)]),
+    )];
+    records.push(position(
+        "middlegame",
+        serde_json::json!([obs("7g7f", 100, 4)]),
+    ));
+    for _ in 0..20 {
+        records.push(position(
+            "endgame",
+            serde_json::json!([obs("7g7f", 100, 4)]),
+        ));
+    }
+    let input = make_labeled_jsonl(&records);
+
+    shogiesa()
+        .args([
+            "distribution",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--under-ratio",
+            "0.5",
+            "--over-ratio",
+            "2.0",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(coverage_row_contains(
+            "opening:black:+0..+199",
+            1,
+            "UNDER",
+        )))
+        .stdout(predicate::str::contains(coverage_row_contains(
+            "endgame:black:+0..+199",
+            20,
+            "OVER",
+        )));
+}
+
+#[test]
+fn distribution_rejects_zero_ply_bucket_size() {
+    let input = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
+    shogiesa()
+        .args([
+            "distribution",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--ply-bucket-size",
+            "0",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--ply-bucket-size must be > 0"));
+}
+
 // --- help smoke test ---
 
 #[test]

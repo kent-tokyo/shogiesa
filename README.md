@@ -587,6 +587,35 @@ candidates, and (when any observation has a recorded `requested_depth`) a reques
 underreach rate. Streams its input in a single pass and never materializes the record set; memory
 scales with distinct SFEN/source-file count, not total records.
 
+### `distribution` — bucket-coverage diagnostic
+
+```bash
+shogiesa distribution --input observations.jsonl
+```
+
+Complements `report` and `select --strategy coverage`: both of those already surface phase/side/
+eval-bucket distribution stats, but neither can ever report a fully missing (zero-record) bucket —
+both only ever populate their tallies from records actually seen, so a combination with zero
+records simply never appears in their output at all. `distribution` enumerates the *full* expected
+bucket space and prints every combination, including empty ones, so a gap is visible instead of
+silently absent. Not named `coverage` — that word is already used for `select --strategy coverage`
+(ranks existing records by thin-bucket membership, for re-labeling) and separately for MultiPV/
+quality-gate pass-rate coverage (`report`/`calibrate`/`audit`/`tune`); this command means neither.
+
+Three sections: **phase × side × eval-bucket coverage** (reuses the same `bucket_key` bucketing
+`balance`/`select --strategy coverage` already use, so the bucket notion can't drift — every 200cp
+bucket within the observed span is enumerated per phase/side pair, plus the `mate`/`unlabeled`
+sentinel cells crossed with every phase/side pair; a cp span wider than 50 buckets (±5000cp) falls
+back to showing only observed buckets, since enumerating past that would either print an enormous
+table or silently misrepresent an anomalous engine score range as fully covered); **ply distribution**
+(histogram, bucket width via `--ply-bucket-size`, same missing-bucket detection); **source-root
+distribution** (distinct-root count and dominance %, grouped via the same `root_id`-aware key
+`split --train/--valid/--test` uses for leakage safety — unlike `report`'s own source stat, which
+groups by raw file path and so counts a game's mainline and its variations as separate sources).
+Present buckets are also flagged `UNDER`/`OVER` relative to the mean bucket count
+(`--under-ratio`/`--over-ratio`, defaults 0.5/2.0). Diagnostic only — no `--out`/`--manifest`, same
+shape as `report`.
+
 ### `validate` — data integrity
 
 ```bash

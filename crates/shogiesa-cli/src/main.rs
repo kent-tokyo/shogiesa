@@ -69,6 +69,13 @@ enum Commands {
     Tune(TuneArgs),
     /// Report statistics about a positions dataset
     Report(ReportArgs),
+    /// Report phase/side/eval-bucket/ply/source-root distribution, explicitly flagging bucket
+    /// combinations that have zero records within the observed range -- distinct from `select
+    /// --strategy coverage` (which *ranks* existing records by thin-bucket membership for
+    /// re-labeling) and from the unrelated MultiPV/quality-gate "coverage" used by `report`/
+    /// `calibrate`/`audit`/`tune`. Named `distribution`, not `coverage`, to avoid colliding with
+    /// either.
+    Distribution(DistributionArgs),
     /// Validate data integrity of a positions dataset
     Validate(ValidateArgs),
     /// Inspect/maintain a `label --cache-dir` cache
@@ -165,6 +172,23 @@ struct ReportArgs {
     /// Input JSONL file
     #[arg(short, long)]
     input: PathBuf,
+}
+
+#[derive(clap::Args)]
+struct DistributionArgs {
+    /// Input JSONL file
+    #[arg(short, long)]
+    input: PathBuf,
+    /// Ply histogram bucket width
+    #[arg(long, default_value = "20")]
+    ply_bucket_size: u32,
+    /// Flag a bucket as underrepresented when its count is below this fraction of the mean count
+    /// (computed over buckets that have >=1 record, within the same distribution)
+    #[arg(long, default_value = "0.5")]
+    under_ratio: f64,
+    /// Flag a bucket as overrepresented when its count is above this multiple of the mean count
+    #[arg(long, default_value = "2.0")]
+    over_ratio: f64,
 }
 
 #[derive(clap::Args)]
@@ -749,6 +773,7 @@ fn main() -> Result<()> {
         Commands::Audit(args) => cmd_audit(args),
         Commands::Tune(args) => cmd_tune(args),
         Commands::Report(args) => cmd_report(args),
+        Commands::Distribution(args) => cmd_distribution(args),
         Commands::Validate(args) => cmd_validate(args),
         Commands::Cache(args) => match args.action {
             CacheAction::Stats(a) => cmd_cache_stats(a),
@@ -2843,6 +2868,46 @@ fn cmd_mine(args: MineArgs) -> Result<()> {
     Ok(())
 }
 
+/// The eval-bucket dimension of `bucket_key`, factored out as a structured, orderable value so
+/// callers that need a numeric span (e.g. `distribution`, which enumerates every bucket between
+/// the observed min and max) don't have to re-parse `bucket_key`'s string output back into a
+/// number. `bucket_key`'s `by_eval` branch below calls this and formats it -- the floor(cp/200)
+/// computation and mate/unlabeled sentinel classification live in exactly one place.
+///
+/// Declaration order (`Unlabeled < Cp < Mate`) mirrors `report`'s existing
+/// `i32::MIN`=unlabeled-sorts-first / `i32::MAX`=mate-sorts-last sentinel convention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum EvalBucket {
+    Unlabeled,
+    Cp(i32),
+    Mate,
+}
+
+impl std::fmt::Display for EvalBucket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EvalBucket::Cp(v) => write!(f, "{v}"),
+            EvalBucket::Mate => write!(f, "mate"),
+            EvalBucket::Unlabeled => write!(f, "_none_"),
+        }
+    }
+}
+
+fn eval_bucket_of(rec: &PositionRecord) -> EvalBucket {
+    rec.observations
+        .iter()
+        .max_by_key(|o| o.depth)
+        .map(|o| match o.score {
+            Score::Cp { value } => {
+                let black_value =
+                    cp_from_black_perspective(value, o.score_perspective, rec.tags.side_to_move);
+                EvalBucket::Cp((black_value.div_euclid(200)) * 200)
+            }
+            Score::Mate { .. } => EvalBucket::Mate,
+        })
+        .unwrap_or(EvalBucket::Unlabeled)
+}
+
 /// Composite phase/side/eval-bucket key for one record. Shared by `balance` (equal-count
 /// rebalancing) and `select --strategy coverage` (thin-bucket prioritization) so the two
 /// commands' notion of "bucket" can never drift apart.
@@ -2855,23 +2920,7 @@ fn bucket_key(rec: &PositionRecord, by_phase: bool, by_side: bool, by_eval: bool
         key.push_str(&format!("{}:", rec.tags.side_to_move));
     }
     if by_eval {
-        let bucket_str = rec
-            .observations
-            .iter()
-            .max_by_key(|o| o.depth)
-            .map(|o| match o.score {
-                Score::Cp { value } => {
-                    let black_value = cp_from_black_perspective(
-                        value,
-                        o.score_perspective,
-                        rec.tags.side_to_move,
-                    );
-                    format!("{}:", (black_value.div_euclid(200)) * 200)
-                }
-                Score::Mate { .. } => "mate:".to_string(),
-            })
-            .unwrap_or_else(|| "_none_:".to_string());
-        key.push_str(&bucket_str);
+        key.push_str(&format!("{}:", eval_bucket_of(rec)));
     }
     key
 }
@@ -5279,6 +5328,288 @@ fn print_eval_cross_tab(title: &str, table: &BTreeMap<i32, BTreeMap<String, usiz
     }
 }
 
+/// floor(ply / bucket_size) * bucket_size. `bucket_size == 0` is a caller error, checked and
+/// rejected before `cmd_distribution` ever calls this -- matching this codebase's convention of
+/// validating at the command entry point, not deep inside a pure helper.
+fn ply_bucket_floor(ply: u32, bucket_size: u32) -> u32 {
+    (ply / bucket_size) * bucket_size
+}
+
+fn mean_of(counts: &[usize]) -> f64 {
+    if counts.is_empty() {
+        0.0
+    } else {
+        counts.iter().sum::<usize>() as f64 / counts.len() as f64
+    }
+}
+
+/// Ratio-to-mean classification for one bucket that already has >=1 record -- a bucket with count
+/// 0 is always classified "MISSING" by the caller directly, never routed through here.
+fn classify_bucket(count: usize, mean: f64, under_ratio: f64, over_ratio: f64) -> &'static str {
+    let count = count as f64;
+    if count < under_ratio * mean {
+        "UNDER"
+    } else if count > over_ratio * mean {
+        "OVER"
+    } else {
+        "OK"
+    }
+}
+
+/// ±5000cp at 200cp/bucket -- generous headroom over any realistic shogi eval; caps the phase x
+/// side x eval-bucket grid's enumerated cp-axis length so a wildly out-of-range engine score can't
+/// blow up the printed table. `report`'s own eval histogram has no such cap (it only ever prints
+/// buckets it actually saw), so there's no existing bound to inherit here.
+const MAX_EVAL_CP_SPAN_BUCKETS: i32 = 50;
+
+fn cmd_distribution(args: DistributionArgs) -> Result<()> {
+    if args.ply_bucket_size == 0 {
+        anyhow::bail!("--ply-bucket-size must be > 0");
+    }
+
+    let reader = BufReader::new(
+        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
+    );
+
+    let mut n = 0usize;
+    let mut broken = 0usize;
+    let mut cross_tally: BTreeMap<(GamePhase, SideToMove, EvalBucket), usize> = BTreeMap::new();
+    let mut ply_tally: BTreeMap<u32, usize> = BTreeMap::new();
+    let mut root_tally: HashMap<String, usize> = HashMap::new();
+    let mut eval_cp_min: Option<i32> = None;
+    let mut eval_cp_max: Option<i32> = None;
+    let mut ply_min: Option<u32> = None;
+    let mut ply_max: Option<u32> = None;
+
+    for (i, line) in reader.lines().enumerate() {
+        let line = line.with_context(|| format!("cannot read {:?}", args.input))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let rec: PositionRecord = match serde_json::from_str(&line) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(line = i + 1, "parse error: {e}");
+                broken += 1;
+                continue;
+            }
+        };
+        n += 1;
+
+        let eb = eval_bucket_of(&rec);
+        if let EvalBucket::Cp(v) = eb {
+            eval_cp_min = Some(eval_cp_min.map_or(v, |m| m.min(v)));
+            eval_cp_max = Some(eval_cp_max.map_or(v, |m| m.max(v)));
+        }
+        *cross_tally
+            .entry((rec.tags.phase, rec.tags.side_to_move, eb))
+            .or_default() += 1;
+
+        let ply = rec.source.ply;
+        *ply_tally
+            .entry(ply_bucket_floor(ply, args.ply_bucket_size))
+            .or_default() += 1;
+        ply_min = Some(ply_min.map_or(ply, |m| m.min(ply)));
+        ply_max = Some(ply_max.map_or(ply, |m| m.max(ply)));
+
+        *root_tally
+            .entry(split_root_key(&rec.source).to_string())
+            .or_default() += 1;
+    }
+
+    if n == 0 {
+        println!("no valid records in {:?}", args.input);
+        return Ok(());
+    }
+
+    println!("=== shogiesa distribution ===");
+    println!("positions   : {n}");
+    println!("broken lines: {broken}");
+
+    print_eval_coverage(
+        &cross_tally,
+        eval_cp_min,
+        eval_cp_max,
+        args.under_ratio,
+        args.over_ratio,
+    );
+    print_ply_histogram(
+        &ply_tally,
+        ply_min.unwrap(),
+        ply_max.unwrap(),
+        args.ply_bucket_size,
+        args.under_ratio,
+        args.over_ratio,
+    );
+    print_source_root_distribution(&root_tally, n);
+
+    Ok(())
+}
+
+fn print_coverage_row(
+    phase: GamePhase,
+    side: SideToMove,
+    eb: EvalBucket,
+    count: usize,
+    flag: &str,
+) {
+    let eval_label = match eb {
+        EvalBucket::Cp(v) => format!("{v:+}..{:+}", v + 199),
+        EvalBucket::Mate => "mate".to_string(),
+        EvalBucket::Unlabeled => "unlabeled".to_string(),
+    };
+    let label = format!("{phase}:{side}:{eval_label}");
+    println!("  {label:<32}{count:>6}  {flag}");
+}
+
+/// The flagship new capability: unlike `report`'s eval/cross-tab stats and `select --strategy
+/// coverage`'s bucket ranking (both of which only ever populate a tally from records actually
+/// seen, so a combination with zero records simply never appears), this enumerates the full
+/// expected bucket space and prints every combination -- including empty ones -- so a gap is
+/// visible instead of silently absent.
+///
+/// The 12 sentinel cells (mate/unlabeled x phase/side) are tracked and reported separately from
+/// the numeric cp grid: a fully-labeled, no-mate dataset will *always* show all 12 sentinel cells
+/// empty, which is expected, not a gap -- folding that count into one "N missing" headline would
+/// make the number meaningless noise on the most common (fully-labeled) datasets.
+fn print_eval_coverage(
+    cross_tally: &BTreeMap<(GamePhase, SideToMove, EvalBucket), usize>,
+    eval_cp_min: Option<i32>,
+    eval_cp_max: Option<i32>,
+    under_ratio: f64,
+    over_ratio: f64,
+) {
+    println!();
+    println!("phase x side x eval-bucket coverage:");
+
+    let phases = [
+        GamePhase::Opening,
+        GamePhase::Middlegame,
+        GamePhase::Endgame,
+    ];
+    let sides = [SideToMove::Black, SideToMove::White];
+
+    let cp_mean = mean_of(
+        &cross_tally
+            .iter()
+            .filter(|&(&(_, _, eb), _)| matches!(eb, EvalBucket::Cp(_)))
+            .map(|(_, &c)| c)
+            .collect::<Vec<_>>(),
+    );
+
+    let span_ok = match (eval_cp_min, eval_cp_max) {
+        (Some(lo), Some(hi)) => (hi - lo) / 200 < MAX_EVAL_CP_SPAN_BUCKETS,
+        _ => true, // no cp observations at all -- nothing to enumerate, trivially "ok"
+    };
+
+    let mut cp_cells_total = 0usize;
+    let mut cp_cells_missing = 0usize;
+    let mut sentinel_cells_missing = 0usize;
+
+    for &phase in &phases {
+        for &side in &sides {
+            // Sentinels first (matches EvalBucket's declared Ord: Unlabeled < Cp < Mate).
+            for eb in [EvalBucket::Unlabeled, EvalBucket::Mate] {
+                let count = cross_tally.get(&(phase, side, eb)).copied().unwrap_or(0);
+                if count == 0 {
+                    sentinel_cells_missing += 1;
+                }
+                let flag = if count == 0 { "MISSING" } else { "-" };
+                print_coverage_row(phase, side, eb, count, flag);
+            }
+            if let (Some(lo), Some(hi)) = (eval_cp_min, eval_cp_max)
+                && span_ok
+            {
+                let mut v = lo;
+                while v <= hi {
+                    cp_cells_total += 1;
+                    let eb = EvalBucket::Cp(v);
+                    let count = cross_tally.get(&(phase, side, eb)).copied().unwrap_or(0);
+                    if count == 0 {
+                        cp_cells_missing += 1;
+                        print_coverage_row(phase, side, eb, count, "MISSING");
+                    } else {
+                        let flag = classify_bucket(count, cp_mean, under_ratio, over_ratio);
+                        print_coverage_row(phase, side, eb, count, flag);
+                    }
+                    v += 200;
+                }
+            }
+        }
+    }
+
+    if !span_ok {
+        println!(
+            "  cp-bucket span too wide ({}..{}) -- exceeds {MAX_EVAL_CP_SPAN_BUCKETS} enumerated \
+             buckets; showing observed cp buckets only, missing-bucket detection skipped for this run",
+            eval_cp_min.unwrap(),
+            eval_cp_max.unwrap()
+        );
+        for (&(phase, side, eb), &count) in cross_tally
+            .iter()
+            .filter(|&(&(_, _, eb), _)| matches!(eb, EvalBucket::Cp(_)))
+        {
+            let flag = classify_bucket(count, cp_mean, under_ratio, over_ratio);
+            print_coverage_row(phase, side, eb, count, flag);
+        }
+    } else {
+        println!("  (cp-grid: {cp_cells_total} cells, {cp_cells_missing} missing)");
+    }
+    println!(
+        "  (sentinel cells (mate/unlabeled x phase/side): 12 cells, {sentinel_cells_missing} empty)"
+    );
+}
+
+fn print_ply_histogram(
+    ply_tally: &BTreeMap<u32, usize>,
+    ply_min: u32,
+    ply_max: u32,
+    bucket_size: u32,
+    under_ratio: f64,
+    over_ratio: f64,
+) {
+    println!();
+    println!("ply distribution (bucket size {bucket_size}):");
+    let mean = mean_of(&ply_tally.values().copied().collect::<Vec<_>>());
+    let lo = ply_bucket_floor(ply_min, bucket_size);
+    let hi = ply_bucket_floor(ply_max, bucket_size);
+    let mut total = 0usize;
+    let mut missing = 0usize;
+    let mut b = lo;
+    while b <= hi {
+        total += 1;
+        let count = ply_tally.get(&b).copied().unwrap_or(0);
+        let flag = if count == 0 {
+            missing += 1;
+            "MISSING"
+        } else {
+            classify_bucket(count, mean, under_ratio, over_ratio)
+        };
+        println!("  {b:>4}..{:<4}{count:>6}  {flag}", b + bucket_size - 1);
+        b += bucket_size;
+    }
+    println!("  ({total} buckets enumerated, {missing} missing)");
+}
+
+/// Root-id-aware source distribution -- unlike `report`'s `sources` stat (keyed by raw
+/// `rec.source.path`, so a game's mainline and its variations count as separate "sources"), this
+/// groups via `split_root_key` (root_id when present, falling back to stripping the path's
+/// `#varN@ply` suffix), the same grouping `split --train/--valid/--test` uses for leakage safety.
+fn print_source_root_distribution(root_tally: &HashMap<String, usize>, n: usize) {
+    println!();
+    println!("source-root distribution:");
+    let distinct_roots = root_tally.len();
+    let top_root_count = root_tally.values().copied().max().unwrap_or(0);
+    let top_root_pct = top_root_count as f64 / n as f64 * 100.0;
+    let warn = if top_root_pct > 50.0 {
+        "WARN: too concentrated"
+    } else {
+        "OK"
+    };
+    println!("  distinct roots : {distinct_roots}");
+    println!("  top root       : {top_root_pct:.1}%  {warn}");
+}
+
 fn cmd_validate(args: ValidateArgs) -> Result<()> {
     // Why: validate is meant to run against multi-GB JSONL exports, so the input is read one
     // line at a time instead of buffering the whole file into memory.
@@ -5932,5 +6263,116 @@ mod merge_observations_tests {
             assert_eq!(collisions, 0);
             assert_eq!(base.len(), 2, "both depths must survive under every policy");
         }
+    }
+}
+
+#[cfg(test)]
+mod distribution_helper_tests {
+    use super::*;
+    use shogiesa_core::{PositionTags, SourceInfo};
+
+    fn rec_with_obs(side: SideToMove, observations: Vec<Observation>) -> PositionRecord {
+        let mut r = PositionRecord::new(
+            "startpos".to_string(),
+            SourceInfo {
+                kind: "test".to_string(),
+                path: "test.csa".to_string(),
+                ply: 1,
+                root_id: None,
+                variation_id: None,
+                branch_from_ply: None,
+            },
+            PositionTags {
+                phase: GamePhase::Opening,
+                side_to_move: side,
+                in_check: false,
+                has_capture: false,
+            },
+        );
+        r.observations = observations;
+        r
+    }
+
+    fn cp_obs(depth: u32, value: i32) -> Observation {
+        Observation {
+            engine: "test".to_string(),
+            engine_version: None,
+            depth,
+            requested_depth: None,
+            score: Score::Cp { value },
+            score_perspective: ScorePerspective::SideToMove,
+            score_bound: shogiesa_core::ScoreBound::default(),
+            bestmove: "7g7f".to_string(),
+            bestmove_kind: None,
+            nodes: None,
+            time_ms: None,
+            pv: None,
+            policy_margin_cp: None,
+            candidates: Vec::new(),
+        }
+    }
+
+    fn mate_obs(depth: u32) -> Observation {
+        Observation {
+            score: Score::Mate { moves: 3 },
+            ..cp_obs(depth, 0)
+        }
+    }
+
+    #[test]
+    fn eval_bucket_of_floors_cp_to_200_and_flips_white_perspective() {
+        // side_to_move=White with score_perspective=SideToMove: -50cp side-to-move-relative
+        // flips to +50cp black-relative, floor(50/200)*200 = 0.
+        let rec = rec_with_obs(SideToMove::White, vec![cp_obs(4, -50)]);
+        assert_eq!(eval_bucket_of(&rec), EvalBucket::Cp(0));
+
+        let rec = rec_with_obs(SideToMove::Black, vec![cp_obs(4, -250)]);
+        assert_eq!(eval_bucket_of(&rec), EvalBucket::Cp(-400));
+    }
+
+    #[test]
+    fn eval_bucket_of_picks_deepest_observation() {
+        let rec = rec_with_obs(SideToMove::Black, vec![cp_obs(4, 900), cp_obs(8, 100)]);
+        assert_eq!(eval_bucket_of(&rec), EvalBucket::Cp(0));
+    }
+
+    #[test]
+    fn eval_bucket_of_classifies_mate_and_unlabeled() {
+        assert_eq!(
+            eval_bucket_of(&rec_with_obs(SideToMove::Black, vec![mate_obs(4)])),
+            EvalBucket::Mate
+        );
+        assert_eq!(
+            eval_bucket_of(&rec_with_obs(SideToMove::Black, vec![])),
+            EvalBucket::Unlabeled
+        );
+    }
+
+    #[test]
+    fn eval_bucket_display_matches_bucket_keys_pre_refactor_tokens() {
+        assert_eq!(EvalBucket::Cp(-400).to_string(), "-400");
+        assert_eq!(EvalBucket::Mate.to_string(), "mate");
+        assert_eq!(EvalBucket::Unlabeled.to_string(), "_none_");
+    }
+
+    #[test]
+    fn ply_bucket_floor_arithmetic() {
+        assert_eq!(ply_bucket_floor(0, 20), 0);
+        assert_eq!(ply_bucket_floor(19, 20), 0);
+        assert_eq!(ply_bucket_floor(20, 20), 20);
+        assert_eq!(ply_bucket_floor(45, 20), 40);
+    }
+
+    #[test]
+    fn mean_of_empty_is_zero() {
+        assert_eq!(mean_of(&[]), 0.0);
+        assert_eq!(mean_of(&[2, 4, 6]), 4.0);
+    }
+
+    #[test]
+    fn classify_bucket_applies_under_and_over_ratios() {
+        assert_eq!(classify_bucket(1, 10.0, 0.5, 2.0), "UNDER"); // 1 < 5.0
+        assert_eq!(classify_bucket(25, 10.0, 0.5, 2.0), "OVER"); // 25 > 20.0
+        assert_eq!(classify_bucket(10, 10.0, 0.5, 2.0), "OK");
     }
 }

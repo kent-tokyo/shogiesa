@@ -3916,6 +3916,468 @@ fn balance_by_eval_bucket_normalizes_to_black_perspective() {
     );
 }
 
+// --- stratify ---
+
+/// Writes a hand-built quota-file fixture directly (not via `stratify --write-template`), so
+/// tests can construct arbitrary or deliberately malformed quota content.
+fn stratify_quota_file(by: &[&str], quotas: &[(&str, usize)]) -> NamedTempFile {
+    let quotas: serde_json::Map<String, serde_json::Value> = quotas
+        .iter()
+        .map(|(k, v)| (k.to_string(), serde_json::json!(v)))
+        .collect();
+    let mut f = NamedTempFile::new().unwrap();
+    write!(
+        f,
+        "{}",
+        serde_json::json!({
+            "stratify_format_version": 1,
+            "input": "unused.jsonl",
+            "by": by,
+            "quotas": quotas
+        })
+    )
+    .unwrap();
+    f.flush().unwrap();
+    f
+}
+
+#[test]
+fn stratify_write_template_writes_observed_bucket_counts() {
+    let input = make_labeled_jsonl(&[
+        position("opening", serde_json::json!([])),
+        position("opening", serde_json::json!([])),
+        position("middlegame", serde_json::json!([])),
+    ]);
+    let template = NamedTempFile::new().unwrap();
+
+    shogiesa()
+        .args([
+            "stratify",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--write-template",
+            template.path().to_str().unwrap(),
+            "--by",
+            "phase",
+        ])
+        .assert()
+        .success();
+
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(template.path()).unwrap()).unwrap();
+    assert_eq!(v["stratify_format_version"], 1);
+    assert_eq!(v["by"], serde_json::json!(["phase"]));
+    // The trailing colon from `bucket_key`'s own string output must survive verbatim -- trimming
+    // it here would silently defeat the whole point of reusing that string directly.
+    assert_eq!(v["quotas"]["opening:"], 2);
+    assert_eq!(v["quotas"]["middlegame:"], 1);
+}
+
+#[test]
+fn stratify_write_template_then_quota_unedited_keeps_everything() {
+    // The write-template and --quota code paths independently derive bucket keys via
+    // `bucket_key`, from the same `--by`/`by` dims -- if they ever drifted, an *unedited* template
+    // (quotas == observed counts) would start dropping records under `bucket_not_in_quota`.
+    // Piping one into the other, unedited, is the one test that actually exercises the seam.
+    let input = make_labeled_jsonl(&[
+        position("opening", serde_json::json!([])),
+        position("opening", serde_json::json!([])),
+        position("middlegame", serde_json::json!([])),
+    ]);
+    let template = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "stratify",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--write-template",
+            template.path().to_str().unwrap(),
+            "--by",
+            "phase",
+        ])
+        .assert()
+        .success();
+
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "stratify",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--quota",
+            template.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 3);
+}
+
+#[test]
+fn stratify_write_template_requires_by() {
+    let input = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
+    let template = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "stratify",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--write-template",
+            template.path().to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("requires --by"));
+}
+
+#[test]
+fn stratify_quota_keeps_up_to_each_bucket_quota() {
+    let mut records = vec![];
+    for _ in 0..4 {
+        records.push(position("opening", serde_json::json!([])));
+    }
+    for _ in 0..3 {
+        records.push(position("middlegame", serde_json::json!([])));
+    }
+    let input = make_labeled_jsonl(&records);
+    let quota = stratify_quota_file(&["phase"], &[("opening:", 2), ("middlegame:", 1)]);
+    let out = NamedTempFile::new().unwrap();
+
+    shogiesa()
+        .args([
+            "stratify",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--quota",
+            quota.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 3);
+}
+
+#[test]
+fn stratify_drops_bucket_not_in_quota_distinctly_from_over_quota() {
+    let input = make_labeled_jsonl(&[
+        position("opening", serde_json::json!([])),
+        position("opening", serde_json::json!([])),
+        position("endgame", serde_json::json!([])),
+        position("endgame", serde_json::json!([])),
+    ]);
+    let quota = stratify_quota_file(&["phase"], &[("opening:", 1)]);
+    let out = NamedTempFile::new().unwrap();
+    let manifest = NamedTempFile::new().unwrap();
+
+    shogiesa()
+        .args([
+            "stratify",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--quota",
+            quota.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--manifest",
+            manifest.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("bucket_not_in_quota      2"))
+        .stderr(predicate::str::contains("over_quota               1"));
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest.path()).unwrap()).unwrap();
+    assert_eq!(manifest["records_kept"], 1);
+    assert_eq!(manifest["records_dropped"], 3);
+    assert_eq!(manifest["drop_reasons"]["bucket_not_in_quota"], 2);
+    assert_eq!(manifest["drop_reasons"]["over_quota"], 1);
+}
+
+#[test]
+fn stratify_preserves_original_file_order() {
+    // 3 distinct roots, each contributing exactly 1 candidate (so every one is rank 0 -- tied,
+    // broken by root hash), quota 2. Regardless of *which* 2 survive the hash tie-break, whichever
+    // survive must come out in their original file order, not heap-internal order.
+    let input = make_labeled_jsonl(&[
+        position_with_path_and_phase("sfen-a", "root_a.csa", "opening", serde_json::json!([])),
+        position_with_path_and_phase("sfen-b", "root_b.csa", "opening", serde_json::json!([])),
+        position_with_path_and_phase("sfen-c", "root_c.csa", "opening", serde_json::json!([])),
+    ]);
+    let quota = stratify_quota_file(&["phase"], &[("opening:", 2)]);
+    let out = NamedTempFile::new().unwrap();
+
+    shogiesa()
+        .args([
+            "stratify",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--quota",
+            quota.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    let original_index = |path: &str| match path {
+        "root_a.csa" => 0,
+        "root_b.csa" => 1,
+        "root_c.csa" => 2,
+        other => panic!("unexpected path {other}"),
+    };
+    let indices: Vec<i32> = source_paths_in_order(&content)
+        .iter()
+        .map(|p| original_index(p))
+        .collect();
+    assert_eq!(indices.len(), 2);
+    assert!(
+        indices.is_sorted(),
+        "kept records must come out in original file order, got indices {indices:?}"
+    );
+}
+
+#[test]
+fn stratify_group_aware_quota_fill_diversifies_across_roots() {
+    // gameA contributes 5 candidates (sfens sorting lexicographically before gameB's), gameB
+    // contributes 1. Quota 2. Rank-0 tier is exactly {gameA's first record, gameB's only record}
+    // -- 2 entries, exactly filling the quota -- so both are *always* kept regardless of seed.
+    // If group-awareness regressed to a plain-sfen key (like `balance`'s), the 2 lexicographically
+    // smallest sfens are both gameA's, giving zero representation for gameB.
+    for seed in ["0", "12345"] {
+        let mut records = vec![];
+        for i in 1..=5 {
+            records.push(position_with_path_and_phase(
+                &format!("a{i}"),
+                "gameA.csa",
+                "opening",
+                serde_json::json!([]),
+            ));
+        }
+        records.push(position_with_path_and_phase(
+            "b1",
+            "gameB.csa",
+            "opening",
+            serde_json::json!([]),
+        ));
+        let input = make_labeled_jsonl(&records);
+        let quota = stratify_quota_file(&["phase"], &[("opening:", 2)]);
+        let out = NamedTempFile::new().unwrap();
+
+        shogiesa()
+            .args([
+                "stratify",
+                "--input",
+                input.path().to_str().unwrap(),
+                "--quota",
+                quota.path().to_str().unwrap(),
+                "--out",
+                out.path().to_str().unwrap(),
+                "--seed",
+                seed,
+            ])
+            .assert()
+            .success();
+
+        let content = std::fs::read_to_string(out.path()).unwrap();
+        assert_eq!(
+            source_paths_in_order(&content),
+            vec!["gameA.csa".to_string(), "gameB.csa".to_string()],
+            "seed {seed}: both roots must be represented, in original file order"
+        );
+    }
+}
+
+#[test]
+fn stratify_single_root_bucket_keeps_first_n_in_file_order() {
+    // Single root: sfens are in descending lexicographic order as encountered in the file, so
+    // "keep the 2 lexicographically smallest" (posW, posX) and "keep the first 2 in file order"
+    // (posZ, posY) would disagree -- this locks in the documented single-root behavior (file
+    // order wins, since there's no root diversity to protect).
+    let input = make_labeled_jsonl(&[
+        position_with_path_and_phase("posZ", "game.csa", "opening", serde_json::json!([])),
+        position_with_path_and_phase("posY", "game.csa", "opening", serde_json::json!([])),
+        position_with_path_and_phase("posX", "game.csa", "opening", serde_json::json!([])),
+        position_with_path_and_phase("posW", "game.csa", "opening", serde_json::json!([])),
+    ]);
+    let quota = stratify_quota_file(&["phase"], &[("opening:", 2)]);
+    let out = NamedTempFile::new().unwrap();
+
+    shogiesa()
+        .args([
+            "stratify",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--quota",
+            quota.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    let sfens: Vec<String> = content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            serde_json::from_str::<serde_json::Value>(l).unwrap()["sfen"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(sfens, vec!["posZ".to_string(), "posY".to_string()]);
+}
+
+#[test]
+fn stratify_manifest_reports_root_diversity_stats() {
+    let input = make_labeled_jsonl(&[
+        position_with_path_and_phase("s1", "g1.csa", "opening", serde_json::json!([])),
+        position_with_path_and_phase("s2", "g2.csa", "opening", serde_json::json!([])),
+        position_with_path_and_phase("s3", "g3.csa", "middlegame", serde_json::json!([])),
+    ]);
+    let quota = stratify_quota_file(&["phase"], &[("opening:", 2), ("middlegame:", 1)]);
+    let out = NamedTempFile::new().unwrap();
+    let manifest = NamedTempFile::new().unwrap();
+
+    shogiesa()
+        .args([
+            "stratify",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--quota",
+            quota.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--manifest",
+            manifest.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest.path()).unwrap()).unwrap();
+    // A naive "max share across all buckets" would read 1.0 (the middlegame singleton bucket) --
+    // scoping to buckets with >=2 kept records must exclude it, leaving the opening bucket's 0.5.
+    assert_eq!(manifest["max_root_share_in_any_bucket"], 0.5);
+    assert_eq!(manifest["distinct_roots_kept"], 3);
+}
+
+#[test]
+fn stratify_requires_exactly_one_of_write_template_or_quota() {
+    let input = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
+    shogiesa()
+        .args(["stratify", "--input", input.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "requires exactly one of --write-template or --quota",
+        ));
+}
+
+#[test]
+fn stratify_write_template_and_quota_conflict() {
+    let input = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
+    let template = NamedTempFile::new().unwrap();
+    let quota = stratify_quota_file(&["phase"], &[("opening:", 1)]);
+    shogiesa()
+        .args([
+            "stratify",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--write-template",
+            template.path().to_str().unwrap(),
+            "--quota",
+            quota.path().to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
+#[test]
+fn stratify_quota_rejects_by_flag() {
+    let input = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
+    let quota = stratify_quota_file(&["phase"], &[("opening:", 1)]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "stratify",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--quota",
+            quota.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--by",
+            "phase",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
+#[test]
+fn stratify_quota_loader_error_paths() {
+    let input = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
+    let out = NamedTempFile::new().unwrap();
+
+    let missing = std::env::temp_dir().join("shogiesa_test_quota_does_not_exist.json");
+    shogiesa()
+        .args([
+            "stratify",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--quota",
+            missing.to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot read quota file"));
+
+    let mut malformed = NamedTempFile::new().unwrap();
+    write!(malformed, "not json").unwrap();
+    malformed.flush().unwrap();
+    shogiesa()
+        .args([
+            "stratify",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--quota",
+            malformed.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot parse quota file"));
+
+    let empty_quotas = stratify_quota_file(&["phase"], &[]);
+    shogiesa()
+        .args([
+            "stratify",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--quota",
+            empty_quotas.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("nothing to keep"));
+}
+
 // --- split ---
 
 #[test]

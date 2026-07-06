@@ -474,6 +474,47 @@ shogiesa balance --input positions.jsonl --by phase --by side --out balanced.jso
 有界ヒープを使うため、メモリ使用量は `(バケット数 × target)` に比例し、データセットサイズには
 比例しません。
 
+### `stratify` — quotaベースのgroup-awareサンプリング
+
+```bash
+# 1. 現在のbucketごとのカウントを、手編集用のテンプレートとして観測する
+shogiesa stratify --input positions.jsonl --write-template quota.json --by phase --by side
+
+# 2. quota.json の "quotas" カウントを望む値まで編集してから適用する
+shogiesa stratify --input positions.jsonl --quota quota.json --out stratified.jsonl
+```
+
+`balance`(すべてのbucketに同一の `--target` を適用)と異なり、`stratify` は phase/side/
+eval-bucket の組み合わせごとに*異なる* target count を JSON quota ファイルから読み込みます。
+さらに *group-aware* です — bucketをダウンサンプルする際、残す部分集合は特定のsource
+game/root(`split --train/--valid/--test` がリーク防止に使うのと同じ、`root_id` または path
+由来のキー)に偏らず分散します。懸念しているのは、eval-bucketで見ると一見バランスが取れて
+いるように見えるデータセットが、実はその評価範囲を最も多く訪れた1つのゲームでほぼ占められて
+いる、という状況です。
+
+`quota.json` の `"quotas"` マップのキーは `balance` 自身のbucket概念の文字列表現(例:
+`"opening:black:-200:"`、有効な各次元の末尾コロンを含む)をそのまま再利用しています —
+再導出せず流用することで、テンプレートのキーと実行時に計算されるキーが決してずれないように
+しています。ファイルには生成時の次元(`by`)も記録されるため、`--quota` はファイルのみから
+bucket化を再構築します。`--quota` と `--by` を同時に渡すことは(サイレントに無視されるのでは
+なく)clapレベルのエラーになります。
+
+group-awareさは、各レコードにrank(そのレコードのsource rootが自身のbucket内で既に何件
+出現済みか、ファイル順で数えたもの)を与え、rankが低いものを無条件に優先することで実現します
+— どのrootの1件目もどのrootの2件目より優先されるため、あるrootが他の存在するrootを排除して
+bucketのquotaを独占することはできません(seed付きのハッシュによるタイブレークは、同じrank
+内でのみ働きます)。あるbucketに単一のrootしか存在しない場合は、そのbucketについて「ファイル
+順で最初のN件を残す」動作に縮退します — これは `balance` の辞書順最小SFEN選択とは異なる、
+明示的にドキュメント化された挙動です(この場合は保護すべきroot多様性がそもそも無いため)。
+
+入力には存在するがquotaファイルに記載のないbucketの組み合わせは除外され
+(`bucket_not_in_quota`)、存在してもquotaを超えている場合(`over_quota`)とは別に集計されます
+— quotaファイルは出力の完全な意図された形を表すものなので、記載のない組み合わせは意図しない
+ものとして扱われます。`--manifest`(他のデータ生成コマンドと同じ `RunManifest`)は追加で
+`max_root_share_in_any_bucket`(keptレコードが2件以上あるbucketのうち、単一rootが占めた
+最大割合 — 単独レコードのbucketは常に100%になってしまい多様化が実際に起きたかを何も語らない
+ため除外)と `distinct_roots_kept` を報告します。
+
 ### `select` — 再ラベル候補の選別
 
 ```bash
@@ -554,7 +595,7 @@ JSONLスキーマをコンパクトなバイナリ形式にエンコードし、
 
 ### 実行マニフェスト
 
-`filter`/`balance`/`sample`/`pack`/`label` は `--manifest PATH` で JSON 形式の実行記録を
+`filter`/`balance`/`stratify`/`sample`/`pack`/`label` は `--manifest PATH` で JSON 形式の実行記録を
 通常出力と一緒に書き出せます: shogiesa バージョン、git sha（ビルド時に埋め込み）、
 スキーマ/パック形式バージョン、実行時の完全なコマンドライン、入力ファイルのパスと
 コンテンツハッシュ（`input_hash`、アルゴリズム名は `fingerprint_algorithm` に記録 — 使用しているのは
@@ -572,7 +613,8 @@ skip/パース不能行の分だけ数値が水増しされるため)、`average
 含まれます — 今回の実行純粋な処理速度を見るには `records_per_sec` を使ってください)、
 `preserve_order`、`resume_from`/`resumed_count`(`--resume-from` 使用時 — `resumed_count` は
 「resumeを指定していない」(`null`)と「resumeを指定したが何もマッチしなかった」(`0`)を
-区別できます)、そして(`--cache-dir` 使用時は)cache hit/miss件数、`cache_hit_rate`、
+区別できます)、(`stratify` の場合は)`max_root_share_in_any_bucket`/`distinct_roots_kept`、
+そして(`--cache-dir` 使用時は)cache hit/miss件数、`cache_hit_rate`、
 `engine_fingerprint_mode` です。`worker_count` という別フィールドはありません —
 既存の `jobs` がまさにその値だからです。オプトインかつ加算的な機能であり、
 省略時はコマンドの通常動作に影響しません。`split` には `--manifest` はありません

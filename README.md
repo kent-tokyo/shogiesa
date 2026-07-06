@@ -465,6 +465,49 @@ tally each bucket's size, since `--target` defaults to the smallest bucket's siz
 and keeps a bounded top-`--target` heap per bucket instead of materializing the whole dataset, so
 memory scales with `(bucket count × target)`, not with dataset size.
 
+### `stratify` — quota-based, group-aware sampling
+
+```bash
+# 1. Observe current bucket counts as a hand-editable starting point
+shogiesa stratify --input positions.jsonl --write-template quota.json --by phase --by side
+
+# 2. Edit quota.json's "quotas" counts down to the desired per-bucket targets, then apply
+shogiesa stratify --input positions.jsonl --quota quota.json --out stratified.jsonl
+```
+
+Unlike `balance` (one uniform `--target` applied to every bucket), `stratify` reads a *different*
+target count per phase/side/eval-bucket combination from a JSON quota file, and is *group-aware*:
+when a bucket must be downsampled, the kept subset spreads across distinct source games/roots
+(the same `root_id`-or-path-derived key `split --train/--valid/--test` uses for leakage safety)
+instead of concentrating on whichever root's positions happen to sort first — the concern being a
+dataset that's nominally balanced by eval-bucket but is actually mostly one game because that game
+happened to visit that eval range the most.
+
+`quota.json`'s `"quotas"` map keys are exactly `balance`'s own bucket notion's string form (e.g.
+`"opening:black:-200:"`, including its trailing colon per enabled dimension) — reused verbatim, not
+re-derived, so the template's keys and a real run's computed keys can never drift apart. The file
+also records which dimensions (`by`) it was generated with, so `--quota` reconstructs the bucketing
+from the file alone; passing `--by` together with `--quota` is a hard error rather than a
+silently-ignored (and potentially mismatched) flag.
+
+Group-awareness works by giving each record a rank — how many positions from its own source root
+have already been seen in its bucket, in file order — and preferring lower ranks unconditionally:
+every root's first position in a bucket beats every root's second, across all roots, so one root
+can never take a whole bucket's quota while excluding another root present in it (hash-based
+tie-breaking, seeded by `--seed`, only decides ties *within* one rank). With only one distinct root
+in a bucket, this degrades to "keep the first N positions in file order" for that bucket — a real,
+documented behavior distinct from `balance`'s lexicographically-smallest-SFEN pick, since there's no
+root diversity to protect in that case.
+
+A bucket combination present in the input but absent from the quota file is dropped
+(`bucket_not_in_quota`), tracked separately from a bucket that's present but over its quota
+(`over_quota`) — a quota file is meant to describe the complete intended shape of the output, so an
+unmentioned combination is treated as unintended rather than passed through. `--manifest` (same
+`RunManifest` every other data-producing command uses) additionally reports
+`max_root_share_in_any_bucket` (the largest fraction any single root contributed to any output
+bucket with ≥2 kept records — singleton buckets are excluded, since they'd otherwise always read
+100% and say nothing about whether diversification actually happened) and `distinct_roots_kept`.
+
 ### `select` — re-labeling candidates
 
 ```bash
@@ -543,7 +586,7 @@ Compact binary encoding of the JSONL schema for faster loading by trainers.
 
 ### Run manifests
 
-`filter`/`balance`/`sample`/`pack`/`label` accept `--manifest PATH` to write a JSON provenance
+`filter`/`balance`/`stratify`/`sample`/`pack`/`label` accept `--manifest PATH` to write a JSON provenance
 record alongside their normal output: shogiesa version, git sha (embedded at build time),
 schema/pack format version, the full command line, the input file's path and a content hash
 (`input_hash`, with `fingerprint_algorithm` naming the algorithm — `blake3`, chosen because its
@@ -560,7 +603,8 @@ would inflate the rate with skipped/unparseable rows that never reached the engi
 inherited from a prior `label` run on the same file, not purely this invocation's own engine
 calls — use `records_per_sec` to judge this run's actual throughput), `preserve_order`,
 `resume_from`/`resumed_count` (when `--resume-from` is used — `resumed_count` distinguishes "resume
-wasn't requested" (`null`) from "resume was requested but matched nothing" (`0`)), and
+wasn't requested" (`null`) from "resume was requested but matched nothing" (`0`)), (for `stratify`)
+`max_root_share_in_any_bucket`/`distinct_roots_kept`, and
 (when `--cache-dir` is used) cache hit/miss counts, `cache_hit_rate`, and
 `engine_fingerprint_mode`. There's no separate `worker_count` field — `jobs` already is that
 value. It's opt-in and additive — no effect on the command's normal output when omitted. `split`

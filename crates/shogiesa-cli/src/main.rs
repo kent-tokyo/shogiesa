@@ -52,6 +52,11 @@ enum Commands {
     Mine(MineArgs),
     /// Balance dataset distribution by phase / side / eval-bucket
     Balance(BalanceArgs),
+    /// Quota-based sampling to a per-bucket target distribution (unlike `balance`'s single
+    /// uniform target), group-aware so one source game/root can't dominate a bucket's fill.
+    /// `--write-template` observes current bucket counts as a hand-editable starting point;
+    /// `--quota` applies a (possibly hand-edited) quota file
+    Stratify(StratifyArgs),
     /// Select positions worth a closer look (re-labeling candidates), instead of re-labeling
     /// everything at higher depth
     Select(SelectArgs),
@@ -387,6 +392,38 @@ struct BalanceArgs {
     #[arg(long)]
     target: Option<usize>,
     /// Write a run manifest (git sha, input hash, counts, coverage stats) to this path
+    #[arg(long)]
+    manifest: Option<PathBuf>,
+}
+
+#[derive(clap::Args)]
+struct StratifyArgs {
+    /// Input positions JSONL
+    #[arg(short, long)]
+    input: PathBuf,
+    /// Write an observed-bucket-count quota template to this JSON path and exit, instead of
+    /// running the quota-fill. Requires --by. Hand-edit the written "quotas" counts down to the
+    /// desired per-bucket targets, then feed the file to --quota.
+    #[arg(long, conflicts_with_all = ["quota", "out", "manifest"])]
+    write_template: Option<PathBuf>,
+    /// Dimension(s) to bucket by when writing a template: phase, side, eval-bucket (repeatable,
+    /// same tokens as `balance --by`). Write-template-only -- `--quota` reads this from the quota
+    /// file's own "by" field instead, so a stale/mismatched --by can never be passed at apply
+    /// time.
+    #[arg(long = "by", value_name = "DIMENSION", conflicts_with = "quota")]
+    by: Vec<String>,
+    /// Apply a --write-template-produced (and hand-edited) quota file to --input, writing the
+    /// quota-shaped, group-aware subset to --out.
+    #[arg(long, conflicts_with = "write_template")]
+    quota: Option<PathBuf>,
+    /// Output JSONL file (required with --quota)
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+    /// Seed for deterministic root/tie-break ordering within an over-quota bucket (--quota mode)
+    #[arg(long, default_value = "0")]
+    seed: u64,
+    /// Write a run manifest (git sha, input hash, counts, drop reasons, coverage, root-diversity
+    /// stats) to this path (--quota mode only)
     #[arg(long)]
     manifest: Option<PathBuf>,
 }
@@ -765,6 +802,7 @@ fn main() -> Result<()> {
         Commands::Sample(args) => cmd_sample(args),
         Commands::Mine(args) => cmd_mine(args),
         Commands::Balance(args) => cmd_balance(args),
+        Commands::Stratify(args) => cmd_stratify(args),
         Commands::Select(args) => cmd_select(args),
         Commands::Pack(args) => cmd_pack(args),
         Commands::Unpack(args) => cmd_unpack(args),
@@ -2477,6 +2515,15 @@ struct RunManifest {
     /// wasn't requested" from "resume was requested but matched nothing."
     #[serde(skip_serializing_if = "Option::is_none")]
     resumed_count: Option<u64>,
+    /// `stratify`-only: the largest fraction any single source root (`split_root_key`) contributed
+    /// to any one output bucket's kept records, considering only buckets with >=2 kept records (a
+    /// singleton bucket is trivially "100% one root" and would otherwise always pin this at 1.0).
+    /// `None` when no output bucket had >=2 kept records.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_root_share_in_any_bucket: Option<f64>,
+    /// `stratify`-only: count of distinct source roots contributing >=1 kept record.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    distinct_roots_kept: Option<usize>,
 }
 
 impl RunManifest {
@@ -2518,6 +2565,8 @@ impl RunManifest {
             preserve_order: None,
             resume_from: None,
             resumed_count: None,
+            max_root_share_in_any_bucket: None,
+            distinct_roots_kept: None,
         }
     }
 }
@@ -3012,6 +3061,227 @@ fn cmd_balance(args: BalanceArgs) -> Result<()> {
         manifest.records_dropped = total - kept.len();
         let kept_records: Vec<PositionRecord> = kept.iter().map(|e| e.record.clone()).collect();
         accumulate_coverage(&mut manifest, &kept_records);
+        write_manifest(manifest_path, &manifest)?;
+    }
+    Ok(())
+}
+
+const STRATIFY_FORMAT_VERSION: u32 = 1;
+
+/// `stratify --write-template`'s output / `--quota`'s input. `quotas`' keys are `bucket_key`'s own
+/// string output, reused verbatim (including its trailing colon per enabled dimension) rather than
+/// trimmed for cosmetic cleanliness -- trimming would need a presentation-layer parse/reconstruct
+/// step in both directions, reintroducing the exact "two representations of the same concept, now
+/// able to disagree" risk that reusing the string directly eliminates. `by` makes the file
+/// self-describing: `--quota` reconstructs `by_phase`/`by_side`/`by_eval` from this field alone,
+/// never from a CLI flag, so an apply-time `--by`/quota-file mismatch is structurally impossible.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StratifyQuotaFile {
+    stratify_format_version: u32,
+    input: String,
+    by: Vec<String>,
+    quotas: BTreeMap<String, usize>,
+}
+
+/// Loads a `--write-template`-produced (and hand-edited) quota file. Unlike `filter --preset`'s
+/// `load_quality_config_preset` (which selects one of several named candidates via a trailing
+/// `:label`), a quota file holds exactly one quota set -- no selector suffix, so the error surface
+/// is simpler: unreadable file, malformed JSON, or an empty `quotas` map (nothing to keep).
+fn load_stratify_quota_file(path: &Path) -> Result<StratifyQuotaFile> {
+    let text =
+        fs::read_to_string(path).with_context(|| format!("cannot read quota file {path:?}"))?;
+    let file: StratifyQuotaFile =
+        serde_json::from_str(&text).with_context(|| format!("cannot parse quota file {path:?}"))?;
+    if file.quotas.is_empty() {
+        anyhow::bail!("quota file {path:?} has an empty \"quotas\" map -- nothing to keep");
+    }
+    Ok(file)
+}
+
+fn cmd_stratify(args: StratifyArgs) -> Result<()> {
+    if let Some(template_path) = args.write_template.clone() {
+        return cmd_stratify_write_template(&args, &template_path);
+    }
+    let Some(quota_path) = args.quota.clone() else {
+        anyhow::bail!("stratify requires exactly one of --write-template or --quota");
+    };
+    let out = args
+        .out
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--quota requires --out"))?;
+    cmd_stratify_apply(&args, &quota_path, &out)
+}
+
+fn cmd_stratify_write_template(args: &StratifyArgs, template_path: &Path) -> Result<()> {
+    if args.by.is_empty() {
+        anyhow::bail!("--write-template requires --by (at least one of: phase, side, eval-bucket)");
+    }
+    let by_phase = args.by.iter().any(|s| s == "phase");
+    let by_side = args.by.iter().any(|s| s == "side");
+    let by_eval = args.by.iter().any(|s| s == "eval-bucket");
+
+    // Same tally `balance`'s pass 1 already does -- observed counts become the template's starting
+    // point, which the user then hand-edits down to their desired per-bucket targets.
+    let mut bucket_sizes: HashMap<String, usize> = HashMap::new();
+    let reader = BufReader::new(
+        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
+    );
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(record) = serde_json::from_str::<PositionRecord>(&line) {
+            *bucket_sizes
+                .entry(bucket_key(&record, by_phase, by_side, by_eval))
+                .or_default() += 1;
+        }
+    }
+
+    let file = StratifyQuotaFile {
+        stratify_format_version: STRATIFY_FORMAT_VERSION,
+        input: args.input.display().to_string(),
+        by: args.by.clone(),
+        quotas: bucket_sizes.into_iter().collect(),
+    };
+    fs::write(template_path, serde_json::to_string_pretty(&file)?)
+        .with_context(|| format!("cannot write {template_path:?}"))?;
+    eprintln!(
+        "done: {} bucket(s) observed → {:?} (edit \"quotas\" counts down, then run `stratify --quota`)",
+        file.quotas.len(),
+        template_path
+    );
+    Ok(())
+}
+
+fn cmd_stratify_apply(args: &StratifyArgs, quota_path: &Path, out: &Path) -> Result<()> {
+    let quota_file = load_stratify_quota_file(quota_path)?;
+    let by_phase = quota_file.by.iter().any(|s| s == "phase");
+    let by_side = quota_file.by.iter().any(|s| s == "side");
+    let by_eval = quota_file.by.iter().any(|s| s == "eval-bucket");
+    let seed = args.seed;
+
+    let reader = BufReader::new(
+        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
+    );
+    let mut total = 0usize;
+    let mut bucket_not_in_quota = 0usize;
+    let mut quota_candidates = 0usize;
+    // (bucket, root) -> how many records from this root have already been seen in this bucket --
+    // this record's rank is that count, taken before incrementing.
+    // ponytail: O(distinct (bucket, root) pairs), i.e. roughly distinct source games -- not
+    // `--jobs`-bounded like the heaps below (same shape as `split`'s existing `sources` map).
+    // Revisit if a corpus's distinct-game count ever makes this the memory ceiling.
+    let mut root_rank: HashMap<(String, String), u64> = HashMap::new();
+    let mut heaps: HashMap<String, BinaryHeap<HeapEntry<(u64, u64)>>> = HashMap::new();
+
+    for (i, line) in reader.lines().enumerate() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let record: PositionRecord = match serde_json::from_str(&line) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(line = i + 1, "parse error: {e}");
+                continue;
+            }
+        };
+        let bucket = bucket_key(&record, by_phase, by_side, by_eval);
+        let index = total;
+        total += 1;
+
+        let Some(&quota) = quota_file.quotas.get(&bucket) else {
+            bucket_not_in_quota += 1;
+            continue;
+        };
+        quota_candidates += 1;
+
+        let root = split_root_key(&record.source).to_string();
+        let counter = root_rank.entry((bucket.clone(), root.clone())).or_insert(0);
+        let rank = *counter;
+        *counter += 1;
+
+        // Lower rank always wins (push_bounded keeps the smallest keys): every root's first
+        // occurrence in a bucket beats every root's second occurrence, unconditionally, across all
+        // roots -- so one root can never take a bucket's whole quota while excluding another root
+        // present in it. Hash only breaks ties within one rank value.
+        let key = (rank, seeded_hash(seed, &root));
+        push_bounded(
+            heaps.entry(bucket).or_default(),
+            quota,
+            HeapEntry { key, index, record },
+        );
+    }
+
+    // Restore original file order (same convention as `balance`, not `select`'s ranked output).
+    let mut kept: Vec<HeapEntry<(u64, u64)>> =
+        heaps.into_values().flat_map(|h| h.into_vec()).collect();
+    kept.sort_by_key(|e| e.index);
+
+    let out_file = File::create(out).with_context(|| format!("cannot create {out:?}"))?;
+    let mut writer = BufWriter::new(out_file);
+    for entry in &kept {
+        serde_json::to_writer(&mut writer, &entry.record)?;
+        writer.write_all(b"\n")?;
+    }
+    writer.flush()?;
+
+    let over_quota = quota_candidates - kept.len();
+    eprintln!(
+        "done: {}/{total} kept ({} bucket(s) in quota file) → {out:?}",
+        kept.len(),
+        quota_file.quotas.len()
+    );
+    eprintln!("drop reasons:");
+    eprintln!("  bucket_not_in_quota      {bucket_not_in_quota}");
+    eprintln!("  over_quota               {over_quota}");
+
+    if let Some(manifest_path) = &args.manifest {
+        let mut manifest = RunManifest::new("stratify", &args.input);
+        manifest.input_hash = hash_file(&args.input)?;
+        manifest.records_read = total;
+        manifest.records_kept = kept.len();
+        manifest.records_dropped = total - kept.len();
+        manifest
+            .drop_reasons
+            .insert("bucket_not_in_quota", bucket_not_in_quota);
+        manifest.drop_reasons.insert("over_quota", over_quota);
+        let kept_records: Vec<PositionRecord> = kept.iter().map(|e| e.record.clone()).collect();
+        accumulate_coverage(&mut manifest, &kept_records);
+
+        // Root-diversity stats: scoped to buckets with >=2 kept records, since a singleton bucket
+        // (1 record = 1 root = 100% share) would otherwise always pin max_root_share_in_any_bucket
+        // at 1.0, telling a reader nothing about whether the group-aware quota-fill actually
+        // diversified any bucket that had a real choice to make.
+        let mut per_bucket_roots: HashMap<String, HashMap<String, usize>> = HashMap::new();
+        for entry in &kept {
+            let bucket = bucket_key(&entry.record, by_phase, by_side, by_eval);
+            let root = split_root_key(&entry.record.source).to_string();
+            *per_bucket_roots
+                .entry(bucket)
+                .or_default()
+                .entry(root)
+                .or_default() += 1;
+        }
+        manifest.max_root_share_in_any_bucket = per_bucket_roots
+            .values()
+            .filter_map(|roots| {
+                let bucket_total: usize = roots.values().sum();
+                (bucket_total >= 2).then(|| {
+                    roots.values().copied().max().unwrap_or(0) as f64 / bucket_total as f64
+                })
+            })
+            .fold(None::<f64>, |acc, share| {
+                Some(acc.map_or(share, |a| a.max(share)))
+            });
+        manifest.distinct_roots_kept = Some(
+            kept.iter()
+                .map(|e| split_root_key(&e.record.source))
+                .collect::<HashSet<_>>()
+                .len(),
+        );
+
         write_manifest(manifest_path, &manifest)?;
     }
     Ok(())

@@ -283,6 +283,26 @@ fn attacks_along(
     }
 }
 
+fn sfen_char_piece(ch: char) -> (SideToMove, PieceType) {
+    let color = if ch.is_uppercase() {
+        SideToMove::Black
+    } else {
+        SideToMove::White
+    };
+    let pt = match ch.to_ascii_uppercase() {
+        'P' => PieceType::Pawn,
+        'L' => PieceType::Lance,
+        'N' => PieceType::Knight,
+        'S' => PieceType::Silver,
+        'G' => PieceType::Gold,
+        'B' => PieceType::Bishop,
+        'R' => PieceType::Rook,
+        'K' => PieceType::King,
+        _ => unreachable!("piece char already validated by Sfen::parse"),
+    };
+    (color, pt)
+}
+
 impl Board {
     pub fn initial(side: SideToMove) -> Self {
         Board {
@@ -291,6 +311,81 @@ impl Board {
             side,
             move_count: 1,
         }
+    }
+
+    /// Constructs a `Board` from an SFEN string (`<board> <turn> <hand> <move_count>`), the
+    /// inverse of `to_sfen()`. Delegates structural validation to `crate::sfen::Sfen::parse`
+    /// (rank/square counts, known piece letters, valid side/hand/move-count) so the construction
+    /// pass below can assume a well-formed input.
+    pub fn from_sfen(s: &str) -> Result<Board, crate::sfen::SfenError> {
+        crate::sfen::Sfen::parse(s)?;
+        let fields: Vec<&str> = s.split_ascii_whitespace().collect();
+        let (board_str, side_str, hand_str, move_str) =
+            (fields[0], fields[1], fields[2], fields[3]);
+
+        let mut grid: Grid = [[None; 9]; 9];
+        let mut ri = 0usize;
+        let mut fi = 0usize;
+        let chars: Vec<char> = board_str.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            match chars[i] {
+                '/' => {
+                    ri += 1;
+                    fi = 0;
+                }
+                d if d.is_ascii_digit() => {
+                    fi += d.to_digit(10).unwrap() as usize;
+                }
+                '+' => {
+                    i += 1;
+                    let (color, pt) = sfen_char_piece(chars[i]);
+                    grid[ri][fi] = Some((color, pt.promote()));
+                    fi += 1;
+                }
+                ch => {
+                    let (color, pt) = sfen_char_piece(ch);
+                    grid[ri][fi] = Some((color, pt));
+                    fi += 1;
+                }
+            }
+            i += 1;
+        }
+
+        let side = if side_str == "b" {
+            SideToMove::Black
+        } else {
+            SideToMove::White
+        };
+
+        let mut hand = [[0u8; 7]; 2];
+        if hand_str != "-" {
+            let hchars: Vec<char> = hand_str.chars().collect();
+            let mut j = 0;
+            while j < hchars.len() {
+                let mut count: u8 = 0;
+                while hchars[j].is_ascii_digit() {
+                    count = count * 10 + hchars[j].to_digit(10).unwrap() as u8;
+                    j += 1;
+                }
+                if count == 0 {
+                    count = 1;
+                }
+                let (color, pt) = sfen_char_piece(hchars[j]);
+                j += 1;
+                hand[color_idx(color)][pt.hand_idx().unwrap()] += count;
+            }
+        }
+
+        // Already validated by `Sfen::parse` (>= 1, parses as u32).
+        let move_count: u32 = move_str.parse().unwrap();
+
+        Ok(Board {
+            grid,
+            hand,
+            side,
+            move_count,
+        })
     }
 
     /// Apply a normal (non-drop) move. `to_piece` is the piece type AFTER the move
@@ -636,6 +731,27 @@ mod tests {
             b.to_sfen(),
             "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1"
         );
+    }
+
+    #[test]
+    fn from_sfen_round_trips_initial_position() {
+        let sfen = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1";
+        let b = Board::from_sfen(sfen).unwrap();
+        assert_eq!(b.to_sfen(), sfen);
+    }
+
+    #[test]
+    fn from_sfen_round_trips_non_startpos_with_promoted_piece_and_hand() {
+        // A real strength-gate opening position (data/gate/openings_standard.sfen), including a
+        // promoted piece (+r) on the board and a mixed-color hand.
+        let sfen = "lnsg1gsnl/5k3/p1pppp1pp/6p2/9/1P4P2/P1PPPP1PP/2G1KG1S1/L+rS4NL w Brbnp 22";
+        let b = Board::from_sfen(sfen).unwrap();
+        assert_eq!(b.to_sfen(), sfen);
+    }
+
+    #[test]
+    fn from_sfen_rejects_malformed_input() {
+        assert!(Board::from_sfen("not an sfen").is_err());
     }
 
     fn empty_board(side: SideToMove) -> Board {

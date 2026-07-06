@@ -1003,15 +1003,34 @@ fn extract_from_match_kifu(
     let (mut board, move_tokens): (Board, &[&str]) = match tokens.as_slice() {
         ["position", "startpos", "moves", rest @ ..] => (Board::initial(SideToMove::Black), rest),
         ["position", "startpos"] => (Board::initial(SideToMove::Black), &[]),
-        ["position", "sfen", ..] => {
-            // No SFEN -> Board reconstructor exists anywhere in shogiesa today (verified during
-            // planning) and this form was never observed in real match-runner output -- warn and
-            // skip rather than build an unexercised subsystem for a form that hasn't occurred.
-            tracing::warn!(
-                path = source_path,
-                "`position sfen ...` not supported, skipping game"
-            );
-            return Vec::new();
+        [
+            "position",
+            "sfen",
+            b,
+            side,
+            hand,
+            move_count,
+            "moves",
+            rest @ ..,
+        ] => {
+            let sfen = format!("{b} {side} {hand} {move_count}");
+            match Board::from_sfen(&sfen) {
+                Ok(board) => (board, rest),
+                Err(e) => {
+                    tracing::warn!(path = source_path, "bad sfen {sfen:?}: {e}");
+                    return Vec::new();
+                }
+            }
+        }
+        ["position", "sfen", b, side, hand, move_count] => {
+            let sfen = format!("{b} {side} {hand} {move_count}");
+            match Board::from_sfen(&sfen) {
+                Ok(board) => (board, &[] as &[&str]),
+                Err(e) => {
+                    tracing::warn!(path = source_path, "bad sfen {sfen:?}: {e}");
+                    return Vec::new();
+                }
+            }
         }
         _ => {
             tracing::warn!(

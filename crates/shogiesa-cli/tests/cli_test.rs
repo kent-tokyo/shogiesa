@@ -5935,10 +5935,11 @@ fn from_match_promotion_and_drop_tokens_apply_correctly() {
 }
 
 #[test]
-fn from_match_position_sfen_line_warns_and_skips() {
-    // `position sfen ...` isn't supported (no SFEN->Board reconstructor exists) -- the game is
-    // skipped without error, not crashed. (tracing::warn!'s actual text isn't observable here
-    // without RUST_LOG set, so this only asserts the documented skip behavior, not the message.)
+fn from_match_position_sfen_line_extracts_from_the_given_starting_position() {
+    // `position sfen ...` games (e.g. from a strength gate run with `--positions`, not
+    // `startpos`) are parsed via `Board::from_sfen` and replayed from that starting position --
+    // not skipped. The fixture's SFEN is the standard initial position, so after one move
+    // (`7g7f`) exactly one position (ply 1) is extracted.
     let out = NamedTempFile::new().unwrap();
     shogiesa()
         .args([
@@ -5953,7 +5954,17 @@ fn from_match_position_sfen_line_warns_and_skips() {
         .assert()
         .success();
     let content = std::fs::read_to_string(out.path()).unwrap();
-    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 0);
+    let records: Vec<serde_json::Value> = content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["source"]["ply"], 1);
+    assert_eq!(
+        records[0]["sfen"],
+        "lnsgkgsnl/1r5b1/ppppppppp/9/9/2P6/PP1PPPPPP/1B5R1/LNSGKGSNL w - 2"
+    );
 }
 
 #[test]

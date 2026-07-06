@@ -1296,6 +1296,175 @@ fn label_manifest_cache_hit_rate_reflects_hits_and_misses() {
     );
 }
 
+/// Looks up a record by `source.ply` in a labeled JSONL file -- needed because `label`'s default
+/// unordered output doesn't preserve input line order (see the write-order tests above), so tests
+/// asserting per-record outcomes must find records by key, not by line position.
+fn record_at_ply(path: &std::path::Path, ply: u32) -> serde_json::Value {
+    std::fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+        .find(|v| v["source"]["ply"].as_u64() == Some(ply as u64))
+        .unwrap_or_else(|| panic!("no record at ply {ply}"))
+}
+
+#[test]
+fn label_resume_from_skips_already_covered_and_labels_the_rest() {
+    // The original full corpus -- as if this were the un-killed input, no observations yet.
+    let original = make_labeled_jsonl(&[
+        position_at_ply(1, serde_json::json!([])),
+        position_at_ply(2, serde_json::json!([])),
+        position_at_ply(3, serde_json::json!([])),
+        position_at_ply(4, serde_json::json!([])),
+    ]);
+    // Simulates a killed run's partial --out: only plies 1 and 3 finished before the kill, each
+    // already labeled with a bestmove fake-usi-engine's default config would never produce ("7g7f")
+    // -- if the final output still shows this bestmove, the engine was never re-invoked for it.
+    let partial_out = make_labeled_jsonl(&[
+        position_at_ply(
+            1,
+            serde_json::json!([obs_with_engine("FakeUsiEngine", "9i9h", 999, 4)]),
+        ),
+        position_at_ply(
+            3,
+            serde_json::json!([obs_with_engine("FakeUsiEngine", "9i9h", 999, 4)]),
+        ),
+    ]);
+
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            original.path().to_str().unwrap(),
+            "--resume-from",
+            partial_out.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--jobs",
+            "2",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    for ply in [1, 3] {
+        let rec = record_at_ply(out.path(), ply);
+        let observations = rec["observations"].as_array().unwrap();
+        assert_eq!(
+            observations.len(),
+            1,
+            "ply {ply} was already covered -- resuming must not duplicate it"
+        );
+        assert_eq!(
+            observations[0]["bestmove"], "9i9h",
+            "ply {ply}'s pre-existing observation must survive untouched, proving the engine \
+             was never re-invoked for it"
+        );
+    }
+    for ply in [2, 4] {
+        let rec = record_at_ply(out.path(), ply);
+        let observations = rec["observations"].as_array().unwrap();
+        assert_eq!(observations.len(), 1, "ply {ply} must get freshly labeled");
+        assert_eq!(
+            observations[0]["bestmove"], "7g7f",
+            "ply {ply} wasn't in --resume-from, so it must be labeled by the real engine call"
+        );
+    }
+}
+
+#[test]
+fn label_resume_from_missing_path_is_a_noop() {
+    let input = make_labeled_jsonl(&[position_at_ply(1, serde_json::json!([]))]);
+    let missing = std::env::temp_dir().join("shogiesa_test_resume_from_does_not_exist.jsonl");
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--resume-from",
+            missing.to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let rec = record_at_ply(out.path(), 1);
+    assert_eq!(rec["observations"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn label_resume_from_same_as_out_is_rejected() {
+    let input = make_labeled_jsonl(&[position_at_ply(1, serde_json::json!([]))]);
+    let same = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--resume-from",
+            same.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--out",
+            same.path().to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--resume-from must not be the same path as --out",
+        ));
+}
+
+#[test]
+fn label_manifest_reports_resumed_count() {
+    let original = make_labeled_jsonl(&[
+        position_at_ply(1, serde_json::json!([])),
+        position_at_ply(2, serde_json::json!([])),
+    ]);
+    let partial_out = make_labeled_jsonl(&[position_at_ply(
+        1,
+        serde_json::json!([obs_with_engine("FakeUsiEngine", "9i9h", 999, 4)]),
+    )]);
+    let out = NamedTempFile::new().unwrap();
+    let manifest = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            original.path().to_str().unwrap(),
+            "--resume-from",
+            partial_out.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--out",
+            out.path().to_str().unwrap(),
+            "--manifest",
+            manifest.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest.path()).unwrap()).unwrap();
+    assert_eq!(manifest["resumed_count"], 1);
+    assert_eq!(
+        manifest["resume_from"],
+        partial_out.path().to_str().unwrap()
+    );
+}
+
 // --- cache ---
 
 /// Populates a real `label --cache-dir` cache (5 positions x 2 depths = 10 entries, one engine)
@@ -5528,7 +5697,8 @@ fn help_lists_manifest_and_dry_run_flags() {
         .args(["label", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("--manifest"));
+        .stdout(predicate::str::contains("--manifest"))
+        .stdout(predicate::str::contains("--resume-from"));
 
     shogiesa()
         .args(["filter", "--help"])

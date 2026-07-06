@@ -111,17 +111,33 @@ completed work, not just whatever was still mid-search. Only use `--preserve-ord
 specifically need output order to match input order (e.g. diffing against a prior run).
 
 `--skip-existing` skips a requested depth if this engine already has an observation reaching at
-least that depth — useful for cheaply resuming a large labeling run after a kill, though it can
-only rebuild a worklist from whatever the output file actually contains; it can't recover work
-that a `--preserve-order` run lost from its own in-memory buffer before being killed.
-`--replace-existing` overwrites an existing observation at the same depth instead of duplicating
-it, for intentionally re-labeling. Both are mutually exclusive, and both key off the depth the engine
-*actually reached*, not the one requested — an engine that stops early (e.g. a forced mate) can
-report a shallower depth than asked for, and these flags account for that rather than silently
-duplicating or failing to skip. Every observation also records `requested_depth` — the depth that
-was actually asked for on that call — so `--replace-existing` only treats two observations as the
-same slot when both the achieved depth *and* `requested_depth` match (a legacy observation with no
-recorded `requested_depth` still matches on achieved depth alone, for older JSONL).
+least that depth — but it only sees what's already inside the *input* record it's currently
+reading, so feeding it the original (unlabeled) corpus does nothing, and feeding it a killed run's
+own partial `--out` skips only the positions that file happens to contain, silently dropping
+whatever the kill never got to at all. `--replace-existing` overwrites an existing observation at
+the same depth instead of duplicating it, for intentionally re-labeling. `--skip-existing` and
+`--replace-existing` are mutually exclusive, and both key off the depth the engine *actually
+reached*, not the one requested — an engine that stops early (e.g. a forced mate) can report a
+shallower depth than asked for, and these flags account for that rather than silently duplicating
+or failing to skip. Every observation also records `requested_depth` — the depth that was actually
+asked for on that call — so `--replace-existing` only treats two observations as the same slot when
+both the achieved depth *and* `requested_depth` match (a legacy observation with no recorded
+`requested_depth` still matches on achieved depth alone, for older JSONL).
+
+**Resuming an interrupted run**: `label --input original.jsonl --resume-from
+<killed-run's-partial-out.jsonl> --out new-out.jsonl ...` (same `--engine`/`--depths`/etc. as the
+original invocation). This merges the original *full* position set with whatever the killed run
+did manage to write, matched on `(sfen, source.path, source.ply)` — the same alignment key
+`merge-observations` uses — so positions the kill never reached at all are relabeled from scratch
+while already-covered ones are skipped automatically (same effect as `--skip-existing`, unless
+`--replace-existing` is also given). The path doesn't need to exist yet, so a wrapper script can
+pass `--resume-from` unconditionally from the very first run. `--resume-from` must not point at
+the same path as `--out`. Unlike `merge-observations`, this isn't a union — only `--input` is
+iterated, so `--input` must be the *original full corpus*; a record present only in
+`--resume-from` is silently dropped, not carried through. It also fully loads `--resume-from` into
+memory (needs each resumed record's actual prior observations, not just a "seen" key set), so
+resuming a near-complete multi-GB run spikes RAM by roughly that file's size — `label`'s own
+`--input`/`--out` streaming is otherwise bounded by `--jobs`, not dataset size.
 
 `--manifest PATH` writes a run manifest (engine/depths/MultiPV config, launch failures, coverage
 stats) — see "Run manifests" further down.
@@ -542,7 +558,9 @@ would inflate the rate with skipped/unparseable rows that never reached the engi
 `average_engine_time_ms` (averaged from `Observation.time_ms` across each written record; under
 `--skip-existing`/`--replace-existing`/the default append policy this includes any observations
 inherited from a prior `label` run on the same file, not purely this invocation's own engine
-calls — use `records_per_sec` to judge this run's actual throughput), `preserve_order`, and
+calls — use `records_per_sec` to judge this run's actual throughput), `preserve_order`,
+`resume_from`/`resumed_count` (when `--resume-from` is used — `resumed_count` distinguishes "resume
+wasn't requested" (`null`) from "resume was requested but matched nothing" (`0`)), and
 (when `--cache-dir` is used) cache hit/miss counts, `cache_hit_rate`, and
 `engine_fingerprint_mode`. There's no separate `worker_count` field — `jobs` already is that
 value. It's opt-in and additive — no effect on the command's normal output when omitted. `split`

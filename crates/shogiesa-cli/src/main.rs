@@ -211,6 +211,17 @@ struct LabelArgs {
     /// of appending a duplicate
     #[arg(long)]
     replace_existing: bool,
+    /// Merge in already-labeled observations from a previous (possibly interrupted) run's --out
+    /// file, matched on (sfen, source.path, source.ply) -- the same alignment key
+    /// `merge-observations` uses. Positions already covered to the requested depth are then
+    /// skipped automatically (same effect as --skip-existing) unless --replace-existing is also
+    /// given. The path doesn't need to exist yet -- a first, not-yet-interrupted run just no-ops.
+    /// Must not be the same path as --out. Unlike `merge-observations`, this is not a union: only
+    /// --input is iterated, so --input must be the full original corpus (a superset of whatever
+    /// --resume-from contains) -- a record present only in --resume-from is silently dropped, not
+    /// carried through.
+    #[arg(long)]
+    resume_from: Option<PathBuf>,
     /// Output JSONL file
     #[arg(short, long)]
     out: PathBuf,
@@ -1650,6 +1661,33 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
     if depths.is_empty() {
         anyhow::bail!("--depths must contain at least one valid integer, e.g. '4,6,8'");
     }
+    if args.resume_from.as_ref() == Some(&args.out) {
+        anyhow::bail!(
+            "--resume-from must not be the same path as --out (that would just replay --out's \
+             own current contents back into itself instead of resuming from a separate prior \
+             run's output -- almost certainly not what was intended)"
+        );
+    }
+    // ponytail: fully materializes the resume file (`load_records` + a HashMap of every
+    // observation in it), re-introducing a whole-file load into the one command the eighth round
+    // specifically rewrote to be bounded-memory. Accepted because re-emitting a resumed record's
+    // exact prior observations needs their full content, not just a "seen" key set -- but it means
+    // resuming a near-complete multi-GB run spikes RAM by roughly that file's size. Reused from
+    // `merge-observations`: same alignment key, same "last-wins on an internally-duplicated key"
+    // tolerance -- a missing path just means "nothing to resume yet" (lets a wrapper script pass
+    // --resume-from unconditionally from the very first run). Leaner alternative if this bites in
+    // practice: stream a keyset-only pass (drop per-depth top-up, just skip whole records whose
+    // key was already fully written).
+    let resume_map: HashMap<(String, String, u32), Vec<Observation>> = match &args.resume_from {
+        Some(path) if path.exists() => {
+            let (records, _) = load_records(path)?;
+            records
+                .into_iter()
+                .map(|r| (merge_alignment_key(&r), r.observations))
+                .collect()
+        }
+        _ => HashMap::new(),
+    };
 
     let engine_path = args.engine.clone();
     let engine_name = args.engine_name.clone().unwrap_or_default();
@@ -1666,10 +1704,14 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
     if args.multipv > 1 {
         engine_options.push(("MultiPV".to_string(), args.multipv.to_string()));
     }
-    let existing_policy = if args.skip_existing {
-        ExistingPolicy::Skip
-    } else if args.replace_existing {
+    // --resume-from implies Skip unless --replace-existing is explicit: without this, forgetting
+    // --skip-existing alongside --resume-from would merge in the old observations and *still*
+    // redundantly re-run the engine for already-covered depths under the default Append policy --
+    // no data loss, but it defeats the entire point of resuming.
+    let existing_policy = if args.replace_existing {
         ExistingPolicy::Replace
+    } else if args.skip_existing || args.resume_from.is_some() {
+        ExistingPolicy::Skip
     } else {
         ExistingPolicy::Append
     };
@@ -1739,13 +1781,14 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
     // point of streaming in the first place.
     let input_path = args.input.clone();
     let track_input_hash = args.manifest.is_some();
-    let reader_handle = std::thread::spawn(move || -> Result<(u64, usize, String)> {
+    let reader_handle = std::thread::spawn(move || -> Result<(u64, usize, u64, String)> {
         let mut input_hasher = blake3::Hasher::new();
         let file =
             File::open(&input_path).with_context(|| format!("cannot open {input_path:?}"))?;
         let reader = BufReader::new(file);
         let mut job_id = 0u64;
         let mut skipped = 0usize;
+        let mut resumed_count = 0u64;
         for (i, line) in reader.lines().enumerate() {
             let line = line.with_context(|| format!("cannot read {input_path:?}"))?;
             if track_input_hash {
@@ -1759,7 +1802,15 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
                 continue;
             }
             match serde_json::from_str::<PositionRecord>(&line) {
-                Ok(record) if Sfen::parse(&record.sfen).is_ok() => {
+                Ok(mut record) if Sfen::parse(&record.sfen).is_ok() => {
+                    if let Some(resume_obs) = resume_map.get(&merge_alignment_key(&record)) {
+                        merge_observations_into(
+                            &mut record.observations,
+                            resume_obs.clone(),
+                            MergeObservationPolicy::KeepBoth,
+                        );
+                        resumed_count += 1;
+                    }
                     // Blocks here once `queue_depth` jobs are dispatched-but-unwritten.
                     if permit_rx.recv().is_err() || job_tx.send(Job { id: job_id, record }).is_err()
                     {
@@ -1780,6 +1831,7 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
         Ok((
             job_id,
             skipped,
+            resumed_count,
             input_hasher.finalize().to_hex().to_string(),
         ))
     });
@@ -1908,7 +1960,7 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
     out_writer.flush()?;
     eprintln!();
 
-    let (total, skipped, input_hash) = reader_handle
+    let (total, skipped, resumed_count, input_hash) = reader_handle
         .join()
         .map_err(|_| anyhow::anyhow!("label reader thread panicked"))??;
     for handle in worker_handles {
@@ -1956,6 +2008,8 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
         manifest.records_per_sec = records_per_sec;
         manifest.average_engine_time_ms = average_engine_time_ms;
         manifest.preserve_order = Some(args.preserve_order);
+        manifest.resume_from = args.resume_from.clone();
+        manifest.resumed_count = args.resume_from.is_some().then_some(resumed_count);
         if let Some((hits, misses)) = cache_counts {
             manifest.cache_hits = Some(hits);
             manifest.cache_hit_rate = cache_hit_rate;
@@ -2391,6 +2445,13 @@ struct RunManifest {
     average_engine_time_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     preserve_order: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resume_from: Option<PathBuf>,
+    /// How many records had observations merged in from `resume_from`. `None` (not just `0`)
+    /// when `--resume-from` wasn't passed at all, so a manifest reader can distinguish "resume
+    /// wasn't requested" from "resume was requested but matched nothing."
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resumed_count: Option<u64>,
 }
 
 impl RunManifest {
@@ -2430,6 +2491,8 @@ impl RunManifest {
             cache_hit_rate: None,
             average_engine_time_ms: None,
             preserve_order: None,
+            resume_from: None,
+            resumed_count: None,
         }
     }
 }

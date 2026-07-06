@@ -222,7 +222,9 @@ shogiesa from-match --input results/kifu/run1 --out failures.jsonl --losing-side
 
 外部エンジンのmatch-runner出力(例: Sekirei自身の `sekirei-match-runner --output <dir>` —
 各対局ごとに `gameNNNN.txt` を1つ書き出します: 各エンジン枠の名前と結果を記したヘッダー行、
-続いて `position startpos moves ...` 形式のUSI指し手列)専用の純粋な抽出コマンドです。
+続いて `position startpos moves ...` または `position sfen ... moves ...` 形式のUSI指し手列 —
+後者は対局が(`--positions` を使ったstrength-gate実行などで)カスタム開始局面から始まった場合)
+専用の純粋な抽出コマンドです。
 ラベル付けは**行いません** — 出力は既存の `label`/`select --strategy hard`/`filter` に通して
 ください。他の抽出結果と全く同じ扱いです。これは意図的な設計です: match-runnerの結果JSONLは
 通常、勝敗の結果のみを記録し、手ごとの評価値は記録しません(多くのエンジンは `info` 行を
@@ -235,11 +237,10 @@ shogiesa from-match --input results/kifu/run1 --out failures.jsonl --losing-side
 「検証対象のcandidate」かを保証していません)。省略した場合は結果に関わらず全対局から抽出
 します。`--min-ply`/`--max-ply`/`--every-n-plies`/`--dedup` は `extract` と全く同じ挙動です。
 
-**制限事項(バグではありません)**: `position sfen ... moves ...`(カスタム開始局面)は
-サポートしていません — その対局は警告付きでスキップされ、クラッシュはしません。shogiesaには
-SFEN→Board復元ロジックが存在せず、このコマンドを構築する際にサンプリングした実際の
-match-runner出力にもこの形式は一度も見られなかったため、`position startpos moves ...` のみを
-再現します。
+`position sfen ...` の対局から抽出される局面は、開始SFEN自身のmove-countフィールドから続く
+真の通算plyを保持します(例えば22手目から始まった対局はply 22, 23, ... となり、0, 1, ... には
+なりません) — これにより、kifuの `position` 行がどちらの形式でも、局面フェーズ判定や
+ply基準のフィルタが正しく機能します。
 
 ### `merge-observations` — 浅い labelと深い再labelを統合する
 

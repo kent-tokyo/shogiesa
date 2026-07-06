@@ -211,13 +211,15 @@ shogiesa from-match --input results/kifu/run1 --out failures.jsonl --losing-side
 
 A pure extractor for an external engine's match-runner output (e.g. Sekirei's own
 `sekirei-match-runner --output <dir>`, which writes one `gameNNNN.txt` per game: header lines
-naming each engine slot and the result, then a `position startpos moves ...` USI move list). Does
-**not** label — feed the output through the existing `label`/`select --strategy hard`/`filter`
-commands yourself, same as any other extracted dataset. This is deliberate: a match-runner's own
-result JSONL typically records only the win/loss/draw outcome, not per-ply evaluation (engines
-commonly discard `info` lines rather than logging them), so "which positions were actually
-mistakes" can only be discovered by relabeling the extracted positions and analyzing the fresh
-observations — not by a flag on `from-match` itself.
+naming each engine slot and the result, then a `position startpos moves ...` or
+`position sfen ... moves ...` USI move list — the latter when the match started from a custom
+position, e.g. a strength-gate run using `--positions`). Does **not** label — feed the output
+through the existing `label`/`select --strategy hard`/`filter` commands yourself, same as any
+other extracted dataset. This is deliberate: a match-runner's own result JSONL typically records
+only the win/loss/draw outcome, not per-ply evaluation (engines commonly discard `info` lines
+rather than logging them), so "which positions were actually mistakes" can only be discovered by
+relabeling the extracted positions and analyzing the fresh observations — not by a flag on
+`from-match` itself.
 
 `--losing-side engine1|engine2` extracts only from games where that literal kifu-file label lost,
 per its own `# Result: Engine1 Win`/`Engine2 Win` line — not an inferred candidate/baseline
@@ -225,10 +227,10 @@ mapping (a match-runner's own source doesn't guarantee which physical engine slo
 candidate" under test). Omit to extract from every game regardless of result. `--min-ply`/
 `--max-ply`/`--every-n-plies`/`--dedup` behave exactly like `extract`.
 
-**Limitation, not a bug**: `position sfen ... moves ...` (a custom start position) isn't
-supported — the game is skipped with a warning, not crashed. No SFEN→Board reconstructor exists
-anywhere in shogiesa, and this form was never observed in real match-runner output sampled while
-building this command; only `position startpos moves ...` is replayed.
+A `position sfen ...` game's extracted positions carry their true overall ply, continuing from the
+starting SFEN's own move-count field (e.g. a game starting at move 22 gets ply 22, 23, ... — not
+0, 1, ...), so phase classification and ply-based filtering stay correct regardless of which form
+of `position` line a game's kifu used.
 
 ### `merge-observations` — combine a shallow pass with a deeper relabel
 

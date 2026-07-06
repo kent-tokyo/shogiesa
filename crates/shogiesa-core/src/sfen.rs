@@ -137,9 +137,17 @@ fn validate_hand(s: &str) -> Result<(), SfenError> {
     while let Some(ch) = chars.next() {
         if ch.is_ascii_digit() {
             // optional count before a piece
-            if !chars.peek().is_some_and(|p| is_piece(*p)) {
+            if !chars
+                .peek()
+                .is_some_and(|p| is_piece(*p) && !p.eq_ignore_ascii_case(&'k'))
+            {
                 return Err(SfenError::InvalidHand { got: s.to_string() });
             }
+        } else if ch.eq_ignore_ascii_case(&'k') {
+            // A king can never legitimately be captured/held in hand -- reject here so
+            // `Board::from_sfen` can assume a well-formed hand string (its piece-index lookup
+            // has no entry for King and would otherwise panic on this).
+            return Err(SfenError::InvalidHand { got: s.to_string() });
         } else if is_piece(ch) {
             saw_piece = true;
         } else {
@@ -220,6 +228,23 @@ mod tests {
     fn accept_hand_pieces() {
         let s = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b RBrp 10";
         assert!(Sfen::parse(s).is_ok());
+    }
+
+    #[test]
+    fn reject_king_in_hand() {
+        // A king can never legitimately be captured/held in hand -- `PieceType::hand_idx()` has
+        // no entry for it, so accepting this here would let `Board::from_sfen` panic downstream
+        // instead of surfacing a clean parse error.
+        let bare = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b K 10";
+        assert!(matches!(
+            Sfen::parse(bare),
+            Err(SfenError::InvalidHand { .. })
+        ));
+        let counted = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b 2k 10";
+        assert!(matches!(
+            Sfen::parse(counted),
+            Err(SfenError::InvalidHand { .. })
+        ));
     }
 
     #[test]

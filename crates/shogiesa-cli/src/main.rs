@@ -970,8 +970,8 @@ fn match_qualifies(losing_side: Option<&str>, result: Option<MatchResult>) -> bo
 
 /// Extracts positions from one match-runner kifu file's content. Mirrors
 /// `shogiesa_csa::extract_from_str`'s structure (stop-this-game-on-error resilience, same
-/// `ExtractConfig` gates, same dedup set) but replays a `position startpos moves ...` USI move
-/// list instead of a CSA/KIF game record.
+/// `ExtractConfig` gates, same dedup set) but replays a `position startpos moves ...` or
+/// `position sfen ... moves ...` USI move list instead of a CSA/KIF game record.
 fn extract_from_match_kifu(
     content: &str,
     source_path: &str,
@@ -1042,7 +1042,12 @@ fn extract_from_match_kifu(
     };
 
     let mut out = Vec::new();
-    let mut ply: u32 = 0;
+    // `board`'s own `move_count` already reflects the starting position (1 for `startpos`, or
+    // whatever `position sfen ...`'s move-count field says for a custom gate-opening start) --
+    // deriving `ply` from it, instead of hardcoding 0, is what makes a non-startpos game's
+    // extracted positions carry their true overall ply rather than restarting from this replay's
+    // own move-index. No-op for startpos (`Board::initial` always sets `move_count == 1`).
+    let mut ply: u32 = board.move_count - 1;
     for token in move_tokens {
         let mv = match parse_usi_move(token) {
             Ok(mv) => mv,

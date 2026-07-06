@@ -5938,14 +5938,14 @@ fn from_match_promotion_and_drop_tokens_apply_correctly() {
 fn from_match_position_sfen_line_extracts_from_the_given_starting_position() {
     // `position sfen ...` games (e.g. from a strength gate run with `--positions`, not
     // `startpos`) are parsed via `Board::from_sfen` and replayed from that starting position --
-    // not skipped. The fixture's SFEN is the standard initial position, so after one move
-    // (`7g7f`) exactly one position (ply 1) is extracted.
+    // not skipped. The fixture's SFEN is the standard initial position (move_count 1), so after
+    // one move (`7g7f`) exactly one position (ply 1) is extracted.
     let out = NamedTempFile::new().unwrap();
     shogiesa()
         .args([
             "from-match",
             "--input",
-            fixture("match_position_sfen_unsupported.txt")
+            fixture("match_position_sfen_standard.txt")
                 .to_str()
                 .unwrap(),
             "--out",
@@ -5965,6 +5965,60 @@ fn from_match_position_sfen_line_extracts_from_the_given_starting_position() {
         records[0]["sfen"],
         "lnsgkgsnl/1r5b1/ppppppppp/9/9/2P6/PP1PPPPPP/1B5R1/LNSGKGSNL w - 2"
     );
+}
+
+#[test]
+fn from_match_position_sfen_nonstandard_start_continues_ply_from_move_count() {
+    // A real gate-opening position (e.g. from a strength-gate run with `--positions`) has a
+    // move_count > 1 and can have White to move first. Ply must continue from that move_count,
+    // not restart at 0/1 -- otherwise every downstream ply-dependent behavior (phase
+    // classification, ply histograms/distribution, --min-ply/--max-ply filters) would silently
+    // misclassify every position extracted from a non-startpos game.
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "from-match",
+            "--input",
+            fixture("match_position_sfen_nonstandard_start.txt")
+                .to_str()
+                .unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    let records: Vec<serde_json::Value> = content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0]["source"]["ply"], 22);
+    assert_eq!(records[1]["source"]["ply"], 23);
+}
+
+#[test]
+fn from_match_position_sfen_with_king_in_hand_is_skipped_not_crashed() {
+    // A malformed SFEN with a king literally in the hand field must be a clean skip (like any
+    // other unparseable game), not a panic -- `PieceType::hand_idx()` has no entry for King, so
+    // without `Sfen::parse` rejecting this up front, `Board::from_sfen` would panic instead of
+    // returning an `Err` for `extract_from_match_kifu` to warn-and-skip on.
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "from-match",
+            "--input",
+            fixture("match_position_sfen_king_in_hand.txt")
+                .to_str()
+                .unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 0);
 }
 
 #[test]

@@ -232,6 +232,37 @@ starting SFEN's own move-count field (e.g. a game starting at move 22 gets ply 2
 0, 1, ...), so phase classification and ply-based filtering stay correct regardless of which form
 of `position` line a game's kifu used.
 
+### `make-gate-openings` — build a diverse opening suite for an external match-runner
+
+```bash
+shogiesa make-gate-openings --input positions.jsonl --out openings.sfen --count 100
+```
+
+Writes a plain-text file, one SFEN per line, ready for an external match-runner's own opening-book
+flag — e.g. Sekirei's `sekirei-match-runner --positions openings.sfen`, which gates a new build by
+playing candidate-vs-baseline games from each listed starting position instead of always
+`startpos`. `--input` need not be labeled (only `sfen`/`source` are read, `observations` are never
+inspected), so raw `extract`/`from-match` output works directly.
+
+Selection reuses `stratify`'s group-aware quota-fill (rank = how many positions from a record's own
+source root have already been kept, lower rank always wins, hash-tiebroken within a rank by
+`--seed`), degenerated to a single universal bucket sized `--count` — the same mechanism that keeps
+one source game from dominating a `stratify` bucket, applied here to keep one source game from
+dominating the whole suite. `--min-ply` (default 8, matching what a very early position offers
+little real opening variety) and `--max-ply` (unbounded by default) filter by `source.ply` first;
+pair with `filter`/`mine` upstream if the input is a late-game-heavy corpus (e.g. loss-mined data)
+so "opening" stays accurate. Positions are deduplicated on board+side+hand (ignoring the trailing
+move-count field and `source.path`/`ply`) before rank assignment, so two records that are the same
+starting position for gating purposes — even from different games — collapse to one kept entry
+instead of wasting two quota slots on an identical opening. Each output SFEN is validated via the
+same parser `label`/`filter` use before being written, so a malformed input line is skipped
+(`invalid_sfen`) rather than handed to an external match-runner as-is.
+
+`--manifest` reports `distinct_roots_kept` and `max_root_share_in_any_bucket` (reused verbatim from
+`stratify`, reinterpreted here as the largest fraction of the whole suite contributed by any single
+source game) alongside the usual drop-reason breakdown (`invalid_sfen`, `below_min_ply`,
+`above_max_ply`, `duplicate_sfen`, `over_count`).
+
 ### `merge-observations` — combine a shallow pass with a deeper relabel
 
 ```bash

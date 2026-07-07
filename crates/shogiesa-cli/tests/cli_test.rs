@@ -6473,6 +6473,399 @@ fn distribution_rejects_zero_ply_bucket_size() {
         .stderr(predicate::str::contains("--ply-bucket-size must be > 0"));
 }
 
+// --- make-gate-openings ---
+
+/// A syntactically valid SFEN (required -- unlike `position_with_path_and_phase`'s fake `sfen`
+/// strings, `make-gate-openings` calls `Sfen::parse` and skips anything that fails it) with a
+/// caller-chosen `hand` field, which is all that's varied across these fixtures: two records
+/// sharing a `hand` value collide on `make-gate-openings`'s board+side+hand dedup key; two with
+/// different `hand` values don't. `Sfen::parse` never cross-validates hand-vs-board piece counts,
+/// so any piece letter here is safe regardless of the (always-standard) board.
+fn gate_record(hand: &str, path: &str, ply: u32) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "sfen": format!("lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b {hand} 1"),
+        "source": { "kind": "csa", "path": path, "ply": ply },
+        "tags": { "phase": "opening", "side_to_move": "black", "in_check": false, "has_capture": false },
+        "observations": []
+    })
+}
+
+fn gate_sfens_in_order(content: &str) -> Vec<String> {
+    content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.to_string())
+        .collect()
+}
+
+#[test]
+fn make_gate_openings_diversifies_across_roots() {
+    // gameA contributes 5 candidates, gameB contributes 1. Quota 2. Rank-0 tier is exactly
+    // {gameA's first record, gameB's only record} -- 2 entries, exactly filling the quota -- so
+    // both are *always* kept regardless of seed. Mirrors stratify's flagship diversity test,
+    // degenerated to make-gate-openings' single universal bucket.
+    for seed in ["0", "12345"] {
+        let mut records = vec![];
+        for (i, hand) in ["P", "L", "N", "S", "G"].iter().enumerate() {
+            records.push(gate_record(hand, "gameA.csa", (i + 1) as u32 * 10));
+        }
+        records.push(gate_record("R", "gameB.csa", 10));
+        let input = make_labeled_jsonl(&records);
+        let out = NamedTempFile::new().unwrap();
+
+        shogiesa()
+            .args([
+                "make-gate-openings",
+                "--input",
+                input.path().to_str().unwrap(),
+                "--out",
+                out.path().to_str().unwrap(),
+                "--count",
+                "2",
+                "--min-ply",
+                "1",
+                "--seed",
+                seed,
+            ])
+            .assert()
+            .success();
+
+        let sfens = gate_sfens_in_order(&std::fs::read_to_string(out.path()).unwrap());
+        assert_eq!(sfens.len(), 2, "seed {seed}");
+        assert!(
+            sfens.iter().any(|s| s.contains(" P 1")),
+            "seed {seed}: gameA's first record must be kept, got {sfens:?}"
+        );
+        assert!(
+            sfens.iter().any(|s| s.contains(" R 1")),
+            "seed {seed}: gameB's only record must be represented, got {sfens:?}"
+        );
+    }
+}
+
+#[test]
+fn make_gate_openings_dedups_identical_starting_position() {
+    // Same board+side+hand (dedup key), different path/ply/trailing move-count, and -- crucially
+    // -- different roots, so quota alone can't be what caps the output: each of the 3 records has
+    // its own root and would get rank 0 in its own right, so a generous quota (3) that doesn't
+    // bind would keep all 3 if dedup weren't actually collapsing the duplicate pair.
+    let input = make_labeled_jsonl(&[
+        gate_record("P", "gameA.csa", 10),
+        gate_record("P", "gameB.csa", 20), // duplicate of the above (same board+side+hand)
+        gate_record("L", "gameC.csa", 10),
+    ]);
+    let out = NamedTempFile::new().unwrap();
+
+    shogiesa()
+        .args([
+            "make-gate-openings",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--count",
+            "3",
+            "--min-ply",
+            "1",
+        ])
+        .assert()
+        .success();
+
+    let sfens = gate_sfens_in_order(&std::fs::read_to_string(out.path()).unwrap());
+    assert_eq!(
+        sfens.len(),
+        2,
+        "the duplicate P-hand record must collapse to one, even though quota (3) doesn't bind: {sfens:?}"
+    );
+}
+
+#[test]
+fn make_gate_openings_dedup_does_not_inflate_rank_for_other_records() {
+    // Root A: one real record (hand P), then 2 exact duplicates of it (dropped), then 2 more
+    // genuinely distinct records (hand L, hand N). Root B: 3 distinct records (hand S, R, B), no
+    // duplicates. Quota 4.
+    //
+    // If dedup happens BEFORE rank assignment (correct): root A's rank sequence for its 3
+    // surviving records is 0, 1, 2 (the 2 dropped duplicates never touch the rank counter) -- same
+    // shape as root B's 0, 1, 2. Rank-tier fill: {A@0, B@0} then {A@1, B@1} exactly fills quota 4,
+    // giving 2 from each root.
+    //
+    // If dedup happened AFTER rank assignment (bug): the 2 dropped duplicates would still consume
+    // rank slots, inflating root A's surviving records to ranks 0, 3, 4 -- rank-tier fill would
+    // then take {A@0, B@0}, {B@1}, {B@2}, giving 1 from root A and 3 from root B instead.
+    let input = make_labeled_jsonl(&[
+        gate_record("P", "gameA.csa", 10),
+        gate_record("P", "gameA.csa", 20), // duplicate of the above (same hand)
+        gate_record("P", "gameA.csa", 30), // duplicate of the above (same hand)
+        gate_record("L", "gameA.csa", 40),
+        gate_record("N", "gameA.csa", 50),
+        gate_record("S", "gameB.csa", 10),
+        gate_record("R", "gameB.csa", 20),
+        gate_record("B", "gameB.csa", 30),
+    ]);
+    let out = NamedTempFile::new().unwrap();
+
+    shogiesa()
+        .args([
+            "make-gate-openings",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--count",
+            "4",
+            "--min-ply",
+            "1",
+        ])
+        .assert()
+        .success();
+
+    let sfens = gate_sfens_in_order(&std::fs::read_to_string(out.path()).unwrap());
+    let from_a = sfens
+        .iter()
+        .filter(|s| s.contains(" P 1") || s.contains(" L 1") || s.contains(" N 1"))
+        .count();
+    let from_b = sfens
+        .iter()
+        .filter(|s| s.contains(" S 1") || s.contains(" R 1") || s.contains(" B 1"))
+        .count();
+    assert_eq!(
+        (from_a, from_b),
+        (2, 2),
+        "root A's duplicates must not starve its own later records of quota share: {sfens:?}"
+    );
+}
+
+#[test]
+fn make_gate_openings_min_ply_filters_early_positions() {
+    let input = make_labeled_jsonl(&[
+        gate_record("P", "game.csa", 1),
+        gate_record("L", "game.csa", 7),
+        gate_record("N", "game.csa", 8),
+        gate_record("S", "game.csa", 20),
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    let manifest = NamedTempFile::new().unwrap();
+
+    shogiesa()
+        .args([
+            "make-gate-openings",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--count",
+            "10",
+            "--min-ply",
+            "8",
+            "--manifest",
+            manifest.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let sfens = gate_sfens_in_order(&std::fs::read_to_string(out.path()).unwrap());
+    assert_eq!(sfens.len(), 2, "only ply>=8 records survive: {sfens:?}");
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest.path()).unwrap()).unwrap();
+    assert_eq!(manifest["drop_reasons"]["below_min_ply"], 2);
+}
+
+#[test]
+fn make_gate_openings_max_ply_filters_late_positions() {
+    let input = make_labeled_jsonl(&[
+        gate_record("P", "game.csa", 10),
+        gate_record("L", "game.csa", 50),
+        gate_record("N", "game.csa", 100),
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    let manifest = NamedTempFile::new().unwrap();
+
+    shogiesa()
+        .args([
+            "make-gate-openings",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--count",
+            "10",
+            "--min-ply",
+            "1",
+            "--max-ply",
+            "50",
+            "--manifest",
+            manifest.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let sfens = gate_sfens_in_order(&std::fs::read_to_string(out.path()).unwrap());
+    assert_eq!(sfens.len(), 2, "only ply<=50 records survive: {sfens:?}");
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest.path()).unwrap()).unwrap();
+    assert_eq!(manifest["drop_reasons"]["above_max_ply"], 1);
+}
+
+#[test]
+fn make_gate_openings_skips_invalid_sfen_without_crashing() {
+    let mut f = NamedTempFile::new().unwrap();
+    writeln!(f, "{}", gate_record("P", "game.csa", 10)).unwrap();
+    // A malformed sfen (missing fields) -- must be warned-and-skipped, not crash the run.
+    writeln!(
+        f,
+        r#"{{"schema_version":1,"sfen":"not a valid sfen","source":{{"kind":"csa","path":"bad.csa","ply":10}},"tags":{{"phase":"opening","side_to_move":"black","in_check":false,"has_capture":false}},"observations":[]}}"#
+    )
+    .unwrap();
+    f.flush().unwrap();
+    let out = NamedTempFile::new().unwrap();
+    let manifest = NamedTempFile::new().unwrap();
+
+    shogiesa()
+        .args([
+            "make-gate-openings",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--count",
+            "10",
+            "--min-ply",
+            "1",
+            "--manifest",
+            manifest.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let sfens = gate_sfens_in_order(&std::fs::read_to_string(out.path()).unwrap());
+    assert_eq!(sfens.len(), 1);
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest.path()).unwrap()).unwrap();
+    assert_eq!(manifest["drop_reasons"]["invalid_sfen"], 1);
+}
+
+#[test]
+fn make_gate_openings_writes_plain_sfen_lines_not_jsonl() {
+    let input = make_labeled_jsonl(&[gate_record("P", "game.csa", 10)]);
+    let out = NamedTempFile::new().unwrap();
+
+    shogiesa()
+        .args([
+            "make-gate-openings",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--count",
+            "10",
+            "--min-ply",
+            "1",
+        ])
+        .assert()
+        .success();
+
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(
+        content,
+        "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b P 1\n"
+    );
+    assert!(
+        serde_json::from_str::<serde_json::Value>(content.trim()).is_err(),
+        "output must be a plain sfen line, not JSON"
+    );
+}
+
+#[test]
+fn make_gate_openings_count_larger_than_dataset_keeps_everything() {
+    let input = make_labeled_jsonl(&[
+        gate_record("P", "gameA.csa", 10),
+        gate_record("L", "gameB.csa", 10),
+    ]);
+    let out = NamedTempFile::new().unwrap();
+
+    shogiesa()
+        .args([
+            "make-gate-openings",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--count",
+            "100",
+            "--min-ply",
+            "1",
+        ])
+        .assert()
+        .success();
+
+    let sfens = gate_sfens_in_order(&std::fs::read_to_string(out.path()).unwrap());
+    assert_eq!(sfens.len(), 2);
+}
+
+#[test]
+fn make_gate_openings_count_zero_selects_nothing() {
+    let input = make_labeled_jsonl(&[gate_record("P", "gameA.csa", 10)]);
+    let out = NamedTempFile::new().unwrap();
+
+    shogiesa()
+        .args([
+            "make-gate-openings",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--count",
+            "0",
+            "--min-ply",
+            "1",
+        ])
+        .assert()
+        .success();
+
+    assert_eq!(std::fs::read_to_string(out.path()).unwrap(), "");
+}
+
+#[test]
+fn make_gate_openings_manifest_reports_root_diversity_stats() {
+    let input = make_labeled_jsonl(&[
+        gate_record("P", "gameA.csa", 10),
+        gate_record("L", "gameB.csa", 10),
+        gate_record("N", "gameC.csa", 10),
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    let manifest = NamedTempFile::new().unwrap();
+
+    shogiesa()
+        .args([
+            "make-gate-openings",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--count",
+            "3",
+            "--min-ply",
+            "1",
+            "--manifest",
+            manifest.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest.path()).unwrap()).unwrap();
+    assert_eq!(manifest["command"], "make-gate-openings");
+    assert_eq!(manifest["records_read"], 3);
+    assert_eq!(manifest["records_kept"], 3);
+    assert_eq!(manifest["distinct_roots_kept"], 3);
+    // 3 roots, 1 record each, in a 3-record suite -- no root has more than its even 1/3 share.
+    assert!(
+        (manifest["max_root_share_in_any_bucket"].as_f64().unwrap() - (1.0 / 3.0)).abs() < 1e-9
+    );
+}
+
 // --- help smoke test ---
 
 #[test]

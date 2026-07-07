@@ -92,6 +92,11 @@ enum Commands {
     /// Merge two labeled positions JSONL files' observations (e.g. a shallow pass and a deeper
     /// relabel pass), with configurable duplicate-observation resolution
     MergeObservations(MergeObservationsArgs),
+    /// Build a diverse, root-aware opening suite (plain SFEN-per-line, no schema wrapper) from a
+    /// positions dataset, for feeding an external match-runner's own opening-book flag (e.g.
+    /// Sekirei's `--positions FILE`) -- input need not be labeled, since only `sfen`/`source` are
+    /// read
+    MakeGateOpenings(MakeGateOpeningsArgs),
 }
 
 #[derive(clap::Args)]
@@ -424,6 +429,35 @@ struct StratifyArgs {
     seed: u64,
     /// Write a run manifest (git sha, input hash, counts, drop reasons, coverage, root-diversity
     /// stats) to this path (--quota mode only)
+    #[arg(long)]
+    manifest: Option<PathBuf>,
+}
+
+#[derive(clap::Args)]
+struct MakeGateOpeningsArgs {
+    /// Input positions JSONL (extract/from-match output; labeled or not, observations are never
+    /// inspected)
+    #[arg(short, long)]
+    input: PathBuf,
+    /// Output plain-text file, one SFEN per line -- ready for an external match-runner's own
+    /// opening-book flag (e.g. Sekirei's `--positions FILE`)
+    #[arg(short, long)]
+    out: PathBuf,
+    /// Target suite size (quota)
+    #[arg(long)]
+    count: usize,
+    /// Drop positions below this ply (a very early position offers little opening variety)
+    #[arg(long, default_value = "8")]
+    min_ply: u32,
+    /// Drop positions above this ply (unbounded by default -- pair with `filter`/`mine` first if
+    /// the input is a late-game-heavy corpus, e.g. loss-mined data, so "opening" stays accurate)
+    #[arg(long)]
+    max_ply: Option<u32>,
+    /// Seed for deterministic root tie-breaking (default 0), same convention as sample/stratify
+    #[arg(long, default_value = "0")]
+    seed: u64,
+    /// Write a run manifest (git sha, input hash, counts, drop reasons, root-diversity stats) to
+    /// this path
     #[arg(long)]
     manifest: Option<PathBuf>,
 }
@@ -820,6 +854,7 @@ fn main() -> Result<()> {
         },
         Commands::FromMatch(args) => cmd_from_match(args),
         Commands::MergeObservations(args) => cmd_merge_observations(args),
+        Commands::MakeGateOpenings(args) => cmd_make_gate_openings(args),
     }
 }
 
@@ -3316,6 +3351,154 @@ fn cmd_stratify_apply(args: &StratifyArgs, quota_path: &Path, out: &Path) -> Res
             .fold(None::<f64>, |acc, share| {
                 Some(acc.map_or(share, |a| a.max(share)))
             });
+        manifest.distinct_roots_kept = Some(
+            kept.iter()
+                .map(|e| split_root_key(&e.record.source))
+                .collect::<HashSet<_>>()
+                .len(),
+        );
+
+        write_manifest(manifest_path, &manifest)?;
+    }
+    Ok(())
+}
+
+/// The first 3 whitespace-separated SFEN fields (board, side, hand) -- deliberately drops the
+/// trailing move-count field, since a match-runner starts a *game* from this position and what
+/// happens next depends only on board/side/hand, not on how many moves it took to reach it. Two
+/// records with identical board+side+hand from different games/plies are the same starting
+/// position for gating purposes and must collapse to one, or a duplicate wastes a quota slot that
+/// could have gone to a genuinely different opening.
+///
+/// ponytail: NOT `zobrist_from_sfen` -- that hash covers board+side only (built for
+/// `extract --dedup-zobrist`'s transposition-detection use case, where hand is naturally
+/// consistent within one game). Reusing it here would silently conflate two unrelated positions
+/// that share a board+side but differ in hand, which are NOT the same starting position.
+fn gate_opening_dedup_key(sfen: &str) -> String {
+    sfen.split_whitespace()
+        .take(3)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn cmd_make_gate_openings(args: MakeGateOpeningsArgs) -> Result<()> {
+    let seed = args.seed;
+    let reader = BufReader::new(
+        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
+    );
+
+    let mut total = 0usize;
+    let mut invalid_sfen = 0usize;
+    let mut below_min_ply = 0usize;
+    let mut above_max_ply = 0usize;
+    let mut duplicate_sfen = 0usize;
+    let mut seen: HashSet<String> = HashSet::new();
+    // root -> how many records from this root have already been seen -- this record's rank is
+    // that count, taken before incrementing. One universal group (unlike `stratify`'s per-bucket
+    // map), since `make-gate-openings` has no bucketing dimension.
+    let mut root_rank: HashMap<String, u64> = HashMap::new();
+    let mut heap: BinaryHeap<HeapEntry<(u64, u64)>> = BinaryHeap::new();
+
+    for (i, line) in reader.lines().enumerate() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let record: PositionRecord = match serde_json::from_str(&line) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(line = i + 1, "parse error: {e}");
+                continue;
+            }
+        };
+        let index = total;
+        total += 1;
+
+        if Sfen::parse(&record.sfen).is_err() {
+            invalid_sfen += 1;
+            continue;
+        }
+        if record.source.ply < args.min_ply {
+            below_min_ply += 1;
+            continue;
+        }
+        if args.max_ply.is_some_and(|max| record.source.ply > max) {
+            above_max_ply += 1;
+            continue;
+        }
+        // Dedup before rank assignment -- a root full of duplicate SFENs must not inflate its own
+        // rank counter and lose priority to a genuinely diverse root.
+        if !seen.insert(gate_opening_dedup_key(&record.sfen)) {
+            duplicate_sfen += 1;
+            continue;
+        }
+
+        let root = split_root_key(&record.source).to_string();
+        let counter = root_rank.entry(root.clone()).or_insert(0);
+        let rank = *counter;
+        *counter += 1;
+
+        // Lower rank always wins (push_bounded keeps the smallest keys): every root's first
+        // occurrence beats every root's second occurrence, unconditionally, across all roots --
+        // same mechanism as `stratify`, degenerated to one universal bucket.
+        let key = (rank, seeded_hash(seed, &root));
+        push_bounded(&mut heap, args.count, HeapEntry { key, index, record });
+    }
+
+    let quota_candidates = total - invalid_sfen - below_min_ply - above_max_ply - duplicate_sfen;
+    let mut kept: Vec<HeapEntry<(u64, u64)>> = heap.into_vec();
+    kept.sort_by_key(|e| e.index);
+
+    let out_file =
+        File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
+    let mut writer = BufWriter::new(out_file);
+    for entry in &kept {
+        writer.write_all(entry.record.sfen.as_bytes())?;
+        writer.write_all(b"\n")?;
+    }
+    writer.flush()?;
+
+    let over_count = quota_candidates - kept.len();
+    eprintln!("done: {}/{total} kept → {:?}", kept.len(), args.out);
+    eprintln!("drop reasons:");
+    eprintln!("  invalid_sfen             {invalid_sfen}");
+    eprintln!("  below_min_ply            {below_min_ply}");
+    eprintln!("  above_max_ply            {above_max_ply}");
+    eprintln!("  duplicate_sfen           {duplicate_sfen}");
+    eprintln!("  over_count               {over_count}");
+
+    if let Some(manifest_path) = &args.manifest {
+        let mut manifest = RunManifest::new("make-gate-openings", &args.input);
+        manifest.input_hash = hash_file(&args.input)?;
+        manifest.records_read = total;
+        manifest.records_kept = kept.len();
+        manifest.records_dropped = total - kept.len();
+        manifest.drop_reasons.insert("invalid_sfen", invalid_sfen);
+        manifest.drop_reasons.insert("below_min_ply", below_min_ply);
+        manifest.drop_reasons.insert("above_max_ply", above_max_ply);
+        manifest
+            .drop_reasons
+            .insert("duplicate_sfen", duplicate_sfen);
+        manifest.drop_reasons.insert("over_count", over_count);
+        let kept_records: Vec<PositionRecord> = kept.iter().map(|e| e.record.clone()).collect();
+        accumulate_coverage(&mut manifest, &kept_records);
+
+        // Reinterpretation of `stratify`'s per-bucket root-share stat for a single universal
+        // "bucket" (the whole suite): only meaningful with >=2 kept records, same reasoning as
+        // stratify (a singleton suite is trivially "100% one root").
+        if kept.len() >= 2 {
+            let mut root_counts: HashMap<&str, usize> = HashMap::new();
+            for entry in &kept {
+                *root_counts
+                    .entry(split_root_key(&entry.record.source))
+                    .or_default() += 1;
+            }
+            manifest.max_root_share_in_any_bucket = root_counts
+                .values()
+                .copied()
+                .max()
+                .map(|m| m as f64 / kept.len() as f64);
+        }
         manifest.distinct_roots_kept = Some(
             kept.iter()
                 .map(|e| split_root_key(&e.record.source))

@@ -242,6 +242,38 @@ shogiesa from-match --input results/kifu/run1 --out failures.jsonl --losing-side
 なりません) — これにより、kifuの `position` 行がどちらの形式でも、局面フェーズ判定や
 ply基準のフィルタが正しく機能します。
 
+### `make-gate-openings` — 外部match-runner向けの多様な開始局面集を作る
+
+```bash
+shogiesa make-gate-openings --input positions.jsonl --out openings.sfen --count 100
+```
+
+1行1SFENのプレーンテキストファイルを書き出します — 外部match-runner自身のopening-book用
+フラグにそのまま渡せる形式です(例: Sekireiの
+`sekirei-match-runner --positions openings.sfen`。常に `startpos` からではなく、記載された
+各開始局面からcandidate/baseline対局を行うことで新しいビルドをgateします)。`--input` は
+ラベル付け済みである必要はありません(読むのは `sfen`/`source` のみで `observations` は
+一切参照しません)、そのため `extract`/`from-match` の生の出力をそのまま渡せます。
+
+選択には `stratify` のgroup-awareなquota-fill(rank = そのレコードのsource rootが既に何件
+keptされたか、rankが低いものが無条件に優先され、同一rank内は `--seed` によるハッシュで
+タイブレーク)を、bucketをquota=`--count` の単一の全体bucketに縮退させた形で再利用しています
+— `stratify` の1つのbucketを1つのsource gameが占有しないようにする仕組みを、そのままsuite
+全体を1つのsource gameが占有しないようにする用途に転用しています。`--min-ply`(デフォルト8
+— あまりに早い局面は開始局面としての多様性に乏しいという判断)と `--max-ply`(デフォルトは
+無制限)は `source.ply` でまず絞り込みます。入力が終盤に偏ったコーパス(例えば損失局面
+マイニングの結果)である場合は、事前に `filter`/`mine` を通して「opening」の名にふさわしい
+データにしておいてください。局面はrank割り当ての前に盤面+手番+持ち駒(末尾のmove-count
+フィールドや `source.path`/`ply` は無視)で重複排除されます — gatingの観点で同一の開始局面
+であれば、別の対局由来であっても1件に集約され、同じ開始局面のために2枠を無駄にすることは
+ありません。各出力SFENは `label`/`filter` と同じパーサで検証してから書き出すため、不正な
+入力行は外部match-runnerにそのまま渡さず(`invalid_sfen`)スキップします。
+
+`--manifest` は `distinct_roots_kept` と `max_root_share_in_any_bucket`(`stratify` から
+そのまま再利用し、ここではsuite全体に対する単一source gameの最大占有率として解釈)に加えて、
+通常のdrop-reasonの内訳(`invalid_sfen`、`below_min_ply`、`above_max_ply`、
+`duplicate_sfen`、`over_count`)を報告します。
+
 ### `merge-observations` — 浅い labelと深い再labelを統合する
 
 ```bash

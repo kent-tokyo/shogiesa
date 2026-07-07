@@ -50,6 +50,13 @@ pub struct AnalysisResult {
     /// Set when `bestmove` is a special USI token (`resign`/`win`/`none`) rather than an
     /// ordinary move. See `classify_bestmove`.
     pub bestmove_kind: Option<BestMoveKind>,
+    /// `true` when this result was salvaged after `--timeout-ms` elapsed (see
+    /// `UsiEngine::salvage_after_timeout`), rather than a `bestmove` line arriving normally.
+    /// Not propagated to `Observation`/JSONL -- `depth`/`requested_depth` already carry the
+    /// data-quality signal a consumer needs (same shape as an engine's own early stop). This
+    /// field exists purely so the CLI can count how often timeouts, specifically, forced an
+    /// under-reached result, distinct from an engine's own early stop.
+    pub timed_out: bool,
 }
 
 struct InfoLine {
@@ -138,6 +145,14 @@ fn parse_info(line: &str) -> Option<InfoLine> {
     }
     Some(info)
 }
+
+/// How long `analyse()` waits for a response after sending `stop` on timeout, before giving up
+/// and salvaging from whatever `info` line was last captured. Fixed, not a CLI flag -- a secondary
+/// timing knob for a secondary path isn't worth exposing. Generous enough for realistic USI
+/// engine stop-compliance latency (engines typically check a stop flag every few tens of ms)
+/// without meaningfully hurting throughput -- a fixed additive cost only on the already-failing
+/// tail of calls that would otherwise return nothing at all.
+const STOP_GRACE_MS: u64 = 500;
 
 pub struct UsiEngine {
     child: Child,
@@ -242,75 +257,151 @@ impl UsiEngine {
         Ok(())
     }
 
+    /// Builds the final result once a `bestmove` token is in hand (`Ok`, from the main loop
+    /// below or `salvage_after_timeout`'s grace period) or synthesized from a PV (the salvage
+    /// fallback below). Shared so all three call sites agree on how `policy_margin_cp`/
+    /// `candidates`/`score_bound` are derived from `candidates_by_rank`. Sets `timed_out: false`;
+    /// callers on the salvage path flip it to `true` after the fact.
+    fn build_analysis_result(
+        bestmove: String,
+        candidates_by_rank: &BTreeMap<u32, InfoLine>,
+        requested_depth: u32,
+    ) -> Result<AnalysisResult, UsiError> {
+        let info = candidates_by_rank.get(&1).ok_or(UsiError::NoBestmove)?;
+        let policy_margin_cp = match (&info.score, candidates_by_rank.get(&2)) {
+            (Some(Score::Cp { value: best }), Some(runner_up))
+                if info.bound == ScoreBound::Exact && runner_up.bound == ScoreBound::Exact =>
+            {
+                match runner_up.score {
+                    Some(Score::Cp { value: second }) => Some(best - second),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        let candidates: Vec<CandidateMove> = if candidates_by_rank.len() >= 2 {
+            candidates_by_rank
+                .iter()
+                .filter_map(|(&multipv, info)| {
+                    let pv = info.pv.clone()?;
+                    let bestmove = pv.first()?.clone();
+                    let score = info.score.clone()?;
+                    Some(CandidateMove {
+                        multipv,
+                        bestmove,
+                        score,
+                        score_bound: info.bound,
+                        pv: Some(pv),
+                    })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let bestmove_kind = classify_bestmove(&bestmove);
+        Ok(AnalysisResult {
+            depth: info.depth.unwrap_or(requested_depth),
+            score: info.score.clone().ok_or(UsiError::InvalidResponse)?,
+            bestmove,
+            nodes: info.nodes,
+            time_ms: info.time_ms,
+            pv: info.pv.clone(),
+            policy_margin_cp,
+            candidates,
+            score_bound: info.bound,
+            bestmove_kind,
+            timed_out: false,
+        })
+    }
+
+    /// Called when the main search deadline elapses with no `bestmove` yet. Sends `stop` (best
+    /// effort -- the pipe may already be dead) and waits out a short grace period for the engine
+    /// to respond, since USI engines are expected to react to `stop` promptly; if a real
+    /// `bestmove` arrives within that window, this is a graceful recovery, not a degraded result.
+    /// If nothing arrives even then, synthesizes a result from the last `info` line's own PV
+    /// (the engine's own claimed best move at whatever depth it actually reached) instead of the
+    /// bare `Err(UsiError::Timeout)` this used to return unconditionally -- returns that same
+    /// error, unchanged, only when there's truly nothing to salvage (e.g. a fully unresponsive
+    /// engine that never produced any output at all).
+    fn salvage_after_timeout(
+        &mut self,
+        candidates_by_rank: &mut BTreeMap<u32, InfoLine>,
+        requested_depth: u32,
+    ) -> Result<AnalysisResult, UsiError> {
+        let _ = self.write_line("stop");
+        let grace_deadline = Instant::now() + Duration::from_millis(STOP_GRACE_MS);
+        loop {
+            match self.recv_until(grace_deadline) {
+                Ok(line) if line.starts_with("bestmove ") => {
+                    let bestmove = line
+                        .strip_prefix("bestmove ")
+                        .and_then(|s| s.split_whitespace().next())
+                        .ok_or(UsiError::InvalidResponse)?
+                        .to_string();
+                    let mut result =
+                        Self::build_analysis_result(bestmove, candidates_by_rank, requested_depth)?;
+                    result.timed_out = true;
+                    return Ok(result);
+                }
+                Ok(line) if line.starts_with("info ") => {
+                    if let Some(info) = parse_info(&line) {
+                        candidates_by_rank.insert(info.multipv.unwrap_or(1), info);
+                    }
+                }
+                Ok(_) => {}
+                Err(_) => break, // grace period elapsed, or the pipe died -- fall through below
+            }
+        }
+        let bestmove = candidates_by_rank
+            .get(&1)
+            .and_then(|info| info.pv.as_ref())
+            .and_then(|pv| pv.first())
+            .cloned()
+            .ok_or(UsiError::Timeout)?;
+        let mut result =
+            Self::build_analysis_result(bestmove, candidates_by_rank, requested_depth)?;
+        result.timed_out = true;
+        Ok(result)
+    }
+
     pub fn analyse(
         &mut self,
         sfen: &str,
         depth: u32,
         timeout_ms: u64,
     ) -> Result<AnalysisResult, UsiError> {
+        // Discard anything a previous call's engine emitted after that call already returned
+        // (e.g. a stray line landing just after a salvage's grace period expired) -- the same
+        // engine process is reused across every position a worker thread picks up, so leftover
+        // output here would otherwise be misattributed to this new position's response.
+        while self.rx.try_recv().is_ok() {}
+
         self.write_line(&format!("position sfen {sfen}"))?;
         self.write_line(&format!("go depth {depth}"))?;
 
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
         let mut candidates_by_rank: BTreeMap<u32, InfoLine> = BTreeMap::new();
         loop {
-            let line = self.recv_until(deadline)?;
-            if line.starts_with("bestmove ") {
-                let bestmove = line
-                    .strip_prefix("bestmove ")
-                    .and_then(|s| s.split_whitespace().next())
-                    .ok_or(UsiError::InvalidResponse)?
-                    .to_string();
-                let info = candidates_by_rank.get(&1).ok_or(UsiError::NoBestmove)?;
-                let policy_margin_cp = match (&info.score, candidates_by_rank.get(&2)) {
-                    (Some(Score::Cp { value: best }), Some(runner_up))
-                        if info.bound == ScoreBound::Exact
-                            && runner_up.bound == ScoreBound::Exact =>
+            match self.recv_until(deadline) {
+                Ok(line) => {
+                    if line.starts_with("bestmove ") {
+                        let bestmove = line
+                            .strip_prefix("bestmove ")
+                            .and_then(|s| s.split_whitespace().next())
+                            .ok_or(UsiError::InvalidResponse)?
+                            .to_string();
+                        return Self::build_analysis_result(bestmove, &candidates_by_rank, depth);
+                    } else if line.starts_with("info ")
+                        && let Some(info) = parse_info(&line)
                     {
-                        match runner_up.score {
-                            Some(Score::Cp { value: second }) => Some(best - second),
-                            _ => None,
-                        }
+                        let rank = info.multipv.unwrap_or(1);
+                        candidates_by_rank.insert(rank, info);
                     }
-                    _ => None,
-                };
-                let candidates: Vec<CandidateMove> = if candidates_by_rank.len() >= 2 {
-                    candidates_by_rank
-                        .iter()
-                        .filter_map(|(&multipv, info)| {
-                            let pv = info.pv.clone()?;
-                            let bestmove = pv.first()?.clone();
-                            let score = info.score.clone()?;
-                            Some(CandidateMove {
-                                multipv,
-                                bestmove,
-                                score,
-                                score_bound: info.bound,
-                                pv: Some(pv),
-                            })
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                };
-                let bestmove_kind = classify_bestmove(&bestmove);
-                return Ok(AnalysisResult {
-                    depth: info.depth.unwrap_or(depth),
-                    score: info.score.clone().ok_or(UsiError::InvalidResponse)?,
-                    bestmove,
-                    nodes: info.nodes,
-                    time_ms: info.time_ms,
-                    pv: info.pv.clone(),
-                    policy_margin_cp,
-                    candidates,
-                    score_bound: info.bound,
-                    bestmove_kind,
-                });
-            } else if line.starts_with("info ")
-                && let Some(info) = parse_info(&line)
-            {
-                let rank = info.multipv.unwrap_or(1);
-                candidates_by_rank.insert(rank, info);
+                }
+                Err(UsiError::Timeout) => {
+                    return self.salvage_after_timeout(&mut candidates_by_rank, depth);
+                }
+                Err(e) => return Err(e),
             }
         }
     }

@@ -172,7 +172,9 @@ fn analyse_returns_all_multipv_candidates() {
 
 #[test]
 fn timeout_returns_error() {
-    // fake-usi-engine --hang sleeps forever on "go" commands
+    // fake-usi-engine --hang sleeps forever on "go" commands, producing zero output and never
+    // reacting to the `stop` sent on timeout either -- there's nothing for the salvage fallback
+    // to salvage, so this stays a hard failure, unchanged from before the timeout-salvage fix.
     let mut cmd = Command::new(fake_usi_engine_bin());
     cmd.arg("--hang");
     let mut engine = UsiEngine::launch_command(cmd, String::new(), TIMEOUT, &[]).unwrap();
@@ -182,17 +184,50 @@ fn timeout_returns_error() {
 }
 
 #[test]
-fn timeout_not_reset_by_continuous_info() {
-    // fake-usi-engine --spam-info sends "info" lines forever without ever
-    // sending "bestmove" — a per-line-reset timeout would never fire here.
+fn timeout_salvages_last_known_depth_when_no_bestmove_ever_arrives() {
+    // fake-usi-engine --spam-info sends "info" lines forever without ever sending "bestmove" --
+    // a per-line-reset timeout would never fire here, and it can't react to the `stop` sent on
+    // timeout either (same single-threaded stdin-loop limitation as --hang). So this exercises
+    // the final fallback: no bestmove even after the stop grace period, salvage from the last
+    // known info line's own PV instead of returning nothing.
     let mut cmd = Command::new(fake_usi_engine_bin());
     cmd.arg("--spam-info");
     let mut engine = UsiEngine::launch_command(cmd, String::new(), TIMEOUT, &[]).unwrap();
     let start = std::time::Instant::now();
-    let result = engine.analyse(STARTPOS, 4, 300); // short timeout
-    assert!(matches!(result, Err(UsiError::Timeout)));
+    let result = engine.analyse(STARTPOS, 4, 300).unwrap(); // short timeout
+    assert!(result.timed_out);
+    assert_eq!(result.depth, 1);
+    assert!(matches!(result.score, Score::Cp { value: 0 }));
+    assert_eq!(result.bestmove, "7g7f");
     assert!(
         start.elapsed() < std::time::Duration::from_secs(2),
         "timeout should fire even though the engine keeps sending info lines"
     );
+}
+
+#[test]
+fn timeout_grace_period_recovers_a_real_bestmove() {
+    // SlowMoveCount/SlowDelayMs (built for label's write-order jitter fix) makes the engine sleep
+    // once before its normal single-shot info+bestmove response -- set the delay to land well
+    // after the outer timeout but comfortably inside the stop grace period, so this exercises
+    // "a real bestmove arrives during the grace period" rather than the last-resort PV fallback.
+    // 200ms outer timeout / 350ms delay gives a 150ms margin on the lower edge (timeout must fire
+    // before the response lands) and 350ms on the upper edge (response must land within the 500ms
+    // grace window) -- both comfortably wide so this doesn't flake under scheduler jitter/CI load.
+    let mut engine = UsiEngine::launch(
+        &fake_usi_engine_bin(),
+        String::new(),
+        TIMEOUT,
+        &[
+            ("SlowMoveCount".to_string(), "1".to_string()),
+            ("SlowDelayMs".to_string(), "350".to_string()),
+        ],
+    )
+    .unwrap();
+    let result = engine.analyse(STARTPOS, 4, 200).unwrap(); // outer timeout fires well before 350ms
+    assert!(result.timed_out);
+    assert!(matches!(result.score, Score::Cp { value: 100 }));
+    assert_eq!(result.bestmove, "7g7f");
+    assert_eq!(result.depth, 4);
+    engine.quit();
 }

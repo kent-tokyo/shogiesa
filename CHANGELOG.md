@@ -8,6 +8,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ## [Unreleased]
 
+### Fixed
+- `label`'s `analyse()` no longer discards a position entirely when `--timeout-ms` elapses before `bestmove` arrives — it now sends `stop` and salvages a degraded-but-real result (the deepest completed `info` line, `depth < requested_depth`) instead. Measured impact motivating this: at depth=6/timeout=15s on 30 real loss-mined positions, 30% (9/30) failed to label at all, and failures skewed toward higher ply (~38 avg) than successes (~29 avg) — a real bias toward silently dropping exactly the complex, decisive late-game positions hard-position mining/`select --strategy coverage`/boundary relabeling exist to target. No schema change: `depth`/`requested_depth` already represent this exact shape of "degraded but real" result for an engine's own early stop (e.g. a forced mate via `--early-stop-depth`), and `filter --require-requested-depth-reached` already exists for a consumer who needs strict full-depth-only data — this fix is default-on, not a new flag, for the same reason the `label` output-order default was flipped rather than left opt-in: the data loss was silent, and an opt-in flag would perpetuate it for anyone who doesn't already know to ask. If the engine never responds even after `stop` and a 500ms grace period (e.g. a genuinely hung process), this is unchanged from before — a hard failure with nothing salvaged, since there's nothing to salvage. **Known, narrow limitation, not closed this round**: `requested_depth_underreached` exempts `Score::Mate` observations from underreach entirely (a legitimate early-stop-on-forced-mate is trustworthy) — a timeout-salvaged info line that happens to carry an unconfirmed mate score gets the same exemption today, despite being less trustworthy than a genuine early stop; rare in practice, not schema-worthy for v1.
+
 ## [0.7.0] — 2026-07-07
 
 ### Fixed

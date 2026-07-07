@@ -128,7 +128,7 @@ fn main() {
                 }
                 if spam_info {
                     loop {
-                        writeln!(out, "info depth 1 score cp 0 nodes 1 time 10").unwrap();
+                        writeln!(out, "info depth 1 score cp 0 nodes 1 time 10 pv 7g7f").unwrap();
                         out.flush().unwrap();
                         thread::sleep(Duration::from_millis(50));
                     }

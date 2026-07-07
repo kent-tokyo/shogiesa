@@ -1053,6 +1053,53 @@ fn label_manifest_records_engine_and_depths() {
     assert_eq!(manifest["records_kept"], 1);
     assert_eq!(manifest["records_dropped"], 0);
     assert_eq!(manifest["engine_launch_failures"], 0);
+    assert_eq!(manifest["timeout_salvaged_count"], 0);
+}
+
+#[test]
+fn label_manifest_reports_timeout_salvaged_count() {
+    // SlowMoveCount/SlowDelayMs (setoption, since `label` never passes extra argv to the engine
+    // it spawns) makes the engine sleep before its normal response. `label`'s single
+    // `--timeout-ms` value governs both engine-launch handshake AND every `analyse()` call --
+    // unlike the shogiesa-usi unit tests, which use a generous fixed handshake timeout and a
+    // separate short per-call one -- so this can't be as tight as the unit-level test: 2000ms
+    // leaves comfortable headroom for process spawn + handshake even under load, and a 2250ms
+    // delay (250ms past the timeout on both sides of the fixed 500ms stop-grace window) still
+    // exercises the salvage path end to end through the real `label` CLI without flaking under
+    // scheduler jitter.
+    let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
+    let out = NamedTempFile::new().unwrap();
+    let manifest_path = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--timeout-ms",
+            "2000",
+            "--engine-option",
+            "SlowMoveCount=1",
+            "--engine-option",
+            "SlowDelayMs=2250",
+            "--out",
+            out.path().to_str().unwrap(),
+            "--manifest",
+            manifest_path.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest_path.path()).unwrap()).unwrap();
+    assert_eq!(manifest["timeout_salvaged_count"], 1);
+
+    let output: serde_json::Value =
+        serde_json::from_str(std::fs::read_to_string(out.path()).unwrap().trim()).unwrap();
+    assert_eq!(output["observations"][0]["depth"], 4);
 }
 
 #[test]

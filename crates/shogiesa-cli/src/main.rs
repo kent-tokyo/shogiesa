@@ -1595,6 +1595,7 @@ fn analyze_record(
     timeout_ms: u64,
     existing_policy: ExistingPolicy,
     cache: Option<&LabelCache>,
+    timeout_salvaged_count: &AtomicUsize,
 ) {
     for &depth in depths {
         // The engine may stop before reaching `depth` (e.g. a forced mate) — check coverage
@@ -1634,6 +1635,9 @@ fn analyze_record(
             Some(obs) => Some(obs),
             None => match engine.analyse(&rec.sfen, depth, timeout_ms) {
                 Ok(result) => {
+                    if result.timed_out {
+                        timeout_salvaged_count.fetch_add(1, Ordering::Relaxed);
+                    }
                     let obs = Observation {
                         engine: engine.engine_name.clone(),
                         engine_version: engine.engine_version.clone(),
@@ -1858,6 +1862,7 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
     let (result_tx, result_rx) = mpsc::channel::<Job>();
 
     let engine_launch_failures = Arc::new(AtomicUsize::new(0));
+    let timeout_salvaged_count = Arc::new(AtomicUsize::new(0));
     let done = Arc::new(AtomicUsize::new(0));
 
     // Reader: streams the input line-by-line so the whole dataset is never resident in memory --
@@ -1934,6 +1939,7 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
             let engine_name = engine_name.clone();
             let engine_options = engine_options.clone();
             let engine_launch_failures = Arc::clone(&engine_launch_failures);
+            let timeout_salvaged_count = Arc::clone(&timeout_salvaged_count);
             let done = Arc::clone(&done);
             let depths = depths.clone();
             let cache = cache.clone();
@@ -1965,6 +1971,7 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
                             timeout_ms,
                             existing_policy,
                             cache.as_deref(),
+                            &timeout_salvaged_count,
                         );
                     } else {
                         engine_launch_failures.fetch_add(1, Ordering::Relaxed);
@@ -2056,6 +2063,7 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
             .map_err(|_| anyhow::anyhow!("label worker thread panicked"))?;
     }
     let engine_launch_failures = engine_launch_failures.load(Ordering::Relaxed);
+    let timeout_salvaged_count = timeout_salvaged_count.load(Ordering::Relaxed);
     let cache_counts = cache.as_ref().map(|c| {
         (
             c.hits.load(Ordering::Relaxed),
@@ -2092,6 +2100,7 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
         manifest.engine_options = Some(args.engine_options.clone());
         manifest.jobs = Some(jobs);
         manifest.engine_launch_failures = Some(engine_launch_failures);
+        manifest.timeout_salvaged_count = Some(timeout_salvaged_count);
         manifest.records_per_sec = records_per_sec;
         manifest.average_engine_time_ms = average_engine_time_ms;
         manifest.preserve_order = Some(args.preserve_order);
@@ -2507,6 +2516,13 @@ struct RunManifest {
     jobs: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     engine_launch_failures: Option<usize>,
+    /// How many observations were salvaged from a `--timeout-ms` expiry (degraded but real,
+    /// `depth < requested_depth`) rather than lost entirely. Distinct from
+    /// `requested_depth_underreach`, which also counts an engine's own early stop (e.g. a forced
+    /// mate) -- fast and trustworthy, unlike a forced timeout. A maintainer tuning `timeout_ms`/
+    /// depth needs to tell these apart.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timeout_salvaged_count: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cache_hits: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2580,6 +2596,7 @@ impl RunManifest {
             engine_options: None,
             jobs: None,
             engine_launch_failures: None,
+            timeout_salvaged_count: None,
             cache_hits: None,
             cache_misses: None,
             engine_fingerprint_mode: None,

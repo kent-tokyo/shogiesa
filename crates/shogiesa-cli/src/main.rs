@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
 use std::fmt::Write as _; // writeln! into a String, for cmd_tune's Markdown report
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -18,7 +18,12 @@ use shogiesa_core::{
     requested_depth_underreached, score_swing, sfen::Sfen, zobrist_from_sfen,
 };
 use shogiesa_pack as pack;
+use shogiesa_stratify::{EvalBucket, bucket_key, eval_bucket_of};
 use shogiesa_usi::UsiEngine;
+use stratifykit_core::{
+    BucketStatus, HeapEntry, QuotaSpec, TotalF32, bucket_floor, classify_bucket, group_aware_fill,
+    mean_of, push_bounded, reservoir_sample, seeded_hash,
+};
 use tracing::info;
 
 #[derive(Parser)]
@@ -1253,6 +1258,88 @@ fn merge_alignment_key(rec: &PositionRecord) -> (String, String, u32) {
     (rec.sfen.clone(), rec.source.path.clone(), rec.source.ply)
 }
 
+/// `label --resume-from`'s index: alignment key -> byte offset of that record's JSON line in the
+/// resume file. Why: resume files can be multi-GB after an interrupted labeling run. Keeping
+/// every resumed `PositionRecord` in memory (its full `Vec<Observation>`, PV lines, etc.) defeats
+/// `label`'s bounded streaming pipeline, so the index stores only lookup keys and file offsets;
+/// matching records are re-read from disk (one seek + one line) only when `--input` actually
+/// produces that key, via `read_resume_observations_at`.
+///
+/// Only `sfen`/`source.path`/`source.ply` are parsed per line -- not the full record -- so
+/// indexing never allocates a resumed record's observations at all. A later occurrence of the
+/// same key overwrites an earlier one's offset, matching `HashMap::collect`'s prior "last wins"
+/// behavior when multiple lines share a key.
+///
+/// ponytail: this still holds one key (two `String`s + a `u32`) per resumed record in memory, so
+/// it's a large constant-factor win over the old full-record map, not O(1). A truly bounded
+/// approach would need a sorted merge-join between `--input` and `--resume-from`, which isn't
+/// available here -- neither file is guaranteed sorted by alignment key (a prior `label` run's
+/// writer can emit records out of order). Sharded index files would only trade this map's memory
+/// for disk I/O without addressing that same limit, so they're not worth the added complexity
+/// here. Revisit only if the offset index itself becomes the memory ceiling in practice.
+type ResumeIndex = HashMap<(String, String, u32), u64>;
+
+fn build_resume_index(path: &Path) -> Result<ResumeIndex> {
+    #[derive(Deserialize)]
+    struct KeyOnly {
+        sfen: String,
+        source: KeyOnlySource,
+    }
+    #[derive(Deserialize)]
+    struct KeyOnlySource {
+        path: String,
+        ply: u32,
+    }
+
+    let file = File::open(path).with_context(|| format!("cannot open {path:?}"))?;
+    let mut reader = BufReader::new(file);
+    let mut index = HashMap::new();
+    let mut offset = 0u64;
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        let n = reader
+            .read_until(b'\n', &mut buf)
+            .with_context(|| format!("cannot read {path:?}"))?;
+        if n == 0 {
+            break;
+        }
+        let line_offset = offset;
+        offset += n as u64;
+        let line = String::from_utf8_lossy(&buf);
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<KeyOnly>(line) {
+            Ok(rec) => {
+                index.insert((rec.sfen, rec.source.path, rec.source.ply), line_offset);
+            }
+            Err(e) => {
+                tracing::warn!("resume-from parse error at offset {line_offset}: {e}");
+            }
+        }
+    }
+    Ok(index)
+}
+
+/// Re-reads one resumed record's observations from `--resume-from`, given the byte offset
+/// `build_resume_index` recorded for its alignment key. A fresh `BufReader` per lookup (rather
+/// than one kept across calls) is deliberate: every call first seeks the underlying file to an
+/// absolute offset, so any of a previous lookup's read-ahead buffering is simply discarded, never
+/// a correctness concern.
+fn read_resume_observations_at(file: &mut File, offset: u64) -> Result<Vec<Observation>> {
+    file.seek(SeekFrom::Start(offset))
+        .context("cannot seek resume-from file")?;
+    let mut line = String::new();
+    BufReader::new(file)
+        .read_line(&mut line)
+        .context("cannot read resume-from file")?;
+    let record: PositionRecord =
+        serde_json::from_str(line.trim()).context("cannot parse resume-from record")?;
+    Ok(record.observations)
+}
+
 fn cmd_merge_observations(args: MergeObservationsArgs) -> Result<()> {
     let policy = match args.on_collision.as_str() {
         "keep-both" => MergeObservationPolicy::KeepBoth,
@@ -1794,25 +1881,16 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
              run's output -- almost certainly not what was intended)"
         );
     }
-    // ponytail: fully materializes the resume file (`load_records` + a HashMap of every
-    // observation in it), re-introducing a whole-file load into the one command the eighth round
-    // specifically rewrote to be bounded-memory. Accepted because re-emitting a resumed record's
-    // exact prior observations needs their full content, not just a "seen" key set -- but it means
-    // resuming a near-complete multi-GB run spikes RAM by roughly that file's size. Reused from
-    // `merge-observations`: same alignment key, same "last-wins on an internally-duplicated key"
-    // tolerance -- a missing path just means "nothing to resume yet" (lets a wrapper script pass
-    // --resume-from unconditionally from the very first run). Leaner alternative if this bites in
-    // practice: stream a keyset-only pass (drop per-depth top-up, just skip whole records whose
-    // key was already fully written).
-    let resume_map: HashMap<(String, String, u32), Vec<Observation>> = match &args.resume_from {
+    // See `build_resume_index` for why this is an offset index, not the full-record map
+    // `load_records` would give -- a missing path just means "nothing to resume yet" (lets a
+    // wrapper script pass --resume-from unconditionally from the very first run), same as before.
+    let mut resume_source: Option<(ResumeIndex, File)> = match &args.resume_from {
         Some(path) if path.exists() => {
-            let (records, _) = load_records(path)?;
-            records
-                .into_iter()
-                .map(|r| (merge_alignment_key(&r), r.observations))
-                .collect()
+            let index = build_resume_index(path)?;
+            let file = File::open(path).with_context(|| format!("cannot open {path:?}"))?;
+            Some((index, file))
         }
-        _ => HashMap::new(),
+        _ => None,
     };
 
     let engine_path = args.engine.clone();
@@ -1930,13 +2008,28 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
             }
             match serde_json::from_str::<PositionRecord>(&line) {
                 Ok(mut record) if Sfen::parse(&record.sfen).is_ok() => {
-                    if let Some(resume_obs) = resume_map.get(&merge_alignment_key(&record)) {
-                        merge_observations_into(
-                            &mut record.observations,
-                            resume_obs.clone(),
-                            MergeObservationPolicy::KeepBoth,
-                        );
-                        resumed_count += 1;
+                    if let Some((index, file)) = resume_source.as_mut()
+                        && let Some(&offset) = index.get(&merge_alignment_key(&record))
+                    {
+                        // Matches `load_records`' tolerance (the full-load path this replaced):
+                        // an unreadable/malformed resume line is warned and skipped, not fatal --
+                        // this position is simply relabeled from scratch, same as if it had never
+                        // been in the resume file at all.
+                        match read_resume_observations_at(file, offset) {
+                            Ok(resume_obs) => {
+                                merge_observations_into(
+                                    &mut record.observations,
+                                    resume_obs,
+                                    MergeObservationPolicy::KeepBoth,
+                                );
+                                resumed_count += 1;
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "resume-from record unreadable at offset {offset}: {e}"
+                                );
+                            }
+                        }
                     }
                     // Blocks here once `queue_depth` jobs are dispatched-but-unwritten.
                     if permit_rx.recv().is_err() || job_tx.send(Job { id: job_id, record }).is_err()
@@ -2590,9 +2683,10 @@ struct RunManifest {
     /// wasn't requested" from "resume was requested but matched nothing."
     #[serde(skip_serializing_if = "Option::is_none")]
     resumed_count: Option<u64>,
-    /// `stratify`-only: the largest fraction any single source root (`split_root_key`) contributed
-    /// to any one output bucket's kept records, considering only buckets with >=2 kept records (a
-    /// singleton bucket is trivially "100% one root" and would otherwise always pin this at 1.0).
+    /// `stratify`-only: the largest fraction any single source root
+    /// (`shogiesa_stratify::group_key`) contributed to any one output bucket's kept records,
+    /// considering only buckets with >=2 kept records (a singleton bucket is trivially "100% one
+    /// root" and would otherwise always pin this at 1.0).
     /// `None` when no output bucket had >=2 kept records.
     #[serde(skip_serializing_if = "Option::is_none")]
     max_root_share_in_any_bucket: Option<f64>,
@@ -2769,56 +2863,8 @@ fn accumulate_coverage(manifest: &mut RunManifest, records: &[PositionRecord]) {
     manifest.requested_depth_underreach += underreach;
 }
 
-/// Deterministic hash of `(seed, s)` — the same tie-breaking/spreading mechanism used by
-/// `sample` (to pick which positions) and `select` (to break ties within a rank), so "pick N
-/// deterministically" behaves identically wherever it's used.
-fn seeded_hash(seed: u64, s: &str) -> u64 {
-    let seed_bytes = seed.to_le_bytes();
-    hash_parts_u64(&[&seed_bytes, s.as_bytes()])
-}
-
-/// One candidate in a bounded top-K stream. `key` carries every tie-break the equivalent
-/// full-materialize-then-`sort_by` code applied (e.g. `(rank, seeded_hash)`); `index` is always
-/// the final tiebreak layer, reproducing `sort_by`'s stability -- which a heap has no notion of on
-/// its own, since two records can otherwise agree on every field `key` compares.
-struct HeapEntry<K: Ord> {
-    key: K,
-    index: usize,
-    record: PositionRecord,
-}
-
-impl<K: Ord> PartialEq for HeapEntry<K> {
-    fn eq(&self, other: &Self) -> bool {
-        self.key == other.key && self.index == other.index
-    }
-}
-impl<K: Ord> Eq for HeapEntry<K> {}
-impl<K: Ord> PartialOrd for HeapEntry<K> {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-impl<K: Ord> Ord for HeapEntry<K> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.key
-            .cmp(&other.key)
-            .then_with(|| self.index.cmp(&other.index))
-    }
-}
-
-/// Keeps the `count` smallest `HeapEntry`s seen so far -- the standard bounded-heap top-K
-/// algorithm: push while under capacity, otherwise evict the current worst-kept entry if `entry`
-/// ranks ahead of it. Provably identical final set (and, via `BinaryHeap::into_sorted_vec`,
-/// identical order) to "collect everything, sort ascending by the same key, truncate" -- at
-/// O(count) memory instead of O(n).
-fn push_bounded<K: Ord>(heap: &mut BinaryHeap<HeapEntry<K>>, count: usize, entry: HeapEntry<K>) {
-    if heap.len() < count {
-        heap.push(entry);
-    } else if heap.peek().is_some_and(|worst| entry.cmp(worst).is_lt()) {
-        heap.pop();
-        heap.push(entry);
-    }
-}
+// seeded_hash, HeapEntry, push_bounded now live in stratifykit-core (imported above) --
+// this crate no longer hand-rolls bounded top-K sampling itself.
 
 fn cmd_sample(args: SampleArgs) -> Result<()> {
     let seed = args.seed;
@@ -2827,35 +2873,36 @@ fn cmd_sample(args: SampleArgs) -> Result<()> {
     let reader = BufReader::new(
         File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
     );
-    let mut total = 0usize;
-    let mut heap: BinaryHeap<HeapEntry<u64>> = BinaryHeap::with_capacity(count.saturating_add(1));
-    for (i, line) in reader.lines().enumerate() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let record: PositionRecord = match serde_json::from_str(&line) {
-            Ok(r) => r,
+    let mut io_error: Option<std::io::Error> = None;
+    let records = reader
+        .lines()
+        .enumerate()
+        .filter_map(|(i, line)| match line {
+            Ok(line) if line.trim().is_empty() => None,
+            Ok(line) => match serde_json::from_str::<PositionRecord>(&line) {
+                Ok(r) => Some(r),
+                Err(e) => {
+                    tracing::warn!(line = i + 1, "parse error: {e}");
+                    None
+                }
+            },
             Err(e) => {
-                tracing::warn!(line = i + 1, "parse error: {e}");
-                continue;
+                io_error.get_or_insert(e);
+                None
             }
-        };
-        let key = seeded_hash(seed, &record.sfen);
-        let index = total;
-        total += 1;
-        push_bounded(&mut heap, count, HeapEntry { key, index, record });
+        });
+    // Reservoir sample restores original file order (unlike `select`, which outputs in ranked
+    // order).
+    let (kept, total) = reservoir_sample(records, count, seed, |r| r.sfen.as_str());
+    if let Some(e) = io_error {
+        return Err(e.into());
     }
-
-    // Restore original file order (unlike `select`, which outputs in ranked order)
-    let mut kept: Vec<HeapEntry<u64>> = heap.into_vec();
-    kept.sort_by_key(|e| e.index);
 
     let out_file =
         File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
     let mut writer = BufWriter::new(out_file);
-    for entry in &kept {
-        serde_json::to_writer(&mut writer, &entry.record)?;
+    for record in &kept {
+        serde_json::to_writer(&mut writer, record)?;
         writer.write_all(b"\n")?;
     }
     writer.flush()?;
@@ -2870,8 +2917,7 @@ fn cmd_sample(args: SampleArgs) -> Result<()> {
         manifest.records_read = total;
         manifest.records_kept = kept.len();
         manifest.records_dropped = total - kept.len();
-        let kept_records: Vec<PositionRecord> = kept.iter().map(|e| e.record.clone()).collect();
-        accumulate_coverage(&mut manifest, &kept_records);
+        accumulate_coverage(&mut manifest, &kept);
         write_manifest(manifest_path, &manifest)?;
     }
     Ok(())
@@ -2993,62 +3039,9 @@ fn cmd_mine(args: MineArgs) -> Result<()> {
     Ok(())
 }
 
-/// The eval-bucket dimension of `bucket_key`, factored out as a structured, orderable value so
-/// callers that need a numeric span (e.g. `distribution`, which enumerates every bucket between
-/// the observed min and max) don't have to re-parse `bucket_key`'s string output back into a
-/// number. `bucket_key`'s `by_eval` branch below calls this and formats it -- the floor(cp/200)
-/// computation and mate/unlabeled sentinel classification live in exactly one place.
-///
-/// Declaration order (`Unlabeled < Cp < Mate`) mirrors `report`'s existing
-/// `i32::MIN`=unlabeled-sorts-first / `i32::MAX`=mate-sorts-last sentinel convention.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum EvalBucket {
-    Unlabeled,
-    Cp(i32),
-    Mate,
-}
-
-impl std::fmt::Display for EvalBucket {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            EvalBucket::Cp(v) => write!(f, "{v}"),
-            EvalBucket::Mate => write!(f, "mate"),
-            EvalBucket::Unlabeled => write!(f, "_none_"),
-        }
-    }
-}
-
-fn eval_bucket_of(rec: &PositionRecord) -> EvalBucket {
-    rec.observations
-        .iter()
-        .max_by_key(|o| o.depth)
-        .map(|o| match o.score {
-            Score::Cp { value } => {
-                let black_value =
-                    cp_from_black_perspective(value, o.score_perspective, rec.tags.side_to_move);
-                EvalBucket::Cp((black_value.div_euclid(200)) * 200)
-            }
-            Score::Mate { .. } => EvalBucket::Mate,
-        })
-        .unwrap_or(EvalBucket::Unlabeled)
-}
-
-/// Composite phase/side/eval-bucket key for one record. Shared by `balance` (equal-count
-/// rebalancing) and `select --strategy coverage` (thin-bucket prioritization) so the two
-/// commands' notion of "bucket" can never drift apart.
-fn bucket_key(rec: &PositionRecord, by_phase: bool, by_side: bool, by_eval: bool) -> String {
-    let mut key = String::new();
-    if by_phase {
-        key.push_str(&format!("{}:", rec.tags.phase));
-    }
-    if by_side {
-        key.push_str(&format!("{}:", rec.tags.side_to_move));
-    }
-    if by_eval {
-        key.push_str(&format!("{}:", eval_bucket_of(rec)));
-    }
-    key
-}
+// EvalBucket, eval_bucket_of, bucket_key now live in shogiesa-stratify (imported above) --
+// shogi-specific bucketing logic, shared by every consumer that needs "which bucket is this
+// record in".
 
 fn cmd_balance(args: BalanceArgs) -> Result<()> {
     if args.by.is_empty() {
@@ -3087,7 +3080,7 @@ fn cmd_balance(args: BalanceArgs) -> Result<()> {
         File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
     );
     let mut total = 0usize;
-    let mut heaps: HashMap<String, BinaryHeap<HeapEntry<String>>> = HashMap::new();
+    let mut heaps: HashMap<String, BinaryHeap<HeapEntry<String, PositionRecord>>> = HashMap::new();
     for (i, line) in pass2.lines().enumerate() {
         let line = line?;
         if line.trim().is_empty() {
@@ -3112,7 +3105,8 @@ fn cmd_balance(args: BalanceArgs) -> Result<()> {
     }
 
     // Restore original file order (unlike `select`, which outputs in ranked order)
-    let mut kept: Vec<HeapEntry<String>> = heaps.into_values().flat_map(|h| h.into_vec()).collect();
+    let mut kept: Vec<HeapEntry<String, PositionRecord>> =
+        heaps.into_values().flat_map(|h| h.into_vec()).collect();
     kept.sort_by_key(|e| e.index);
 
     let out_file =
@@ -3135,7 +3129,7 @@ fn cmd_balance(args: BalanceArgs) -> Result<()> {
         manifest.records_read = total;
         manifest.records_kept = kept.len();
         manifest.records_dropped = total - kept.len();
-        let kept_records: Vec<PositionRecord> = kept.iter().map(|e| e.record.clone()).collect();
+        let kept_records: Vec<PositionRecord> = kept.into_iter().map(|e| e.record).collect();
         accumulate_coverage(&mut manifest, &kept_records);
         write_manifest(manifest_path, &manifest)?;
     }
@@ -3144,29 +3138,14 @@ fn cmd_balance(args: BalanceArgs) -> Result<()> {
 
 const STRATIFY_FORMAT_VERSION: u32 = 1;
 
-/// `stratify --write-template`'s output / `--quota`'s input. `quotas`' keys are `bucket_key`'s own
-/// string output, reused verbatim (including its trailing colon per enabled dimension) rather than
-/// trimmed for cosmetic cleanliness -- trimming would need a presentation-layer parse/reconstruct
-/// step in both directions, reintroducing the exact "two representations of the same concept, now
-/// able to disagree" risk that reusing the string directly eliminates. `by` makes the file
-/// self-describing: `--quota` reconstructs `by_phase`/`by_side`/`by_eval` from this field alone,
-/// never from a CLI flag, so an apply-time `--by`/quota-file mismatch is structurally impossible.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct StratifyQuotaFile {
-    stratify_format_version: u32,
-    input: String,
-    by: Vec<String>,
-    quotas: BTreeMap<String, usize>,
-}
-
 /// Loads a `--write-template`-produced (and hand-edited) quota file. Unlike `filter --preset`'s
 /// `load_quality_config_preset` (which selects one of several named candidates via a trailing
 /// `:label`), a quota file holds exactly one quota set -- no selector suffix, so the error surface
 /// is simpler: unreadable file, malformed JSON, or an empty `quotas` map (nothing to keep).
-fn load_stratify_quota_file(path: &Path) -> Result<StratifyQuotaFile> {
+fn load_stratify_quota_file(path: &Path) -> Result<QuotaSpec> {
     let text =
         fs::read_to_string(path).with_context(|| format!("cannot read quota file {path:?}"))?;
-    let file: StratifyQuotaFile =
+    let file: QuotaSpec =
         serde_json::from_str(&text).with_context(|| format!("cannot parse quota file {path:?}"))?;
     if file.quotas.is_empty() {
         anyhow::bail!("quota file {path:?} has an empty \"quotas\" map -- nothing to keep");
@@ -3214,7 +3193,7 @@ fn cmd_stratify_write_template(args: &StratifyArgs, template_path: &Path) -> Res
         }
     }
 
-    let file = StratifyQuotaFile {
+    let file = QuotaSpec {
         stratify_format_version: STRATIFY_FORMAT_VERSION,
         input: args.input.display().to_string(),
         by: args.by.clone(),
@@ -3240,123 +3219,67 @@ fn cmd_stratify_apply(args: &StratifyArgs, quota_path: &Path, out: &Path) -> Res
     let reader = BufReader::new(
         File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
     );
-    let mut total = 0usize;
-    let mut bucket_not_in_quota = 0usize;
-    let mut quota_candidates = 0usize;
-    // (bucket, root) -> how many records from this root have already been seen in this bucket --
-    // this record's rank is that count, taken before incrementing.
-    // ponytail: O(distinct (bucket, root) pairs), i.e. roughly distinct source games -- not
-    // `--jobs`-bounded like the heaps below (same shape as `split`'s existing `sources` map).
-    // Revisit if a corpus's distinct-game count ever makes this the memory ceiling.
-    let mut root_rank: HashMap<(String, String), u64> = HashMap::new();
-    let mut heaps: HashMap<String, BinaryHeap<HeapEntry<(u64, u64)>>> = HashMap::new();
-
-    for (i, line) in reader.lines().enumerate() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let record: PositionRecord = match serde_json::from_str(&line) {
-            Ok(r) => r,
+    let mut io_error: Option<std::io::Error> = None;
+    let records = reader
+        .lines()
+        .enumerate()
+        .filter_map(|(i, line)| match line {
+            Ok(line) if line.trim().is_empty() => None,
+            Ok(line) => match serde_json::from_str::<PositionRecord>(&line) {
+                Ok(r) => Some(r),
+                Err(e) => {
+                    tracing::warn!(line = i + 1, "parse error: {e}");
+                    None
+                }
+            },
             Err(e) => {
-                tracing::warn!(line = i + 1, "parse error: {e}");
-                continue;
+                io_error.get_or_insert(e);
+                None
             }
-        };
-        let bucket = bucket_key(&record, by_phase, by_side, by_eval);
-        let index = total;
-        total += 1;
-
-        let Some(&quota) = quota_file.quotas.get(&bucket) else {
-            bucket_not_in_quota += 1;
-            continue;
-        };
-        quota_candidates += 1;
-
-        let root = split_root_key(&record.source).to_string();
-        let counter = root_rank.entry((bucket.clone(), root.clone())).or_insert(0);
-        let rank = *counter;
-        *counter += 1;
-
-        // Lower rank always wins (push_bounded keeps the smallest keys): every root's first
-        // occurrence in a bucket beats every root's second occurrence, unconditionally, across all
-        // roots -- so one root can never take a bucket's whole quota while excluding another root
-        // present in it. Hash only breaks ties within one rank value.
-        let key = (rank, seeded_hash(seed, &root));
-        push_bounded(
-            heaps.entry(bucket).or_default(),
-            quota,
-            HeapEntry { key, index, record },
-        );
+        });
+    let result = group_aware_fill(
+        records,
+        &quota_file.quotas,
+        seed,
+        |r| bucket_key(r, by_phase, by_side, by_eval),
+        |r| shogiesa_stratify::group_key(&r.source),
+    );
+    if let Some(e) = io_error {
+        return Err(e.into());
     }
-
-    // Restore original file order (same convention as `balance`, not `select`'s ranked output).
-    let mut kept: Vec<HeapEntry<(u64, u64)>> =
-        heaps.into_values().flat_map(|h| h.into_vec()).collect();
-    kept.sort_by_key(|e| e.index);
 
     let out_file = File::create(out).with_context(|| format!("cannot create {out:?}"))?;
     let mut writer = BufWriter::new(out_file);
-    for entry in &kept {
-        serde_json::to_writer(&mut writer, &entry.record)?;
+    for record in &result.kept {
+        serde_json::to_writer(&mut writer, record)?;
         writer.write_all(b"\n")?;
     }
     writer.flush()?;
 
-    let over_quota = quota_candidates - kept.len();
+    let over_quota = result.quota_candidates - result.kept.len();
     eprintln!(
-        "done: {}/{total} kept ({} bucket(s) in quota file) → {out:?}",
-        kept.len(),
+        "done: {}/{} kept ({} bucket(s) in quota file) → {out:?}",
+        result.kept.len(),
+        result.total,
         quota_file.quotas.len()
     );
     eprintln!("drop reasons:");
-    eprintln!("  bucket_not_in_quota      {bucket_not_in_quota}");
+    eprintln!("  bucket_not_in_quota      {}", result.bucket_not_in_quota);
     eprintln!("  over_quota               {over_quota}");
 
     if let Some(manifest_path) = &args.manifest {
         let mut manifest = RunManifest::new("stratify", &args.input);
         manifest.input_hash = hash_file(&args.input)?;
-        manifest.records_read = total;
-        manifest.records_kept = kept.len();
-        manifest.records_dropped = total - kept.len();
+        manifest.records_read = result.total;
+        manifest.records_kept = result.kept.len();
+        manifest.records_dropped = result.total - result.kept.len();
         manifest
             .drop_reasons
-            .insert("bucket_not_in_quota", bucket_not_in_quota);
+            .insert("bucket_not_in_quota", result.bucket_not_in_quota);
         manifest.drop_reasons.insert("over_quota", over_quota);
-        let kept_records: Vec<PositionRecord> = kept.iter().map(|e| e.record.clone()).collect();
-        accumulate_coverage(&mut manifest, &kept_records);
-
-        // Root-diversity stats: scoped to buckets with >=2 kept records, since a singleton bucket
-        // (1 record = 1 root = 100% share) would otherwise always pin max_root_share_in_any_bucket
-        // at 1.0, telling a reader nothing about whether the group-aware quota-fill actually
-        // diversified any bucket that had a real choice to make.
-        let mut per_bucket_roots: HashMap<String, HashMap<String, usize>> = HashMap::new();
-        for entry in &kept {
-            let bucket = bucket_key(&entry.record, by_phase, by_side, by_eval);
-            let root = split_root_key(&entry.record.source).to_string();
-            *per_bucket_roots
-                .entry(bucket)
-                .or_default()
-                .entry(root)
-                .or_default() += 1;
-        }
-        manifest.max_root_share_in_any_bucket = per_bucket_roots
-            .values()
-            .filter_map(|roots| {
-                let bucket_total: usize = roots.values().sum();
-                (bucket_total >= 2).then(|| {
-                    roots.values().copied().max().unwrap_or(0) as f64 / bucket_total as f64
-                })
-            })
-            .fold(None::<f64>, |acc, share| {
-                Some(acc.map_or(share, |a| a.max(share)))
-            });
-        manifest.distinct_roots_kept = Some(
-            kept.iter()
-                .map(|e| split_root_key(&e.record.source))
-                .collect::<HashSet<_>>()
-                .len(),
-        );
+        accumulate_coverage(&mut manifest, &result.kept);
+        manifest.max_root_share_in_any_bucket = result.max_group_share_in_any_bucket;
+        manifest.distinct_roots_kept = Some(result.distinct_groups_kept);
 
         write_manifest(manifest_path, &manifest)?;
     }
@@ -3393,72 +3316,79 @@ fn cmd_make_gate_openings(args: MakeGateOpeningsArgs) -> Result<()> {
     let mut above_max_ply = 0usize;
     let mut duplicate_sfen = 0usize;
     let mut seen: HashSet<String> = HashSet::new();
-    // root -> how many records from this root have already been seen -- this record's rank is
-    // that count, taken before incrementing. One universal group (unlike `stratify`'s per-bucket
-    // map), since `make-gate-openings` has no bucketing dimension.
-    let mut root_rank: HashMap<String, u64> = HashMap::new();
-    let mut heap: BinaryHeap<HeapEntry<(u64, u64)>> = BinaryHeap::new();
+    let mut io_error: Option<std::io::Error> = None;
 
-    for (i, line) in reader.lines().enumerate() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let record: PositionRecord = match serde_json::from_str(&line) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(line = i + 1, "parse error: {e}");
-                continue;
+    // Domain-specific pre-filtering (sfen validity, ply range, dedup) happens here, before the
+    // record ever reaches the generic group-aware fill below -- `make-gate-openings` has no
+    // bucketing dimension, so every survivor goes into one universal `""` bucket.
+    let filtered: Vec<PositionRecord> = reader
+        .lines()
+        .enumerate()
+        .filter_map(|(i, line)| {
+            let line = match line {
+                Ok(line) => line,
+                Err(e) => {
+                    io_error.get_or_insert(e);
+                    return None;
+                }
+            };
+            if line.trim().is_empty() {
+                return None;
             }
-        };
-        let index = total;
-        total += 1;
+            let record: PositionRecord = match serde_json::from_str(&line) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(line = i + 1, "parse error: {e}");
+                    return None;
+                }
+            };
+            total += 1;
 
-        if Sfen::parse(&record.sfen).is_err() {
-            invalid_sfen += 1;
-            continue;
-        }
-        if record.source.ply < args.min_ply {
-            below_min_ply += 1;
-            continue;
-        }
-        if args.max_ply.is_some_and(|max| record.source.ply > max) {
-            above_max_ply += 1;
-            continue;
-        }
-        // Dedup before rank assignment -- a root full of duplicate SFENs must not inflate its own
-        // rank counter and lose priority to a genuinely diverse root.
-        if !seen.insert(gate_opening_dedup_key(&record.sfen)) {
-            duplicate_sfen += 1;
-            continue;
-        }
-
-        let root = split_root_key(&record.source).to_string();
-        let counter = root_rank.entry(root.clone()).or_insert(0);
-        let rank = *counter;
-        *counter += 1;
-
-        // Lower rank always wins (push_bounded keeps the smallest keys): every root's first
-        // occurrence beats every root's second occurrence, unconditionally, across all roots --
-        // same mechanism as `stratify`, degenerated to one universal bucket.
-        let key = (rank, seeded_hash(seed, &root));
-        push_bounded(&mut heap, args.count, HeapEntry { key, index, record });
+            if Sfen::parse(&record.sfen).is_err() {
+                invalid_sfen += 1;
+                return None;
+            }
+            if record.source.ply < args.min_ply {
+                below_min_ply += 1;
+                return None;
+            }
+            if args.max_ply.is_some_and(|max| record.source.ply > max) {
+                above_max_ply += 1;
+                return None;
+            }
+            // Dedup before the fill's rank assignment -- a root full of duplicate SFENs must not
+            // inflate its own rank counter and lose priority to a genuinely diverse root.
+            if !seen.insert(gate_opening_dedup_key(&record.sfen)) {
+                duplicate_sfen += 1;
+                return None;
+            }
+            Some(record)
+        })
+        .collect();
+    if let Some(e) = io_error {
+        return Err(e.into());
     }
 
-    let quota_candidates = total - invalid_sfen - below_min_ply - above_max_ply - duplicate_sfen;
-    let mut kept: Vec<HeapEntry<(u64, u64)>> = heap.into_vec();
-    kept.sort_by_key(|e| e.index);
+    let quotas = BTreeMap::from([(String::new(), args.count)]);
+    let result = group_aware_fill(
+        filtered.into_iter(),
+        &quotas,
+        seed,
+        |_| String::new(),
+        |r| shogiesa_stratify::group_key(&r.source),
+    );
+    let kept = result.kept;
 
     let out_file =
         File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
     let mut writer = BufWriter::new(out_file);
-    for entry in &kept {
-        writer.write_all(entry.record.sfen.as_bytes())?;
+    for record in &kept {
+        writer.write_all(record.sfen.as_bytes())?;
         writer.write_all(b"\n")?;
     }
     writer.flush()?;
 
-    let over_count = quota_candidates - kept.len();
+    let over_count = result.quota_candidates - kept.len();
     eprintln!("done: {}/{total} kept → {:?}", kept.len(), args.out);
     eprintln!("drop reasons:");
     eprintln!("  invalid_sfen             {invalid_sfen}");
@@ -3480,31 +3410,14 @@ fn cmd_make_gate_openings(args: MakeGateOpeningsArgs) -> Result<()> {
             .drop_reasons
             .insert("duplicate_sfen", duplicate_sfen);
         manifest.drop_reasons.insert("over_count", over_count);
-        let kept_records: Vec<PositionRecord> = kept.iter().map(|e| e.record.clone()).collect();
-        accumulate_coverage(&mut manifest, &kept_records);
+        accumulate_coverage(&mut manifest, &kept);
 
         // Reinterpretation of `stratify`'s per-bucket root-share stat for a single universal
-        // "bucket" (the whole suite): only meaningful with >=2 kept records, same reasoning as
-        // stratify (a singleton suite is trivially "100% one root").
-        if kept.len() >= 2 {
-            let mut root_counts: HashMap<&str, usize> = HashMap::new();
-            for entry in &kept {
-                *root_counts
-                    .entry(split_root_key(&entry.record.source))
-                    .or_default() += 1;
-            }
-            manifest.max_root_share_in_any_bucket = root_counts
-                .values()
-                .copied()
-                .max()
-                .map(|m| m as f64 / kept.len() as f64);
-        }
-        manifest.distinct_roots_kept = Some(
-            kept.iter()
-                .map(|e| split_root_key(&e.record.source))
-                .collect::<HashSet<_>>()
-                .len(),
-        );
+        // "bucket" (the whole suite): `group_aware_fill` already scopes this to buckets with >=2
+        // kept records, same reasoning as stratify (a singleton suite is trivially "100% one
+        // root").
+        manifest.max_root_share_in_any_bucket = result.max_group_share_in_any_bucket;
+        manifest.distinct_roots_kept = Some(result.distinct_groups_kept);
 
         write_manifest(manifest_path, &manifest)?;
     }
@@ -3516,22 +3429,7 @@ fn cmd_make_gate_openings(args: MakeGateOpeningsArgs) -> Result<()> {
 // below ranks positions by a signal that predicts "worth a second look" and reuses the exact
 // judgment logic `filter`/`mine`/`balance` already have (evaluate_quality, blunder-window
 // detection, bucket keys) rather than re-deriving what "uncertain"/"hard"/"thin" means.
-/// `f32` wrapper with a total order (via `total_cmp`), scoped to `select --strategy uncertain`'s
-/// heap key -- `evaluate_quality`'s score is a plain 0..=1 fraction, never NaN in practice, but
-/// `f32` has no `Ord` impl at all, so a small local wrapper is needed regardless of that.
-#[derive(PartialEq)]
-struct TotalF32(f32);
-impl Eq for TotalF32 {}
-impl PartialOrd for TotalF32 {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-impl Ord for TotalF32 {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0.total_cmp(&other.0)
-    }
-}
+// TotalF32 now lives in stratifykit-core (imported above).
 
 /// `select --strategy uncertain`: streams the input once, keeping a bounded top-K heap of the
 /// `count` worst `evaluate_quality` scores. Key = `(score, seeded_hash)`, matching the
@@ -3556,7 +3454,7 @@ fn select_uncertain_streaming(args: &SelectArgs) -> Result<(usize, Vec<PositionR
         File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
     );
     let mut total = 0usize;
-    let mut heap: BinaryHeap<HeapEntry<(TotalF32, u64)>> =
+    let mut heap: BinaryHeap<HeapEntry<(TotalF32, u64), PositionRecord>> =
         BinaryHeap::with_capacity(count.saturating_add(1));
     for (i, line) in reader.lines().enumerate() {
         let line = line?;
@@ -3616,7 +3514,7 @@ fn select_coverage_streaming(args: &SelectArgs) -> Result<(usize, Vec<PositionRe
         File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
     );
     let mut total = 0usize;
-    let mut heap: BinaryHeap<HeapEntry<(usize, u64)>> =
+    let mut heap: BinaryHeap<HeapEntry<(usize, u64), PositionRecord>> =
         BinaryHeap::with_capacity(count.saturating_add(1));
     for (i, line) in pass2.lines().enumerate() {
         let line = line?;
@@ -5822,33 +5720,10 @@ fn print_eval_cross_tab(title: &str, table: &BTreeMap<i32, BTreeMap<String, usiz
     }
 }
 
-/// floor(ply / bucket_size) * bucket_size. `bucket_size == 0` is a caller error, checked and
-/// rejected before `cmd_distribution` ever calls this -- matching this codebase's convention of
-/// validating at the command entry point, not deep inside a pure helper.
-fn ply_bucket_floor(ply: u32, bucket_size: u32) -> u32 {
-    (ply / bucket_size) * bucket_size
-}
-
-fn mean_of(counts: &[usize]) -> f64 {
-    if counts.is_empty() {
-        0.0
-    } else {
-        counts.iter().sum::<usize>() as f64 / counts.len() as f64
-    }
-}
-
-/// Ratio-to-mean classification for one bucket that already has >=1 record -- a bucket with count
-/// 0 is always classified "MISSING" by the caller directly, never routed through here.
-fn classify_bucket(count: usize, mean: f64, under_ratio: f64, over_ratio: f64) -> &'static str {
-    let count = count as f64;
-    if count < under_ratio * mean {
-        "UNDER"
-    } else if count > over_ratio * mean {
-        "OVER"
-    } else {
-        "OK"
-    }
-}
+// bucket_floor (formerly ply_bucket_floor), mean_of, classify_bucket now live in
+// stratifykit-core (imported above); `bucket_size == 0` is still checked and rejected at
+// `cmd_distribution`'s entry point, matching this codebase's convention of validating there, not
+// deep inside a pure helper.
 
 /// ±5000cp at 200cp/bucket -- generous headroom over any realistic shogi eval; caps the phase x
 /// side x eval-bucket grid's enumerated cp-axis length so a wildly out-of-range engine score can't
@@ -5901,13 +5776,13 @@ fn cmd_distribution(args: DistributionArgs) -> Result<()> {
 
         let ply = rec.source.ply;
         *ply_tally
-            .entry(ply_bucket_floor(ply, args.ply_bucket_size))
+            .entry(bucket_floor(ply, args.ply_bucket_size))
             .or_default() += 1;
         ply_min = Some(ply_min.map_or(ply, |m| m.min(ply)));
         ply_max = Some(ply_max.map_or(ply, |m| m.max(ply)));
 
         *root_tally
-            .entry(split_root_key(&rec.source).to_string())
+            .entry(shogiesa_stratify::group_key(&rec.source))
             .or_default() += 1;
     }
 
@@ -5945,7 +5820,7 @@ fn print_coverage_row(
     side: SideToMove,
     eb: EvalBucket,
     count: usize,
-    flag: &str,
+    flag: impl std::fmt::Display,
 ) {
     let eval_label = match eb {
         EvalBucket::Cp(v) => format!("{v:+}..{:+}", v + 199),
@@ -6002,14 +5877,18 @@ fn print_eval_coverage(
 
     for &phase in &phases {
         for &side in &sides {
-            // Sentinels first (matches EvalBucket's declared Ord: Unlabeled < Cp < Mate).
+            // Sentinels first (matches EvalBucket's declared Ord: Unlabeled < Cp < Mate). A
+            // sentinel cell that isn't empty is never itself flagged UNDER/OVER -- "-" instead --
+            // since there's no expectation for how many mate/unlabeled positions a dataset should
+            // have.
             for eb in [EvalBucket::Unlabeled, EvalBucket::Mate] {
                 let count = cross_tally.get(&(phase, side, eb)).copied().unwrap_or(0);
                 if count == 0 {
                     sentinel_cells_missing += 1;
+                    print_coverage_row(phase, side, eb, count, BucketStatus::Missing);
+                } else {
+                    print_coverage_row(phase, side, eb, count, "-");
                 }
-                let flag = if count == 0 { "MISSING" } else { "-" };
-                print_coverage_row(phase, side, eb, count, flag);
             }
             if let (Some(lo), Some(hi)) = (eval_cp_min, eval_cp_max)
                 && span_ok
@@ -6019,13 +5898,11 @@ fn print_eval_coverage(
                     cp_cells_total += 1;
                     let eb = EvalBucket::Cp(v);
                     let count = cross_tally.get(&(phase, side, eb)).copied().unwrap_or(0);
-                    if count == 0 {
+                    let status = classify_bucket(count, cp_mean, under_ratio, over_ratio);
+                    if status == BucketStatus::Missing {
                         cp_cells_missing += 1;
-                        print_coverage_row(phase, side, eb, count, "MISSING");
-                    } else {
-                        let flag = classify_bucket(count, cp_mean, under_ratio, over_ratio);
-                        print_coverage_row(phase, side, eb, count, flag);
                     }
+                    print_coverage_row(phase, side, eb, count, status);
                     v += 200;
                 }
             }
@@ -6065,20 +5942,18 @@ fn print_ply_histogram(
     println!();
     println!("ply distribution (bucket size {bucket_size}):");
     let mean = mean_of(&ply_tally.values().copied().collect::<Vec<_>>());
-    let lo = ply_bucket_floor(ply_min, bucket_size);
-    let hi = ply_bucket_floor(ply_max, bucket_size);
+    let lo = bucket_floor(ply_min, bucket_size);
+    let hi = bucket_floor(ply_max, bucket_size);
     let mut total = 0usize;
     let mut missing = 0usize;
     let mut b = lo;
     while b <= hi {
         total += 1;
         let count = ply_tally.get(&b).copied().unwrap_or(0);
-        let flag = if count == 0 {
+        let flag = classify_bucket(count, mean, under_ratio, over_ratio);
+        if flag == BucketStatus::Missing {
             missing += 1;
-            "MISSING"
-        } else {
-            classify_bucket(count, mean, under_ratio, over_ratio)
-        };
+        }
         println!("  {b:>4}..{:<4}{count:>6}  {flag}", b + bucket_size - 1);
         b += bucket_size;
     }
@@ -6087,8 +5962,9 @@ fn print_ply_histogram(
 
 /// Root-id-aware source distribution -- unlike `report`'s `sources` stat (keyed by raw
 /// `rec.source.path`, so a game's mainline and its variations count as separate "sources"), this
-/// groups via `split_root_key` (root_id when present, falling back to stripping the path's
-/// `#varN@ply` suffix), the same grouping `split --train/--valid/--test` uses for leakage safety.
+/// groups via `shogiesa_stratify::group_key` (root_id when present, falling back to stripping the
+/// path's `#varN@ply` suffix) -- the same root-id-or-path grouping `split
+/// --train/--valid/--test` uses (via its own copy, `split_root_key`) for leakage safety.
 fn print_source_root_distribution(root_tally: &HashMap<String, usize>, n: usize) {
     println!();
     println!("source-root distribution:");
@@ -6275,6 +6151,54 @@ mod label_pipeline_tests {
 }
 
 #[cfg(test)]
+mod resume_index_tests {
+    use super::*;
+
+    fn labeled_line(sfen: &str, path: &str, ply: u32, bestmove: &str) -> String {
+        let rec = serde_json::json!({
+            "schema_version": SCHEMA_VERSION,
+            "sfen": sfen,
+            "source": {"kind": "test", "path": path, "ply": ply},
+            "tags": {"phase": "opening", "side_to_move": "black", "in_check": false, "has_capture": false},
+            "observations": [{
+                "engine": "test", "depth": 4, "score": {"kind": "cp", "value": 10},
+                "bestmove": bestmove,
+            }],
+        });
+        rec.to_string()
+    }
+
+    #[test]
+    fn index_maps_keys_to_the_offset_of_their_line_and_a_later_duplicate_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("resume.jsonl");
+        let lines = [
+            labeled_line("sfen-a", "g.csa", 1, "7g7f"),
+            labeled_line("sfen-b", "g.csa", 2, "3c3d"),
+            // Same key as the first line, later in the file, with a different bestmove --
+            // the index must resolve to *this* occurrence, not the first.
+            labeled_line("sfen-a", "g.csa", 1, "2g2f"),
+        ];
+        fs::write(&path, lines.join("\n") + "\n").unwrap();
+
+        let index = build_resume_index(&path).unwrap();
+        assert_eq!(index.len(), 2, "two distinct keys, despite three lines");
+
+        let mut file = File::open(&path).unwrap();
+        let offset_a = index[&("sfen-a".to_string(), "g.csa".to_string(), 1)];
+        let obs_a = read_resume_observations_at(&mut file, offset_a).unwrap();
+        assert_eq!(
+            obs_a[0].bestmove, "2g2f",
+            "must resolve to the later (last-wins) occurrence of a duplicated key"
+        );
+
+        let offset_b = index[&("sfen-b".to_string(), "g.csa".to_string(), 2)];
+        let obs_b = read_resume_observations_at(&mut file, offset_b).unwrap();
+        assert_eq!(obs_b[0].bestmove, "3c3d");
+    }
+}
+
+#[cfg(test)]
 mod extract_zobrist_dedup_tests {
     use super::*;
     use shogiesa_core::{PositionTags, SourceInfo};
@@ -6355,10 +6279,8 @@ mod fingerprint_tests {
         );
     }
 
-    #[test]
-    fn seeded_hash_is_a_stable_golden_value() {
-        assert_eq!(seeded_hash(7, "startpos"), 13402537162744184401);
-    }
+    // seeded_hash_is_a_stable_golden_value moved to stratifykit-core (seeded_hash now lives
+    // there).
 
     #[test]
     fn engine_options_hash_is_a_stable_golden_value() {
@@ -6757,116 +6679,5 @@ mod merge_observations_tests {
             assert_eq!(collisions, 0);
             assert_eq!(base.len(), 2, "both depths must survive under every policy");
         }
-    }
-}
-
-#[cfg(test)]
-mod distribution_helper_tests {
-    use super::*;
-    use shogiesa_core::{PositionTags, SourceInfo};
-
-    fn rec_with_obs(side: SideToMove, observations: Vec<Observation>) -> PositionRecord {
-        let mut r = PositionRecord::new(
-            "startpos".to_string(),
-            SourceInfo {
-                kind: "test".to_string(),
-                path: "test.csa".to_string(),
-                ply: 1,
-                root_id: None,
-                variation_id: None,
-                branch_from_ply: None,
-            },
-            PositionTags {
-                phase: GamePhase::Opening,
-                side_to_move: side,
-                in_check: false,
-                has_capture: false,
-            },
-        );
-        r.observations = observations;
-        r
-    }
-
-    fn cp_obs(depth: u32, value: i32) -> Observation {
-        Observation {
-            engine: "test".to_string(),
-            engine_version: None,
-            depth,
-            requested_depth: None,
-            score: Score::Cp { value },
-            score_perspective: ScorePerspective::SideToMove,
-            score_bound: shogiesa_core::ScoreBound::default(),
-            bestmove: "7g7f".to_string(),
-            bestmove_kind: None,
-            nodes: None,
-            time_ms: None,
-            pv: None,
-            policy_margin_cp: None,
-            candidates: Vec::new(),
-        }
-    }
-
-    fn mate_obs(depth: u32) -> Observation {
-        Observation {
-            score: Score::Mate { moves: 3 },
-            ..cp_obs(depth, 0)
-        }
-    }
-
-    #[test]
-    fn eval_bucket_of_floors_cp_to_200_and_flips_white_perspective() {
-        // side_to_move=White with score_perspective=SideToMove: -50cp side-to-move-relative
-        // flips to +50cp black-relative, floor(50/200)*200 = 0.
-        let rec = rec_with_obs(SideToMove::White, vec![cp_obs(4, -50)]);
-        assert_eq!(eval_bucket_of(&rec), EvalBucket::Cp(0));
-
-        let rec = rec_with_obs(SideToMove::Black, vec![cp_obs(4, -250)]);
-        assert_eq!(eval_bucket_of(&rec), EvalBucket::Cp(-400));
-    }
-
-    #[test]
-    fn eval_bucket_of_picks_deepest_observation() {
-        let rec = rec_with_obs(SideToMove::Black, vec![cp_obs(4, 900), cp_obs(8, 100)]);
-        assert_eq!(eval_bucket_of(&rec), EvalBucket::Cp(0));
-    }
-
-    #[test]
-    fn eval_bucket_of_classifies_mate_and_unlabeled() {
-        assert_eq!(
-            eval_bucket_of(&rec_with_obs(SideToMove::Black, vec![mate_obs(4)])),
-            EvalBucket::Mate
-        );
-        assert_eq!(
-            eval_bucket_of(&rec_with_obs(SideToMove::Black, vec![])),
-            EvalBucket::Unlabeled
-        );
-    }
-
-    #[test]
-    fn eval_bucket_display_matches_bucket_keys_pre_refactor_tokens() {
-        assert_eq!(EvalBucket::Cp(-400).to_string(), "-400");
-        assert_eq!(EvalBucket::Mate.to_string(), "mate");
-        assert_eq!(EvalBucket::Unlabeled.to_string(), "_none_");
-    }
-
-    #[test]
-    fn ply_bucket_floor_arithmetic() {
-        assert_eq!(ply_bucket_floor(0, 20), 0);
-        assert_eq!(ply_bucket_floor(19, 20), 0);
-        assert_eq!(ply_bucket_floor(20, 20), 20);
-        assert_eq!(ply_bucket_floor(45, 20), 40);
-    }
-
-    #[test]
-    fn mean_of_empty_is_zero() {
-        assert_eq!(mean_of(&[]), 0.0);
-        assert_eq!(mean_of(&[2, 4, 6]), 4.0);
-    }
-
-    #[test]
-    fn classify_bucket_applies_under_and_over_ratios() {
-        assert_eq!(classify_bucket(1, 10.0, 0.5, 2.0), "UNDER"); // 1 < 5.0
-        assert_eq!(classify_bucket(25, 10.0, 0.5, 2.0), "OVER"); // 25 > 20.0
-        assert_eq!(classify_bucket(10, 10.0, 0.5, 2.0), "OK");
     }
 }

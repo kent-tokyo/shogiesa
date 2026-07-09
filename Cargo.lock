@@ -843,7 +843,9 @@ dependencies = [
  "shogiesa-csa",
  "shogiesa-kif",
  "shogiesa-pack",
+ "shogiesa-stratify",
  "shogiesa-usi",
+ "stratifykit-core",
  "tempfile",
  "tracing",
  "tracing-subscriber",
@@ -888,6 +890,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "shogiesa-stratify"
+version = "0.7.0"
+dependencies = [
+ "serde_json",
+ "shogiesa-core",
+ "stratifykit-core",
+]
+
+[[package]]
 name = "shogiesa-usi"
 version = "0.7.0"
 dependencies = [
@@ -908,6 +919,15 @@ name = "smallvec"
 version = "1.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
+
+[[package]]
+name = "stratifykit-core"
+version = "0.7.0"
+dependencies = [
+ "blake3",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "strsim"

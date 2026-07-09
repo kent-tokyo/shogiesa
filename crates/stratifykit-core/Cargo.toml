@@ -1,0 +1,17 @@
+[package]
+name = "stratifykit-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Domain-agnostic distribution control: quota/bucket sampling, group-aware fill, coverage classification"
+keywords = ["sampling", "reservoir-sampling", "stratified-sampling", "data-quality"]
+categories = ["data-structures", "algorithms"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+blake3 = "1"
+
+[dev-dependencies]
+serde_json = "1"

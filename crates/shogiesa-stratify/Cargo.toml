@@ -1,0 +1,17 @@
+[package]
+name = "shogiesa-stratify"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Adapter mapping shogiesa PositionRecords onto stratifykit-core's generic feature/bucket/group concepts"
+keywords = ["shogi", "nnue", "sfen", "training-data", "sampling"]
+categories = ["game-engines", "data-structures"]
+
+[dependencies]
+shogiesa-core = { path = "../shogiesa-core", version = "0.7" }
+stratifykit-core = { path = "../stratifykit-core", version = "0.7" }
+
+[dev-dependencies]
+serde_json = "1"

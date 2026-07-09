@@ -1,5 +1,7 @@
 [workspace]
 members = [
+    "crates/stratifykit-core",
+    "crates/shogiesa-stratify",
     "crates/shogiesa-core",
     "crates/shogiesa-csa",
     "crates/shogiesa-usi",

@@ -1424,6 +1424,62 @@ fn label_resume_from_skips_already_covered_and_labels_the_rest() {
 }
 
 #[test]
+fn label_resume_from_tolerates_an_unreadable_record_and_relabels_it() {
+    let original = make_labeled_jsonl(&[
+        position_at_ply(1, serde_json::json!([])),
+        position_at_ply(2, serde_json::json!([])),
+    ]);
+    // Ply 1's line indexes fine (sfen/source.path/source.ply are all valid), but its
+    // "observations" field isn't an array -- the full PositionRecord parse fails when this line
+    // is actually read back for its observations. This must not abort the whole run: the
+    // position is relabeled from scratch instead, the same tolerance `load_records` (the
+    // full-load path this replaced) already had for a broken line.
+    let mut partial_out = NamedTempFile::new().unwrap();
+    writeln!(
+        partial_out,
+        "{}",
+        serde_json::json!({
+            "schema_version": 8,
+            "sfen": "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+            "source": { "kind": "csa", "path": "test.csa", "ply": 1 },
+            "tags": { "phase": "opening", "side_to_move": "black", "in_check": false, "has_capture": false },
+            "observations": "not-an-array"
+        })
+    )
+    .unwrap();
+    partial_out.flush().unwrap();
+
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            original.path().to_str().unwrap(),
+            "--resume-from",
+            partial_out.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    for ply in [1, 2] {
+        let rec = record_at_ply(out.path(), ply);
+        let observations = rec["observations"].as_array().unwrap();
+        assert_eq!(
+            observations.len(),
+            1,
+            "ply {ply} must still get labeled by the real engine despite the unreadable resume line"
+        );
+        assert_eq!(observations[0]["bestmove"], "7g7f");
+    }
+}
+
+#[test]
 fn label_resume_from_missing_path_is_a_noop() {
     let input = make_labeled_jsonl(&[position_at_ply(1, serde_json::json!([]))]);
     let missing = std::env::temp_dir().join("shogiesa_test_resume_from_does_not_exist.jsonl");

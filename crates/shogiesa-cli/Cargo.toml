@@ -19,6 +19,8 @@ shogiesa-csa = { path = "../shogiesa-csa", version = "0.7" }
 shogiesa-kif = { path = "../shogiesa-kif", version = "0.7" }
 shogiesa-usi = { path = "../shogiesa-usi", version = "0.7" }
 shogiesa-pack = { path = "../shogiesa-pack", version = "0.7" }
+shogiesa-stratify = { path = "../shogiesa-stratify", version = "0.7" }
+stratifykit-core = { path = "../stratifykit-core", version = "0.7" }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

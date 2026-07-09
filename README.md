@@ -269,6 +269,57 @@ side (tighter Elo CIs, less opening-side bias, less single-root dominance) is a 
 question — see [`docs/SEKIREI_GATE_EVALUATION.md`](docs/SEKIREI_GATE_EVALUATION.md) for a runbook
 comparing it against `startpos`-only and Sekirei's existing production suite.
 
+### `lineprior export` — export moves for offline `lineprior` dogfooding
+
+```bash
+shogiesa lineprior export \
+  --input ./games \
+  --out shogi_observations.jsonl \
+  --state-format sfen \
+  --action-format usi \
+  --max-ply 80 \
+  --source teacher_v012 \
+  --outcome-mode game-result \
+  --score-mode none
+```
+
+Exports CSA/KIF game records into `lineprior`-compatible JSONL, one line per move actually played,
+for offline dogfooding of that tool (a separate, domain-agnostic action-prior builder — not part of
+this repo). Measurement-only in this phase: not
+integrated into Sekirei search. `state` is always the SFEN of the position *before* the move — the
+opposite of `extract`'s JSONL, which only keeps the post-move SFEN — and `action` is the USI move
+token played from that state. `--state-format`/`--action-format`/`--outcome-mode`/`--score-mode`
+currently accept exactly one value each (anything else is a clap error) — forward-compat
+placeholders, not yet configurable.
+
+**`outcome` is a weak game-result signal, not a best-move label.** It's derived purely from who won
+the game a move was played in — winner's moves → `success`, loser's moves → `failure`, draw →
+`draw`, undetermined result → `unknown` — and says nothing about whether any individual move was
+tactically correct. A blunder in a game its side went on to win is still labeled `success`; a strong
+move in a losing game is still labeled `failure`. Treat this like any noisy weak-supervision signal,
+not an engine-verified quality label.
+
+CSA outcome resolution uses the format's own typed terminal action (resignation, timeout, illegal
+move, nyugyoku win-declaration, repetition, impasse, etc.) and is exact. KIF outcome resolution is
+text-marker-based (`まで…の勝ち` summary line, inline `投了`/`持将棋`/`千日手`/`中断` tokens) and
+covers the common endings; anything else — including every move inside a `変化` (variation) branch,
+since a branch's own ending isn't the actual game's result — falls back to `outcome: "unknown"`
+rather than guessing. `先手`/`後手` in the KIF summary line name move *order*, not a fixed color, so
+handicap games (where the handicapped side conventionally moves first) resolve correctly too.
+
+`sequence_id` groups a KIF mainline with all of its variation branches (the same `source.root_id`
+convention `split`/`stratify`/`make-gate-openings` already use), so a `lineprior tune --split-by
+sequence`-style split doesn't leak near-duplicate correlated positions across train/test.
+
+Typical follow-up workflow (`lineprior` itself lives outside this repo):
+
+```bash
+shogiesa lineprior export --input ./games --out obs.jsonl --source teacher_v012
+lineprior tune obs.jsonl --split-by sequence --objective covered-mrr --save-best-config cfg.json
+lineprior eval obs.jsonl --config cfg.json
+# inspect: coverage, fallback_rate, top1/top3/top5_hit_rate, MRR
+```
+
 ### `merge-observations` — combine a shallow pass with a deeper relabel
 
 ```bash
@@ -823,6 +874,7 @@ shogiesa connects to engines via SFEN, JSONL, and USI — no engine-internal dep
 |---|---|
 | KIF `変化` (variation/branch) moves | extracted as separate positions (`source.path` suffixed `#varN@ply`), but only relative to the mainline — a variation nested inside another variation is not supported |
 | `Sfen`/`Board` legality checking | syntactic only, no full legal-move generation (by design) |
+| `lineprior export` KIF outcome detection | text-marker-based (`まで…`/`投了`/`持将棋`/`千日手`/`中断`), not exhaustive; unrecognized endings and all `変化` variation-branch moves fall back to `outcome: "unknown"` |
 
 ## License
 

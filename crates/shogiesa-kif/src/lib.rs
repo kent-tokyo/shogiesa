@@ -3,8 +3,8 @@ use std::fs;
 use std::path::Path;
 
 use shogiesa_core::{
-    Board, ExtractConfig, PositionRecord, PositionTags, SideToMove, SourceInfo, board::PieceType,
-    phase_from_ply,
+    Board, ExtractConfig, GameOutcome, PositionRecord, PositionTags, RawMove, SideToMove,
+    SourceInfo, UsiMove, board::PieceType, phase_from_ply,
 };
 use thiserror::Error;
 use tracing::warn;
@@ -455,6 +455,273 @@ pub fn extract_from_path(
     let content = fs::read_to_string(path)?;
     let source = path.to_string_lossy().into_owned();
     extract_from_str(&content, &source, config, seen)
+}
+
+fn opponent(color: SideToMove) -> SideToMove {
+    match color {
+        SideToMove::Black => SideToMove::White,
+        SideToMove::White => SideToMove::Black,
+    }
+}
+
+/// Parses a KIF terminal marker -- either a standalone summary line (`まで77手で先手の勝ち`,
+/// `持将棋`, `千日手`, `中断`) or an inline move-line token (`投了`, etc.) -- into a
+/// `GameOutcome`, given whose turn it was when the marker appeared and which color moved first
+/// in this game (先手/後手 name move ORDER, not a fixed color -- in a handicap game the
+/// handicapped side, not Black, conventionally moves first, so "先手の勝ち" means "whoever
+/// opened the game wins", not "Black wins"). `None` if `token` isn't a recognized terminal
+/// marker at all.
+fn resolve_kif_terminal(
+    token: &str,
+    side_to_move: SideToMove,
+    first_mover: SideToMove,
+) -> Option<GameOutcome> {
+    if token.starts_with("まで") {
+        let winner = if token.contains("先手の勝ち") {
+            Some(first_mover)
+        } else if token.contains("後手の勝ち") {
+            Some(opponent(first_mover))
+        } else {
+            None
+        };
+        return Some(match winner {
+            Some(SideToMove::Black) => GameOutcome::BlackWins,
+            Some(SideToMove::White) => GameOutcome::WhiteWins,
+            None => GameOutcome::Unknown,
+        });
+    }
+    if token.starts_with("投了") {
+        return Some(match opponent(side_to_move) {
+            SideToMove::Black => GameOutcome::BlackWins,
+            SideToMove::White => GameOutcome::WhiteWins,
+        });
+    }
+    if token.starts_with("持将棋") || token.starts_with("千日手") {
+        return Some(GameOutcome::Draw);
+    }
+    if token.starts_with("中断") {
+        return Some(GameOutcome::Unknown);
+    }
+    None
+}
+
+/// Unfiltered full-game walk producing one `RawMove` per ply (mainline and every variation
+/// branch), for lineprior-style export. Parallels `extract_from_str`'s mainline/変化 walk but:
+/// captures the SFEN BEFORE each move (not after) and the USI move token itself; applies no
+/// `min_ply`/`every_n`/`dedup` filtering; and resolves the mainline's `GameOutcome` from its
+/// terminal marker instead of just stopping. Variation-branch moves always carry
+/// `GameOutcome::Unknown` -- a branch's own terminal text (if any) isn't the actual game's
+/// result -- but are still emitted and still share the mainline's `root_id`.
+pub fn extract_moves_from_str(content: &str, source_path: &str) -> Result<Vec<RawMove>, KifError> {
+    let mut board = Board::initial(SideToMove::Black);
+    let mut out: Vec<RawMove> = Vec::new();
+    let mut ply: u32 = 0;
+    let mut in_moves = false;
+    let mut prev_dest: Option<(u8, u8)> = None;
+
+    let mut checkpoints: Vec<(Board, Option<(u8, u8)>)> = Vec::new();
+    let mut current_path = source_path.to_string();
+    let mut variation_count: u32 = 0;
+    let mut current_variation_id: Option<String> = None;
+    let mut current_branch_from_ply: Option<u32> = None;
+    let mut accepting = false;
+    // Mainline `RawMove`s are always pushed before any variation's (the format never resumes
+    // extending the mainline after a `変化` marker), so this stays a valid prefix bound.
+    let mut mainline_move_count: usize = 0;
+    let mut outcome = GameOutcome::Unknown;
+    // Captured once the move list starts (after any 手合割 handicap reassignment), since 先手/
+    // 後手 in the summary line name move order, not a fixed color.
+    let mut first_mover = SideToMove::Black;
+
+    for line in content.lines() {
+        let line = line.trim();
+
+        if line.is_empty() || line.starts_with('#') || line.starts_with('*') {
+            continue;
+        }
+
+        if line.starts_with("手合割") {
+            let handicap = line
+                .trim_start_matches("手合割")
+                .trim_start_matches(['：', ':']);
+            match handicap_board(handicap.trim()) {
+                Some(b) => board = b,
+                None => {
+                    return Err(KifError::Parse(format!(
+                        "unsupported handicap: {handicap:?}"
+                    )));
+                }
+            }
+            continue;
+        }
+
+        if line.starts_with("手数") {
+            in_moves = true;
+            accepting = true;
+            first_mover = board.side;
+            checkpoints.push((board.clone(), prev_dest));
+            continue;
+        }
+
+        if !in_moves {
+            continue;
+        }
+
+        let is_mainline = current_path == source_path;
+
+        if line.starts_with("変化") {
+            let branch = parse_henka_ply(line).and_then(|n| {
+                if n == 0 {
+                    return None;
+                }
+                checkpoints.get((n - 1) as usize).map(|cp| (n, cp.clone()))
+            });
+            match branch {
+                Some((n, (cp_board, cp_prev_dest))) => {
+                    variation_count += 1;
+                    board = cp_board;
+                    prev_dest = cp_prev_dest;
+                    ply = n - 1;
+                    current_path = format!("{source_path}#var{variation_count}@{n}");
+                    current_variation_id = Some(format!("var{variation_count}"));
+                    current_branch_from_ply = Some(n);
+                    accepting = true;
+                }
+                None => {
+                    warn!(
+                        path = source_path,
+                        line, "malformed or out-of-range 変化 marker, skipping"
+                    );
+                    accepting = false;
+                }
+            }
+            continue;
+        }
+
+        if let Some(o) = resolve_kif_terminal(line, board.side, first_mover) {
+            if is_mainline {
+                outcome = o;
+            }
+            accepting = false;
+            continue;
+        }
+
+        if !accepting {
+            continue;
+        }
+
+        let Some((ply_str, rest)) = line.split_once(|c: char| c.is_whitespace()) else {
+            continue;
+        };
+        let Ok(_ply_num) = ply_str.trim().parse::<u32>() else {
+            continue;
+        };
+
+        let move_token = rest.trim();
+
+        if let Some(o) = resolve_kif_terminal(move_token, board.side, first_mover) {
+            if is_mainline {
+                outcome = o;
+            }
+            accepting = false;
+            continue;
+        }
+
+        let Some(kif_move) = parse_kif_move(move_token, prev_dest) else {
+            warn!(
+                path = source_path,
+                ply, "unsupported move syntax {move_token:?}, stopping game"
+            );
+            if is_mainline {
+                break;
+            }
+            accepting = false;
+            continue;
+        };
+
+        let color = board.side;
+        let sfen_before = board.to_sfen();
+        let promote = !kif_move.is_drop
+            && board
+                .piece_at(kif_move.from_file, kif_move.from_rank)
+                .map(|(_, p)| p)
+                != Some(kif_move.piece);
+        let usi_move = if kif_move.is_drop {
+            UsiMove::Drop {
+                piece: kif_move.piece,
+                to_file: kif_move.dest_file,
+                to_rank: kif_move.dest_rank,
+            }
+        } else {
+            UsiMove::Normal {
+                from_file: kif_move.from_file,
+                from_rank: kif_move.from_rank,
+                to_file: kif_move.dest_file,
+                to_rank: kif_move.dest_rank,
+                promote,
+            }
+        }
+        .to_usi_string();
+
+        let result = if kif_move.is_drop {
+            board.apply_drop(
+                color,
+                kif_move.dest_file,
+                kif_move.dest_rank,
+                kif_move.piece,
+            )
+        } else {
+            board.apply_normal(
+                color,
+                kif_move.from_file,
+                kif_move.from_rank,
+                kif_move.dest_file,
+                kif_move.dest_rank,
+                kif_move.piece,
+            )
+        };
+
+        if let Err(e) = result {
+            warn!(path = source_path, ply, "board error: {e}");
+            if is_mainline {
+                break;
+            }
+            accepting = false;
+            continue;
+        }
+
+        prev_dest = Some((kif_move.dest_file, kif_move.dest_rank));
+        ply += 1;
+
+        if is_mainline {
+            checkpoints.push((board.clone(), prev_dest));
+        }
+
+        out.push(RawMove {
+            ply,
+            mover: color,
+            sfen_before,
+            usi_move,
+            source: SourceInfo {
+                kind: "kif".to_string(),
+                path: current_path.clone(),
+                ply,
+                root_id: Some(source_path.to_string()),
+                variation_id: current_variation_id.clone(),
+                branch_from_ply: current_branch_from_ply,
+            },
+            // Backfilled below for the mainline prefix once its terminal marker is seen.
+            outcome: GameOutcome::Unknown,
+        });
+        if is_mainline {
+            mainline_move_count += 1;
+        }
+    }
+
+    for mv in out.iter_mut().take(mainline_move_count) {
+        mv.outcome = outcome;
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

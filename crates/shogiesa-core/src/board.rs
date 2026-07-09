@@ -539,6 +539,15 @@ impl Board {
         matches!(self.grid[ri][fi], Some((c, _)) if c != mover_color)
     }
 
+    /// Piece on (file, rank), if any. Mirrors `is_capture`'s use of `sq` -- needed to snapshot
+    /// the pre-move piece before `apply_normal`/`apply_drop` mutate the board, so a caller can
+    /// detect promotion by diffing it against the post-move piece type CSA/KIF parsing already
+    /// hands back directly.
+    pub fn piece_at(&self, file: u8, rank: u8) -> Option<(SideToMove, PieceType)> {
+        let (ri, fi) = sq(file, rank);
+        self.grid[ri][fi]
+    }
+
     /// Returns true if the side to move is in check (no move generation needed).
     pub fn is_in_check(&self) -> bool {
         let us = self.side;
@@ -720,6 +729,47 @@ pub fn parse_usi_move(token: &str) -> Result<UsiMove, UsiMoveError> {
     })
 }
 
+fn drop_letter(piece: PieceType) -> char {
+    match piece {
+        PieceType::Pawn => 'P',
+        PieceType::Lance => 'L',
+        PieceType::Knight => 'N',
+        PieceType::Silver => 'S',
+        PieceType::Gold => 'G',
+        PieceType::Bishop => 'B',
+        PieceType::Rook => 'R',
+        // Promoted/king pieces are never droppable; callers only ever pass a hand piece type.
+        p => unreachable!("not a droppable piece type: {p:?}"),
+    }
+}
+
+impl UsiMove {
+    /// Inverse of `parse_usi_move`: renders the literal USI move-list token (`"9i9h"`,
+    /// `"9g5c+"`, `"B*7e"`).
+    pub fn to_usi_string(&self) -> String {
+        let sq = |file: u8, rank: u8| format!("{file}{}", (b'a' + rank - 1) as char);
+        match *self {
+            UsiMove::Normal {
+                from_file,
+                from_rank,
+                to_file,
+                to_rank,
+                promote,
+            } => format!(
+                "{}{}{}",
+                sq(from_file, from_rank),
+                sq(to_file, to_rank),
+                if promote { "+" } else { "" }
+            ),
+            UsiMove::Drop {
+                piece,
+                to_file,
+                to_rank,
+            } => format!("{}*{}", drop_letter(piece), sq(to_file, to_rank)),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -863,6 +913,28 @@ mod tests {
                 "token {token:?}"
             );
         }
+    }
+
+    #[test]
+    fn usi_move_to_usi_string_round_trips_plain_and_promotion() {
+        for token in ["9i9h", "9g5c+"] {
+            assert_eq!(parse_usi_move(token).unwrap().to_usi_string(), token);
+        }
+    }
+
+    #[test]
+    fn usi_move_to_usi_string_round_trips_all_drop_letters() {
+        for letter in ['P', 'L', 'N', 'S', 'G', 'B', 'R'] {
+            let token = format!("{letter}*7e");
+            assert_eq!(parse_usi_move(&token).unwrap().to_usi_string(), token);
+        }
+    }
+
+    #[test]
+    fn piece_at_matches_initial_position() {
+        let b = Board::initial(SideToMove::Black);
+        assert_eq!(b.piece_at(5, 9), Some((SideToMove::Black, PieceType::King)));
+        assert_eq!(b.piece_at(5, 5), None);
     }
 
     #[test]

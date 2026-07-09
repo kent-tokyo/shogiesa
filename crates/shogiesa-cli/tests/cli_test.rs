@@ -7033,6 +7033,157 @@ fn make_gate_openings_manifest_reports_root_diversity_stats() {
     );
 }
 
+// --- lineprior export ---
+
+fn lineprior_export(input: &Path, out: &Path, extra: &[&str]) -> assert_cmd::assert::Assert {
+    let mut args = vec![
+        "lineprior",
+        "export",
+        "--input",
+        input.to_str().unwrap(),
+        "--out",
+        out.to_str().unwrap(),
+        "--source",
+        "test_v1",
+    ];
+    args.extend_from_slice(extra);
+    shogiesa().args(args).assert()
+}
+
+#[test]
+fn lineprior_export_creates_jsonl_from_csa() {
+    let out = NamedTempFile::new().unwrap();
+    lineprior_export(&fixture("sample.csa"), out.path(), &[]).success();
+
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(lines.len(), 5, "sample.csa has 5 moves");
+
+    let records: Vec<serde_json::Value> = lines
+        .iter()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(
+        records[0]["state"], "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+        "first move's state must be the initial position, not post-move"
+    );
+    let expected_outcome = ["success", "failure", "success", "failure", "success"];
+    for (rec, exp) in records.iter().zip(expected_outcome) {
+        assert_eq!(rec["outcome"], exp);
+        assert_eq!(rec["source"], "test_v1");
+        assert!(rec["tags"].as_array().unwrap().iter().any(|t| t == "shogi"));
+    }
+}
+
+#[test]
+fn lineprior_export_creates_jsonl_from_kif() {
+    let out = NamedTempFile::new().unwrap();
+    lineprior_export(&fixture("sample.kif"), out.path(), &[]).success();
+
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(lines.len(), 5);
+    let records: Vec<serde_json::Value> = lines
+        .iter()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    // Ply 3 ("２二角成(88)") is an explicit promotion in this fixture.
+    assert_eq!(records[2]["action"], "8h2b+");
+}
+
+#[test]
+fn lineprior_export_max_ply_truncates_but_outcome_still_correct() {
+    let out = NamedTempFile::new().unwrap();
+    lineprior_export(&fixture("sample.csa"), out.path(), &["--max-ply", "3"]).success();
+
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(lines.len(), 3);
+    let last: serde_json::Value = serde_json::from_str(lines[2]).unwrap();
+    // The full game (including the truncated tail) must still be walked to resolve outcome --
+    // ply 3 is Black's move in a game Black wins, so it must still read "success", not
+    // "unknown"/wrong from a walk that stopped early.
+    assert_eq!(last["outcome"], "success");
+}
+
+#[test]
+fn lineprior_export_max_ply_does_not_drop_variation_moves() {
+    // `raw_moves` for a KIF game is mainline-first (plies 1..N) then variation branches, which
+    // restart at a low ply -- a naive `break` on the mainline's first over-limit move would also
+    // skip every later variation row, silently dropping all variation data whenever a corpus's
+    // mainlines run past --max-ply (exactly the case the README's own `--max-ply 80` example
+    // hits on annotated games with long mainlines).
+    let dir = TempDir::new().unwrap();
+    let kif_path = dir.path().join("game.kif");
+    std::fs::write(
+        &kif_path,
+        "手合割：平手\n先手：A\n後手：B\n手数----指手\n\
+   1 ７六歩(77)   (0:01/0)\n   2 ３四歩(33)   (0:01/0)\n   3 ２六歩(27)   (0:01/0)\n\
+\n変化：2手\n   2 ８四歩(83)   (0:01/0)\n   3 ７八金(69)   (0:01/0)\n",
+    )
+    .unwrap();
+
+    let out = NamedTempFile::new().unwrap();
+    lineprior_export(&kif_path, out.path(), &["--max-ply", "2"]).success();
+
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    let records: Vec<serde_json::Value> = content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    // Mainline and variation share a sequence_id (root_id-grouped by design), so distinguish
+    // them by `action`: mainline ply 2 is "3c3d" (３四歩), the variation's own ply 2 is "8c8d"
+    // (８四歩). Both must survive even though the mainline's ply-3 (over-limit) move comes
+    // between them in raw emission order.
+    let step2_actions: Vec<&str> = records
+        .iter()
+        .filter(|r| r["step"] == 2)
+        .map(|r| r["action"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        step2_actions.len(),
+        2,
+        "expected mainline ply2 + variation ply2, got {step2_actions:?}"
+    );
+    assert!(
+        step2_actions.contains(&"8c8d"),
+        "variation's own ply-2 move must survive max-ply truncation of the mainline's later move: {step2_actions:?}"
+    );
+}
+
+#[test]
+fn lineprior_export_rejects_invalid_state_format() {
+    let out = NamedTempFile::new().unwrap();
+    lineprior_export(
+        &fixture("sample.csa"),
+        out.path(),
+        &["--state-format", "foo"],
+    )
+    .failure();
+}
+
+#[test]
+fn lineprior_export_sequence_id_stable_across_repeated_runs() {
+    let out1 = NamedTempFile::new().unwrap();
+    let out2 = NamedTempFile::new().unwrap();
+    lineprior_export(&fixture("sample.kif"), out1.path(), &[]).success();
+    lineprior_export(&fixture("sample.kif"), out2.path(), &[]).success();
+
+    let ids = |path: &Path| -> Vec<String> {
+        std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| {
+                let v: serde_json::Value = serde_json::from_str(l).unwrap();
+                v["sequence_id"].as_str().unwrap().to_string()
+            })
+            .collect()
+    };
+    assert_eq!(ids(out1.path()), ids(out2.path()));
+}
+
 // --- help smoke test ---
 
 #[test]

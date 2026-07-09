@@ -86,6 +86,60 @@ pub struct SourceInfo {
     pub branch_from_ply: Option<u32>,
 }
 
+/// Game-level result, resolved once per game from its terminal action/marker -- independent of
+/// which side is on move at any individual ply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GameOutcome {
+    BlackWins,
+    WhiteWins,
+    Draw,
+    Unknown,
+}
+
+impl GameOutcome {
+    /// Mover-relative label for lineprior-style export: the mover's own side compared against
+    /// who won, e.g. a blunder in a game its side went on to win is still "success" -- this is a
+    /// weak game-result signal, not a claim that the move itself was correct.
+    pub fn for_mover(self, mover: SideToMove) -> &'static str {
+        match self {
+            GameOutcome::Draw => "draw",
+            GameOutcome::Unknown => "unknown",
+            GameOutcome::BlackWins => {
+                if mover == SideToMove::Black {
+                    "success"
+                } else {
+                    "failure"
+                }
+            }
+            GameOutcome::WhiteWins => {
+                if mover == SideToMove::White {
+                    "success"
+                } else {
+                    "failure"
+                }
+            }
+        }
+    }
+}
+
+/// One played ply from an unfiltered full-game walk: the pre-move SFEN plus the move itself.
+/// Distinct from `PositionRecord` (built by the filtered/deduped `extract_from_str` pipeline,
+/// which only keeps the POST-move SFEN) -- an internal handoff type for lineprior-style export,
+/// not a JSONL schema itself, so no `Serialize`.
+///
+/// `outcome` is resolved per-move rather than once per game so that KIF variation-branch moves
+/// (whose terminal, if any, isn't the actual game's result) can carry `GameOutcome::Unknown`
+/// while their mainline sibling moves carry the real result, within the same returned `Vec`.
+#[derive(Debug, Clone)]
+pub struct RawMove {
+    pub ply: u32,
+    pub mover: SideToMove,
+    pub sfen_before: String,
+    pub usi_move: String,
+    pub source: SourceInfo,
+    pub outcome: GameOutcome,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PositionTags {
     pub phase: GamePhase,

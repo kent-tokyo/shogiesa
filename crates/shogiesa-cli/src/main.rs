@@ -102,6 +102,11 @@ enum Commands {
     /// Sekirei's `--positions FILE`) -- input need not be labeled, since only `sfen`/`source` are
     /// read
     MakeGateOpenings(MakeGateOpeningsArgs),
+    /// Nested `lineprior` subcommands -- currently only `export`, for offline dogfooding of the
+    /// external `lineprior` tool (not part of this repo). Measurement-only: does not integrate
+    /// into Sekirei search.
+    #[command(name = "lineprior")]
+    LinePrior(LinePriorArgs),
 }
 
 #[derive(clap::Args)]
@@ -465,6 +470,50 @@ struct MakeGateOpeningsArgs {
     /// this path
     #[arg(long)]
     manifest: Option<PathBuf>,
+}
+
+#[derive(clap::Args)]
+struct LinePriorArgs {
+    #[command(subcommand)]
+    action: LinePriorAction,
+}
+
+#[derive(clap::Subcommand)]
+enum LinePriorAction {
+    /// Export CSA/KIF game records into lineprior-compatible JSONL observations (one line per
+    /// move played), for offline dogfooding of the external `lineprior` tool. Measurement-only
+    /// -- does not integrate into Sekirei search.
+    Export(LinePriorExportArgs),
+}
+
+#[derive(clap::Args)]
+struct LinePriorExportArgs {
+    /// Input file or directory of CSA/KIF game records
+    #[arg(long)]
+    input: PathBuf,
+    /// Output JSONL file (one lineprior observation per move played)
+    #[arg(long)]
+    out: PathBuf,
+    /// State representation -- only "sfen" is supported (placeholder for forward compat)
+    #[arg(long, default_value = "sfen", value_parser = ["sfen"])]
+    state_format: String,
+    /// Action representation -- only "usi" is supported (placeholder for forward compat)
+    #[arg(long, default_value = "usi", value_parser = ["usi"])]
+    action_format: String,
+    /// Maximum ply to export per game (outcome is still resolved from the whole game even when
+    /// this truncates emission)
+    #[arg(long)]
+    max_ply: Option<u32>,
+    /// Arbitrary label written to every observation's `source` field
+    #[arg(long)]
+    source: String,
+    /// How `outcome` is derived -- only "game-result" is supported (placeholder for forward
+    /// compat)
+    #[arg(long, default_value = "game-result", value_parser = ["game-result"])]
+    outcome_mode: String,
+    /// How `score` is derived -- only "none" is supported (v1 has no engine-eval scoring)
+    #[arg(long, default_value = "none", value_parser = ["none"])]
+    score_mode: String,
 }
 
 #[derive(clap::Args)]
@@ -880,6 +929,9 @@ fn main() -> Result<()> {
         Commands::FromMatch(args) => cmd_from_match(args),
         Commands::MergeObservations(args) => cmd_merge_observations(args),
         Commands::MakeGateOpenings(args) => cmd_make_gate_openings(args),
+        Commands::LinePrior(args) => match args.action {
+            LinePriorAction::Export(a) => cmd_lineprior_export(a),
+        },
     }
 }
 
@@ -3599,6 +3651,96 @@ fn select_hard_materialized(args: &SelectArgs) -> Result<(usize, Vec<PositionRec
     ranked.truncate(count);
     let ranked_records = ranked.into_iter().map(|i| records[i].clone()).collect();
     Ok((total, ranked_records))
+}
+
+/// One lineprior-style observation, one JSONL line per move actually played. Distinct from
+/// `PositionRecord`/`Observation` (a different schema for a different, external consumer, with
+/// exactly one producer) so it lives here rather than in shogiesa-core.
+#[derive(Debug, Serialize)]
+struct LinePriorObservation {
+    sequence_id: String,
+    step: u32,
+    state: String,
+    action: String,
+    outcome: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    score: Option<f64>,
+    weight: f64,
+    source: String,
+    tags: Vec<String>,
+}
+
+fn cmd_lineprior_export(args: LinePriorExportArgs) -> Result<()> {
+    let paths = collect_game_paths(&args.input)?;
+    if paths.is_empty() {
+        anyhow::bail!("no .csa or .kif files found in {:?}", args.input);
+    }
+
+    let out_file =
+        File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
+    let mut writer = BufWriter::new(out_file);
+
+    let mut total_games = 0usize;
+    let mut total_moves = 0usize;
+    let mut skipped_games = 0usize;
+
+    for path in &paths {
+        total_games += 1;
+        let content = match fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(path = %path.display(), "skipped: {e}");
+                skipped_games += 1;
+                continue;
+            }
+        };
+        let source_path = path.to_string_lossy().into_owned();
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let result = match ext {
+            "kif" | "ki2" => shogiesa_kif::extract_moves_from_str(&content, &source_path)
+                .map_err(|e| e.to_string()),
+            _ => shogiesa_csa::extract_moves_from_str(&content, &source_path)
+                .map_err(|e| e.to_string()),
+        };
+        let raw_moves = match result {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(path = %path.display(), "skipped: {e}");
+                skipped_games += 1;
+                continue;
+            }
+        };
+
+        for raw in &raw_moves {
+            // `continue`, not `break`: a KIF game's `raw_moves` is mainline-first then every
+            // variation branch, and a variation restarts at a low ply -- breaking on the
+            // mainline's first over-limit move would also skip every later variation row.
+            if args.max_ply.is_some_and(|max| raw.ply > max) {
+                continue;
+            }
+            let obs = LinePriorObservation {
+                sequence_id: split_root_key(&raw.source).to_string(),
+                step: raw.ply,
+                state: raw.sfen_before.clone(),
+                action: raw.usi_move.clone(),
+                outcome: raw.outcome.for_mover(raw.mover),
+                score: None,
+                weight: 1.0,
+                source: args.source.clone(),
+                tags: vec!["shogi".to_string(), phase_from_ply(raw.ply).to_string()],
+            };
+            serde_json::to_writer(&mut writer, &obs)?;
+            writer.write_all(b"\n")?;
+            total_moves += 1;
+        }
+    }
+
+    writer.flush()?;
+    eprintln!(
+        "done: {total_games} games, {total_moves} moves exported, {skipped_games} games skipped → {:?}",
+        args.out
+    );
+    Ok(())
 }
 
 fn cmd_select(args: SelectArgs) -> Result<()> {

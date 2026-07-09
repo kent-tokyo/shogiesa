@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use shogiesa_core::ExtractConfig;
-use shogiesa_kif::{extract_from_path, extract_from_str};
+use shogiesa_core::{ExtractConfig, GameOutcome, SideToMove};
+use shogiesa_kif::{extract_from_path, extract_from_str, extract_moves_from_str};
 
 fn fixture(name: &str) -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -310,6 +310,89 @@ fn variation_past_max_ply_does_not_abort_later_siblings() {
         1,
         "sibling variation after a max-ply-truncated variation must still extract"
     );
+}
+
+#[test]
+fn moves_state_is_pre_move_sfen() {
+    let content = std::fs::read_to_string(fixture("sample.kif")).unwrap();
+    let moves = extract_moves_from_str(&content, "sample.kif").unwrap();
+    assert_eq!(
+        moves[0].sfen_before, "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+        "first move's pre-state must be the initial position, not post-move"
+    );
+    assert!(moves[1].sfen_before.contains(" w "));
+}
+
+#[test]
+fn moves_toryo_and_summary_line_agree_and_alternate_by_mover() {
+    let content = std::fs::read_to_string(fixture("sample.kif")).unwrap();
+    let moves = extract_moves_from_str(&content, "sample.kif").unwrap();
+    assert_eq!(moves.len(), 5);
+    let expected = ["success", "failure", "success", "failure", "success"];
+    for (mv, exp) in moves.iter().zip(expected) {
+        assert_eq!(mv.outcome, GameOutcome::BlackWins);
+        assert_eq!(mv.outcome.for_mover(mv.mover), exp, "ply {}", mv.ply);
+    }
+}
+
+#[test]
+fn moves_promotion_is_reflected_in_usi_move() {
+    // Ply 3, "２二角成(88)", is an explicit promotion in this fixture.
+    let content = std::fs::read_to_string(fixture("sample.kif")).unwrap();
+    let moves = extract_moves_from_str(&content, "sample.kif").unwrap();
+    assert_eq!(moves[2].usi_move, "8h2b+");
+}
+
+#[test]
+fn moves_jishogi_is_draw() {
+    let kif = "手合割：平手\n先手：A\n後手：B\n手数----指手\n   1 ７六歩(77)   (0:01/0)\n持将棋\n";
+    let moves = extract_moves_from_str(kif, "test.kif").unwrap();
+    assert_eq!(moves[0].outcome, GameOutcome::Draw);
+}
+
+#[test]
+fn moves_chudan_is_unknown() {
+    let kif = "手合割：平手\n先手：A\n後手：B\n手数----指手\n   1 ７六歩(77)   (0:01/0)\n中断\n";
+    let moves = extract_moves_from_str(kif, "test.kif").unwrap();
+    assert_eq!(moves[0].outcome, GameOutcome::Unknown);
+}
+
+#[test]
+fn moves_handicap_first_mover_is_not_hardcoded_to_black() {
+    // 飛車落ち: White ("Upper") moves first. The fixture's own summary line, "まで2手で後手の
+    // 勝ち", names Black ("Lower") the winner -- 先手/後手 track move ORDER, not a fixed color,
+    // so resolving this correctly requires knowing White moved first in this game.
+    let content = std::fs::read_to_string(fixture("sample_handicap.kif")).unwrap();
+    let moves = extract_moves_from_str(&content, "sample_handicap.kif").unwrap();
+    assert_eq!(moves.len(), 2);
+    assert_eq!(moves[0].mover, SideToMove::White);
+    assert_eq!(moves[0].outcome, GameOutcome::BlackWins);
+    assert_eq!(moves[0].outcome.for_mover(moves[0].mover), "failure");
+    assert_eq!(moves[1].mover, SideToMove::Black);
+    assert_eq!(moves[1].outcome.for_mover(moves[1].mover), "success");
+}
+
+#[test]
+fn moves_variation_branch_outcome_is_unknown_but_shares_sequence_root() {
+    let kif = "手合割：平手\n先手：A\n後手：B\n手数----指手\n\
+   1 ７六歩(77)   (0:01/0)\n   2 ３四歩(33)   (0:01/0)\nまで2手で先手の勝ち\n\
+\n変化：2手\n   2 ８四歩(83)   (0:01/0)\n   3 ７八金(69)   (0:01/0)\n";
+    let moves = extract_moves_from_str(kif, "var.kif").unwrap();
+    let mainline: Vec<_> = moves
+        .iter()
+        .filter(|m| m.source.path == "var.kif")
+        .collect();
+    let variation: Vec<_> = moves
+        .iter()
+        .filter(|m| m.source.path == "var.kif#var1@2")
+        .collect();
+    assert_eq!(mainline.len(), 2);
+    assert_eq!(variation.len(), 2);
+    assert!(mainline.iter().all(|m| m.outcome == GameOutcome::BlackWins));
+    assert!(variation.iter().all(|m| m.outcome == GameOutcome::Unknown));
+    // Both share the mainline's root_id, so a downstream split-by-sequence groups them together.
+    assert_eq!(mainline[0].source.root_id.as_deref(), Some("var.kif"));
+    assert_eq!(variation[0].source.root_id.as_deref(), Some("var.kif"));
 }
 
 #[test]

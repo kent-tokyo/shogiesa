@@ -163,14 +163,32 @@ report="$OUT_DIR/report.md"
   echo "- teacher depth: $TEACHER_DEPTH, student depths: $STUDENT_DEPTHS"
   echo "- sekirei commit: \`$sekirei_commit\`"
   echo
-  echo "| arm | records_kept | records_dropped | gate status |"
-  echo "|---|---|---|---|"
+  echo "| arm | records_kept | records_dropped | coverage | mismatch | elo | ci | gate_status |"
+  echo "|---|---|---|---|---|---|---|---|"
   for arm in "${ARMS[@]}"; do
     arm_dir="$OUT_DIR/$arm"
     kept=$(jq -r '.records_kept // "n/a"' "$arm_dir/manifest.json")
     dropped=$(jq -r '.records_dropped // "n/a"' "$arm_dir/manifest.json")
+    # coverage/mismatch come from the one shared tuning.json, keyed by this arm's preset label --
+    # `baseline` never ran through `tune` at all, so it gets "n/a" rather than a misleading 0.
+    if [[ "$arm" == "baseline" ]]; then
+      coverage="n/a"
+      mismatch="n/a"
+    else
+      preset_label="${arm#tune-}"
+      coverage=$(jq -r --arg p "$preset_label" '.presets[$p].coverage_fraction // "n/a"' \
+        "$OUT_DIR/tuning.json")
+      mismatch=$(jq -r --arg p "$preset_label" '.presets[$p].mismatch_rate // "n/a"' \
+        "$OUT_DIR/tuning.json")
+    fi
+    # elo/ci are a verbatim pass-through of whatever SEKIREI_GATE_CMD's own gate_result.json
+    # says (or "n/a" if it wrote neither, or if the hook was never configured) -- only Sekirei's
+    # own gate command knows what a real gate result looks like, so this script never computes
+    # or infers a pass/fail verdict of its own.
+    elo=$(jq -r '.elo // "n/a"' "$arm_dir/gate_result.json")
+    ci=$(jq -r '.ci // "n/a"' "$arm_dir/gate_result.json")
     gate_status=$(jq -r '.status // "ok"' "$arm_dir/gate_result.json")
-    echo "| $arm | $kept | $dropped | $gate_status |"
+    echo "| $arm | $kept | $dropped | $coverage | $mismatch | $elo | $ci | $gate_status |"
   done
   echo
   echo "Per-arm detail: \`$OUT_DIR/<arm>/manifest.json\`, \`$OUT_DIR/<arm>/sekirei_train.log\`, \`$OUT_DIR/<arm>/gate_result.json\`."

@@ -134,10 +134,11 @@ while already-covered ones are skipped automatically (same effect as `--skip-exi
 pass `--resume-from` unconditionally from the very first run. `--resume-from` must not point at
 the same path as `--out`. Unlike `merge-observations`, this isn't a union — only `--input` is
 iterated, so `--input` must be the *original full corpus*; a record present only in
-`--resume-from` is silently dropped, not carried through. It also fully loads `--resume-from` into
-memory (needs each resumed record's actual prior observations, not just a "seen" key set), so
-resuming a near-complete multi-GB run spikes RAM by roughly that file's size — `label`'s own
-`--input`/`--out` streaming is otherwise bounded by `--jobs`, not dataset size.
+`--resume-from` is silently dropped, not carried through. `--resume-from` is indexed in one
+streaming pass (alignment key → byte offset of that record's line, not the record itself), and
+each resumed record's observations are seeked and re-read on demand — so resuming a near-complete
+multi-GB run stays bounded by `--jobs`, the same as `label`'s own `--input`/`--out` streaming,
+instead of spiking RAM by the resume file's size.
 
 `--manifest PATH` writes a run manifest (engine/depths/MultiPV config, launch failures, coverage
 stats) — see "Run manifests" further down.
@@ -263,6 +264,11 @@ same parser `label`/`filter` use before being written, so a malformed input line
 source game) alongside the usual drop-reason breakdown (`invalid_sfen`, `below_min_ply`,
 `above_max_ply`, `duplicate_sfen`, `over_count`).
 
+Producing this file is the easy part; whether it actually improves gate accuracy on Sekirei's own
+side (tighter Elo CIs, less opening-side bias, less single-root dominance) is a separate, external
+question — see [`docs/SEKIREI_GATE_EVALUATION.md`](docs/SEKIREI_GATE_EVALUATION.md) for a runbook
+comparing it against `startpos`-only and Sekirei's existing production suite.
+
 ### `merge-observations` — combine a shallow pass with a deeper relabel
 
 ```bash
@@ -349,7 +355,14 @@ observation — see `Observation.requested_depth` below). Unlike `--min-depth-re
 floor you pick), this checks each observation against the depth it was itself asked to reach —
 useful once different observations in the same dataset were requested to different depths. A
 no-op on observations with no recorded `requested_depth` (labeled before this field existed).
-Mate is exempt for the same reason as `--min-depth-reached`.
+Mate is exempt for the same reason as `--min-depth-reached`, *except* for a timeout-salvaged mate
+score (see `Observation.was_timeout_salvaged` below) — it never actually confirmed the mate the
+way a genuine engine-initiated early stop does, so it's excluded from that exemption by default.
+Pass `--allow-timeout-salvaged-mate` to restore the blanket exemption for salvaged mates too.
+
+`--exclude-timeout-salvaged` excludes positions where any observation is a timeout-salvaged,
+degraded-but-real result (`label --timeout-ms` elapsed before `bestmove` arrived) rather than a
+full completion or a genuine engine-initiated early stop.
 
 `--manifest PATH` (also on `balance`/`sample`/`pack`/`label`, below) writes a run manifest — see
 "Run manifests" further down.
@@ -706,7 +719,7 @@ Checks: broken JSON, invalid SFENs, duplicate SFENs, `side_to_move` tag vs SFEN 
 
 ```json
 {
-  "schema_version": 8,
+  "schema_version": 9,
   "sfen": "lnsgkgsnl/1r5b1/p1ppppppp/1p7/9/2P6/PP1PPPPPP/1B5R1/LNSGKGSNL b - 2",
   "source": {
     "kind": "csa",
@@ -736,7 +749,8 @@ Checks: broken JSON, invalid SFENs, duplicate SFENs, `side_to_move` tag vs SFEN 
       "candidates": [
         { "multipv": 1, "bestmove": "7g7f", "score": { "kind": "cp", "value": 43 }, "score_bound": "exact", "pv": ["7g7f", "8h7g"] },
         { "multipv": 2, "bestmove": "2g2f", "score": { "kind": "cp", "value": -267 }, "score_bound": "exact", "pv": ["2g2f"] }
-      ]
+      ],
+      "was_timeout_salvaged": false
     }
   ]
 }
@@ -756,7 +770,13 @@ request); it's absent/`null` on JSONL labeled before this field existed. `policy
 (absent for an ordinary move) is `"resign"`/`"win"`/`"no_move"` when the engine's `bestmove` line
 is one of those literal USI tokens rather than an ordinary move string, so consumers can tell "the
 engine considers the position decided" apart from "the engine picked a normal move" without
-string-matching `bestmove` themselves.
+string-matching `bestmove` themselves. `was_timeout_salvaged` is `true` when `label --timeout-ms`
+elapsed before `bestmove` arrived and this observation is the degraded-but-real result salvaged
+from the last `info` line, rather than a full completion or the engine's own early stop; it
+defaults to `false` on older JSONL that predates this field. `filter --exclude-timeout-salvaged`
+drops any record with a salvaged observation; `--require-requested-depth-reached` no longer
+exempts a salvaged mate score from its usual depth check unless
+`--allow-timeout-salvaged-mate` is also given.
 
 `source` also carries optional `root_id`/`variation_id`/`branch_from_ply` fields, e.g. for a KIF
 `変化` branch:

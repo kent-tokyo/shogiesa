@@ -23,3 +23,20 @@ pub type BucketKey = String;
 /// Identifies which correlated group (e.g. one source game) a record belongs to, for
 /// group-aware sampling that keeps one group from consuming an entire bucket's quota.
 pub type GroupKey = String;
+
+#[cfg(test)]
+mod tests {
+    /// This crate's whole reason to exist is being usable by a future non-shogi consumer
+    /// (masstrust/quietset-style products, per its README) -- a `shogiesa-*` dependency creeping
+    /// into `Cargo.toml` would silently break that promise. `include_str!` reads the file at
+    /// compile time, so this fails the moment such a dependency is added, not just when someone
+    /// remembers to check.
+    #[test]
+    fn cargo_toml_has_no_shogiesa_dependency() {
+        let manifest = include_str!("../Cargo.toml");
+        assert!(
+            !manifest.contains("shogiesa"),
+            "stratifykit-core must stay zero-shogi-vocabulary; found a `shogiesa` reference in Cargo.toml"
+        );
+    }
+}

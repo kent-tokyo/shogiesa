@@ -547,6 +547,11 @@ struct FilterArgs {
     /// Exclude positions reached by an immediate capture
     #[arg(long)]
     exclude_capture: bool,
+    /// Exclude positions where any observation is a timeout-salvaged, degraded-but-real result
+    /// (label's --timeout-ms elapsed before bestmove arrived) rather than a full completion or a
+    /// genuine engine-initiated early stop
+    #[arg(long)]
+    exclude_timeout_salvaged: bool,
     /// Maximum allowed cp swing across observations (abs(max_cp - min_cp))
     #[arg(long)]
     max_score_swing_cp: Option<i32>,
@@ -589,6 +594,13 @@ struct FilterArgs {
     /// with no recorded requested_depth (e.g. labeled before this field existed).
     #[arg(long)]
     require_requested_depth_reached: bool,
+    /// A timeout-salvaged observation carrying a mate score does not get
+    /// --require-requested-depth-reached's usual mate exemption by default -- it's less
+    /// trustworthy than a genuine early-stop-on-forced-mate. Pass this to restore the blanket
+    /// exemption for salvaged mates too. No effect unless --require-requested-depth-reached is
+    /// also set.
+    #[arg(long)]
+    allow_timeout_salvaged_mate: bool,
     /// Require every distinct engine's deepest observation to agree on bestmove. A no-op
     /// unless the position was labeled by 2+ engines (see `label --engine-name`).
     #[arg(long)]
@@ -613,10 +625,10 @@ struct FilterArgs {
     /// precedence is never ambiguous.
     #[arg(long, conflicts_with_all = [
         "min_observations", "phase", "exclude_mate", "exclude_in_check", "exclude_capture",
-        "max_score_swing_cp", "eval_min", "eval_max", "min_policy_margin_cp",
-        "require_exact_score", "require_policy_margin", "min_depth_reached",
-        "require_requested_depth_reached", "require_engine_agreement",
-        "max_engine_score_swing_cp", "require_bestmove_agreement",
+        "exclude_timeout_salvaged", "max_score_swing_cp", "eval_min", "eval_max",
+        "min_policy_margin_cp", "require_exact_score", "require_policy_margin",
+        "min_depth_reached", "require_requested_depth_reached", "allow_timeout_salvaged_mate",
+        "require_engine_agreement", "max_engine_score_swing_cp", "require_bestmove_agreement",
     ])]
     preset: Option<String>,
 }
@@ -658,6 +670,8 @@ struct CalibrateArgs {
     exclude_in_check: bool,
     #[arg(long)]
     exclude_capture: bool,
+    #[arg(long)]
+    exclude_timeout_salvaged: bool,
     /// Minimum cp score, from Black's perspective, regardless of whose turn it was
     #[arg(long, allow_hyphen_values = true)]
     eval_min: Option<i32>,
@@ -678,6 +692,8 @@ struct CalibrateArgs {
     min_depth_reached: Option<u32>,
     #[arg(long)]
     require_requested_depth_reached: bool,
+    #[arg(long)]
+    allow_timeout_salvaged_mate: bool,
 }
 
 #[derive(clap::Args)]
@@ -738,6 +754,8 @@ struct TuneArgs {
     exclude_in_check: bool,
     #[arg(long)]
     exclude_capture: bool,
+    #[arg(long)]
+    exclude_timeout_salvaged: bool,
     /// Minimum cp score, from Black's perspective, regardless of whose turn it was
     #[arg(long, allow_hyphen_values = true)]
     eval_min: Option<i32>,
@@ -758,6 +776,8 @@ struct TuneArgs {
     min_depth_reached: Option<u32>,
     #[arg(long)]
     require_requested_depth_reached: bool,
+    #[arg(long)]
+    allow_timeout_salvaged_mate: bool,
     /// Output CSV: one row per (policy_margin, score_swing) grid configuration
     #[arg(short, long)]
     out: PathBuf,
@@ -1778,6 +1798,7 @@ fn analyze_record(
                         pv: result.pv,
                         policy_margin_cp: result.policy_margin_cp,
                         candidates: result.candidates,
+                        was_timeout_salvaged: result.timed_out,
                     };
                     if let Some(path) = &cache_path {
                         if let Some(parent) = path.parent() {
@@ -3717,6 +3738,7 @@ fn build_quality_config(
         exclude_mate: args.exclude_mate,
         exclude_in_check: args.exclude_in_check,
         exclude_capture: args.exclude_capture,
+        exclude_timeout_salvaged: args.exclude_timeout_salvaged,
         eval_min: args.eval_min,
         eval_max: args.eval_max,
         max_score_swing_cp: args.max_score_swing_cp,
@@ -3728,6 +3750,7 @@ fn build_quality_config(
         require_policy_margin: args.require_policy_margin,
         min_depth_reached: args.min_depth_reached,
         require_requested_depth_reached: args.require_requested_depth_reached,
+        allow_timeout_salvaged_mate: args.allow_timeout_salvaged_mate,
     }
 }
 
@@ -4052,6 +4075,7 @@ fn cmd_calibrate(args: CalibrateArgs) -> Result<()> {
         exclude_mate: args.exclude_mate,
         exclude_in_check: args.exclude_in_check,
         exclude_capture: args.exclude_capture,
+        exclude_timeout_salvaged: args.exclude_timeout_salvaged,
         eval_min: args.eval_min,
         eval_max: args.eval_max,
         max_score_swing_cp: args.max_score_swing_cp,
@@ -4063,6 +4087,7 @@ fn cmd_calibrate(args: CalibrateArgs) -> Result<()> {
         require_policy_margin: args.require_policy_margin,
         min_depth_reached: args.min_depth_reached,
         require_requested_depth_reached: args.require_requested_depth_reached,
+        allow_timeout_salvaged_mate: args.allow_timeout_salvaged_mate,
     };
 
     let mut policy_margin_rows: Vec<SweepRow> = match &args.sweep_policy_margin {
@@ -4908,6 +4933,7 @@ fn cmd_tune(args: TuneArgs) -> Result<()> {
         exclude_mate: args.exclude_mate,
         exclude_in_check: args.exclude_in_check,
         exclude_capture: args.exclude_capture,
+        exclude_timeout_salvaged: args.exclude_timeout_salvaged,
         eval_min: args.eval_min,
         eval_max: args.eval_max,
         max_score_swing_cp: args.max_score_swing_cp,
@@ -4919,6 +4945,7 @@ fn cmd_tune(args: TuneArgs) -> Result<()> {
         require_policy_margin: args.require_policy_margin,
         min_depth_reached: args.min_depth_reached,
         require_requested_depth_reached: args.require_requested_depth_reached,
+        allow_timeout_salvaged_mate: args.allow_timeout_salvaged_mate,
     };
 
     // A held-but-not-swept axis becomes a single-value list (possibly `None`, meaning "gate
@@ -6579,6 +6606,7 @@ mod merge_observations_tests {
             pv: None,
             policy_margin_cp: None,
             candidates: Vec::new(),
+            was_timeout_salvaged: false,
         }
     }
 

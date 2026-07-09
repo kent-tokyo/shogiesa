@@ -140,6 +140,7 @@ mod tests {
             pv: None,
             policy_margin_cp: None,
             candidates: Vec::new(),
+            was_timeout_salvaged: false,
         }
     }
 

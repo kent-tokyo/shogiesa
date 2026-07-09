@@ -1100,6 +1100,10 @@ fn label_manifest_reports_timeout_salvaged_count() {
     let output: serde_json::Value =
         serde_json::from_str(std::fs::read_to_string(out.path()).unwrap().trim()).unwrap();
     assert_eq!(output["observations"][0]["depth"], 4);
+    assert_eq!(
+        output["observations"][0]["was_timeout_salvaged"], true,
+        "the real timed-out analyse() result must be written through to the observation, not just counted"
+    );
 }
 
 #[test]
@@ -1791,7 +1795,7 @@ fn cache_write_path_produces_v2_envelope_not_bare_observation() {
         "v2 entries wrap the Observation under an `observation` key, not at the top level"
     );
     assert_eq!(v["cache_schema_version"], 1);
-    assert_eq!(v["schema_version"], 8);
+    assert_eq!(v["schema_version"], shogiesa_core::SCHEMA_VERSION);
 }
 
 #[test]
@@ -1911,6 +1915,43 @@ fn obs_mate(bestmove: &str, moves: i32, depth: u32) -> serde_json::Value {
         "nodes": null,
         "time_ms": null,
         "pv": null
+    })
+}
+
+fn obs_timeout_salvaged(bestmove: &str, score_cp: i32, depth: u32) -> serde_json::Value {
+    serde_json::json!({
+        "engine": "test",
+        "engine_version": null,
+        "depth": depth,
+        "score": { "kind": "cp", "value": score_cp },
+        "bestmove": bestmove,
+        "nodes": null,
+        "time_ms": null,
+        "pv": null,
+        "was_timeout_salvaged": true
+    })
+}
+
+/// A timeout-salvaged mate observation that fell short of `requested_depth` -- the case
+/// `require_requested_depth_reached`'s default mate exemption no longer covers (unlike a
+/// genuine, non-salvaged early-stop-on-forced-mate), unless `allow_timeout_salvaged_mate` is set.
+fn obs_mate_salvaged_underreach(
+    bestmove: &str,
+    moves: i32,
+    depth: u32,
+    requested_depth: u32,
+) -> serde_json::Value {
+    serde_json::json!({
+        "engine": "test",
+        "engine_version": null,
+        "depth": depth,
+        "requested_depth": requested_depth,
+        "score": { "kind": "mate", "moves": moves },
+        "bestmove": bestmove,
+        "nodes": null,
+        "time_ms": null,
+        "pv": null,
+        "was_timeout_salvaged": true
     })
 }
 
@@ -2637,6 +2678,76 @@ fn filter_exclude_mate() {
             "--out",
             out.path().to_str().unwrap(),
             "--exclude-mate",
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 1);
+}
+
+#[test]
+fn filter_exclude_timeout_salvaged() {
+    let f = make_labeled_jsonl(&[
+        position("middlegame", serde_json::json!([obs("7g7f", 50, 4)])),
+        position(
+            "middlegame",
+            serde_json::json!([obs_timeout_salvaged("7g7f", 50, 4)]),
+        ),
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--exclude-timeout-salvaged",
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 1);
+}
+
+#[test]
+fn filter_require_requested_depth_reached_rejects_salvaged_mate_underreach_by_default() {
+    let f = make_labeled_jsonl(&[position(
+        "endgame",
+        serde_json::json!([obs_mate_salvaged_underreach("7g7f", 3, 8, 12)]),
+    )]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--require-requested-depth-reached",
+        ])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 0);
+}
+
+#[test]
+fn filter_allow_timeout_salvaged_mate_keeps_the_record() {
+    let f = make_labeled_jsonl(&[position(
+        "endgame",
+        serde_json::json!([obs_mate_salvaged_underreach("7g7f", 3, 8, 12)]),
+    )]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--require-requested-depth-reached",
+            "--allow-timeout-salvaged-mate",
         ])
         .assert()
         .success();

@@ -3,7 +3,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA_VERSION: u32 = 8;
+pub const SCHEMA_VERSION: u32 = 9;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -207,6 +207,13 @@ pub struct Observation {
     /// MultiPV≥2 (empty otherwise, matching `policy_margin_cp`'s convention).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub candidates: Vec<CandidateMove>,
+    /// `true` when `--timeout-ms` elapsed before `bestmove` arrived and this observation is the
+    /// degraded-but-real result salvaged from the last `info` line rather than a normal
+    /// completion or the engine's own early stop (e.g. a forced mate). `false` on records
+    /// labeled before this field existed -- a genuine no-op on all pre-v9 data, since the new
+    /// `exclude_timeout_salvaged` gate only ever fires on data re-labeled with this field set.
+    #[serde(default)]
+    pub was_timeout_salvaged: bool,
 }
 
 /// `cp`, converted to Black's perspective (positive = good for Black), given the perspective it
@@ -360,6 +367,7 @@ pub enum QualityReason {
     Mate,
     InCheck,
     Capture,
+    TimeoutSalvaged,
     EvalMin,
     EvalMax,
     ScoreSwing,
@@ -381,6 +389,7 @@ impl QualityReason {
             QualityReason::Mate => "mate",
             QualityReason::InCheck => "in_check",
             QualityReason::Capture => "capture",
+            QualityReason::TimeoutSalvaged => "timeout_salvaged",
             QualityReason::EvalMin => "eval_min",
             QualityReason::EvalMax => "eval_max",
             QualityReason::ScoreSwing => "score_swing",
@@ -407,6 +416,10 @@ pub struct QualityConfig {
     pub exclude_mate: bool,
     pub exclude_in_check: bool,
     pub exclude_capture: bool,
+    /// Reject a record if any observation is a timeout-salvaged, degraded-but-real result (see
+    /// `Observation::was_timeout_salvaged`) rather than a full completion or a genuine
+    /// engine-initiated early stop.
+    pub exclude_timeout_salvaged: bool,
     pub eval_min: Option<i32>,
     pub eval_max: Option<i32>,
     pub max_score_swing_cp: Option<i32>,
@@ -434,7 +447,18 @@ pub struct QualityConfig {
     /// same dataset were requested to different depths. Mate is exempt for the same reason as
     /// `min_depth_reached`: a forced mate found short of the requested depth is a confirmed,
     /// high-confidence result, not a weak search.
+    ///
+    /// Exception: a timeout-salvaged observation (`was_timeout_salvaged`) carrying an unconfirmed
+    /// mate score is *not* granted this exemption by default -- it never actually confirmed the
+    /// mate the way a genuine engine-initiated early stop does. Set `allow_timeout_salvaged_mate`
+    /// to restore the blanket exemption for that case too.
     pub require_requested_depth_reached: bool,
+    /// When `false` (the default), a timeout-salvaged observation carrying a mate score does
+    /// *not* get `require_requested_depth_reached`'s usual mate exemption -- it's less
+    /// trustworthy than a genuine early-stop-on-forced-mate. Set `true` to restore the blanket
+    /// exemption for salvaged mates too. No effect unless `require_requested_depth_reached` is
+    /// also set.
+    pub allow_timeout_salvaged_mate: bool,
 }
 
 /// Result of evaluating a `PositionRecord` against a `QualityConfig`.
@@ -498,6 +522,13 @@ pub fn evaluate_quality(rec: &PositionRecord, config: &QualityConfig) -> Quality
         configured_gates += 1;
         if rec.tags.has_capture {
             reasons.push(QualityReason::Capture);
+        }
+    }
+
+    if config.exclude_timeout_salvaged {
+        configured_gates += 1;
+        if obs.iter().any(|o| o.was_timeout_salvaged) {
+            reasons.push(QualityReason::TimeoutSalvaged);
         }
     }
 
@@ -594,7 +625,13 @@ pub fn evaluate_quality(rec: &PositionRecord, config: &QualityConfig) -> Quality
 
     if config.require_requested_depth_reached {
         configured_gates += 1;
-        if obs.iter().any(requested_depth_underreached) {
+        if obs.iter().any(|o| {
+            requested_depth_underreached(o)
+                || (!config.allow_timeout_salvaged_mate
+                    && o.was_timeout_salvaged
+                    && matches!(o.score, Score::Mate { .. })
+                    && o.requested_depth.is_some_and(|rd| o.depth < rd))
+        }) {
             reasons.push(QualityReason::RequestedDepthNotReached);
         }
     }
@@ -730,6 +767,7 @@ mod tests {
             pv: None,
             policy_margin_cp: None,
             candidates: Vec::new(),
+            was_timeout_salvaged: false,
         }
     }
 
@@ -858,6 +896,7 @@ mod tests {
             pv: None,
             policy_margin_cp: None,
             candidates: Vec::new(),
+            was_timeout_salvaged: false,
         }
     }
 
@@ -1217,6 +1256,72 @@ mod tests {
         };
         let observations = vec![obs("a", 6, 10, "7g7f")];
         let decision = evaluate_quality(&simple_rec(observations), &config);
+        assert!(decision.keep);
+    }
+
+    #[test]
+    fn evaluate_quality_require_requested_depth_reached_rejects_salvaged_mate_underreach_by_default()
+     {
+        // A timeout-salvaged observation carrying a mate score didn't actually confirm the mate
+        // the way a genuine engine-initiated early stop does -- unlike
+        // `evaluate_quality_require_requested_depth_reached_exempts_mate` (a non-salvaged mate),
+        // this must NOT get the blanket mate exemption unless `allow_timeout_salvaged_mate` is set.
+        let config = QualityConfig {
+            require_requested_depth_reached: true,
+            ..Default::default()
+        };
+        let mut o = obs_mate("a", 8, 3, "7g7f");
+        o.requested_depth = Some(12);
+        o.was_timeout_salvaged = true;
+        let decision = evaluate_quality(&simple_rec(vec![o]), &config);
+        assert_eq!(
+            decision.reasons,
+            vec![QualityReason::RequestedDepthNotReached]
+        );
+    }
+
+    #[test]
+    fn evaluate_quality_allow_timeout_salvaged_mate_restores_the_exemption() {
+        let config = QualityConfig {
+            require_requested_depth_reached: true,
+            allow_timeout_salvaged_mate: true,
+            ..Default::default()
+        };
+        let mut o = obs_mate("a", 8, 3, "7g7f");
+        o.requested_depth = Some(12);
+        o.was_timeout_salvaged = true;
+        let decision = evaluate_quality(&simple_rec(vec![o]), &config);
+        assert!(decision.keep);
+    }
+
+    #[test]
+    fn evaluate_quality_exclude_timeout_salvaged_rejects_a_salvaged_observation() {
+        let config = QualityConfig {
+            exclude_timeout_salvaged: true,
+            ..Default::default()
+        };
+        let mut o = obs("a", 6, 10, "7g7f");
+        o.was_timeout_salvaged = true;
+        let decision = evaluate_quality(&simple_rec(vec![o]), &config);
+        assert_eq!(decision.reasons, vec![QualityReason::TimeoutSalvaged]);
+    }
+
+    #[test]
+    fn evaluate_quality_exclude_timeout_salvaged_keeps_a_clean_observation() {
+        let config = QualityConfig {
+            exclude_timeout_salvaged: true,
+            ..Default::default()
+        };
+        let observations = vec![obs("a", 6, 10, "7g7f")];
+        let decision = evaluate_quality(&simple_rec(observations), &config);
+        assert!(decision.keep);
+    }
+
+    #[test]
+    fn evaluate_quality_exclude_timeout_salvaged_is_noop_when_unset() {
+        let mut o = obs("a", 6, 10, "7g7f");
+        o.was_timeout_salvaged = true;
+        let decision = evaluate_quality(&simple_rec(vec![o]), &QualityConfig::default());
         assert!(decision.keep);
     }
 

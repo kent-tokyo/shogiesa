@@ -71,7 +71,7 @@ use shogiesa_core::{
 };
 
 pub const MAGIC: &[u8; 8] = b"SHOGIESA";
-pub const FORMAT_VERSION: u16 = 8;
+pub const FORMAT_VERSION: u16 = 9;
 
 // ── write helpers ─────────────────────────────────────────────────────────────
 
@@ -365,6 +365,7 @@ pub fn encode_record(rec: &PositionRecord, w: &mut impl Write) -> io::Result<()>
                 }
             }
         }
+        wu8(w, obs.was_timeout_salvaged as u8)?;
     }
 
     Ok(())
@@ -500,6 +501,7 @@ pub fn decode_record(r: &mut impl Read) -> io::Result<PositionRecord> {
                 pv: c_pv,
             });
         }
+        let was_timeout_salvaged = ru8(r)? != 0;
         observations.push(Observation {
             engine,
             engine_version,
@@ -515,6 +517,7 @@ pub fn decode_record(r: &mut impl Read) -> io::Result<PositionRecord> {
             pv,
             policy_margin_cp,
             candidates,
+            was_timeout_salvaged,
         });
     }
 
@@ -611,6 +614,7 @@ mod tests {
                             pv: None,
                         },
                     ],
+                    was_timeout_salvaged: true,
                 },
                 Observation {
                     engine: "TestEngine".to_string(),
@@ -627,6 +631,7 @@ mod tests {
                     pv: None,
                     policy_margin_cp: None,
                     candidates: Vec::new(),
+                    was_timeout_salvaged: false,
                 },
             ],
             stability: Some(StabilityInfo {

@@ -195,4 +195,51 @@ mod tests {
         assert_eq!(result.bucket_not_in_quota, 1);
         assert_eq!(result.kept.len(), 1);
     }
+
+    #[test]
+    fn group_aware_fill_with_no_quotas_drops_every_item() {
+        let items = vec![("a", 1), ("b", 2), ("c", 3)];
+        let quotas: BTreeMap<String, usize> = BTreeMap::new();
+
+        let result = group_aware_fill(
+            items.into_iter(),
+            &quotas,
+            0,
+            |(bucket, _)| bucket.to_string(),
+            |(_, group)| group.to_string(),
+        );
+
+        assert_eq!(result.total, 3);
+        assert_eq!(result.quota_candidates, 0);
+        assert_eq!(result.bucket_not_in_quota, 3);
+        assert!(result.kept.is_empty());
+        assert_eq!(result.distinct_groups_kept, 0);
+        assert_eq!(result.max_group_share_in_any_bucket, None);
+    }
+
+    #[test]
+    fn group_aware_fill_on_empty_input_is_a_safe_no_op() {
+        let items: Vec<(&str, &str)> = Vec::new();
+        let mut quotas = BTreeMap::new();
+        quotas.insert("bucket".to_string(), 5);
+
+        let result = group_aware_fill(
+            items.into_iter(),
+            &quotas,
+            0,
+            |(bucket, _)| bucket.to_string(),
+            |(_, group)| group.to_string(),
+        );
+
+        assert_eq!(result.total, 0);
+        assert!(result.kept.is_empty());
+    }
+
+    #[test]
+    fn reservoir_sample_on_empty_input_returns_nothing() {
+        let items: Vec<String> = Vec::new();
+        let (kept, total) = reservoir_sample(items.into_iter(), 5, 1, |s| s.as_str());
+        assert_eq!(total, 0);
+        assert!(kept.is_empty());
+    }
 }

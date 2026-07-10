@@ -5423,6 +5423,140 @@ fn select_hard_breaks_ties_by_per_record_score_swing() {
 }
 
 #[test]
+fn select_hard_grouped_streaming_matches_materialized_for_blunder_adjacency() {
+    // Same scenario as select_hard_prioritizes_blunder_adjacent_position, run through the
+    // grouped-streaming path instead -- proves the two code paths agree on grouped input.
+    let f = make_labeled_jsonl(&[game_pos(1, 0), game_pos(2, 300), game_pos(3, 305)]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "select",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--strategy",
+            "hard",
+            "--count",
+            "1",
+            "--blunder-window",
+            "0",
+            "--assume-grouped-by-source",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    let lines: Vec<serde_json::Value> = content
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0]["source"]["ply"], 2);
+}
+
+#[test]
+fn select_hard_grouped_streaming_matches_materialized_for_swing_tiebreak() {
+    // Same scenario as select_hard_breaks_ties_by_per_record_score_swing, run through the
+    // grouped-streaming path instead -- proves the two code paths agree on grouped input.
+    fn multi_obs_position(ply: u32, scores: &[i32]) -> serde_json::Value {
+        let observations: Vec<serde_json::Value> = scores
+            .iter()
+            .enumerate()
+            .map(|(depth, &cp)| obs("7g7f", cp, depth as u32 + 1))
+            .collect();
+        let mut rec = game_pos(ply, scores[0]);
+        rec["observations"] = serde_json::json!(observations);
+        rec
+    }
+    let low_swing = multi_obs_position(1, &[100, 110]);
+    let high_swing = multi_obs_position(2, &[120, 600]);
+
+    let f = make_labeled_jsonl(&[low_swing, high_swing]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "select",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--strategy",
+            "hard",
+            "--count",
+            "1",
+            "--blunder-threshold",
+            "9999",
+            "--assume-grouped-by-source",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    let lines: Vec<serde_json::Value> = content
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(
+        lines[0]["source"]["ply"], 2,
+        "bigger per-record swing ranks first"
+    );
+}
+
+#[test]
+fn select_hard_grouped_streaming_ranks_across_group_boundaries() {
+    // Two contiguous games (gameA harder, listed FIRST; gameB easier, listed SECOND) -- proves
+    // the shared global heap actually compares candidates across flush_hard_group calls, not
+    // just "whichever group flushed last/first" (which a broken accumulation would coincidentally
+    // pass if the harder group happened to be last).
+    fn multi_obs_position(path: &str, ply: u32, scores: &[i32]) -> serde_json::Value {
+        let observations: Vec<serde_json::Value> = scores
+            .iter()
+            .enumerate()
+            .map(|(depth, &cp)| obs("7g7f", cp, depth as u32 + 1))
+            .collect();
+        let mut rec = game_pos(ply, scores[0]);
+        rec["source"]["path"] = serde_json::json!(path);
+        rec["observations"] = serde_json::json!(observations);
+        rec
+    }
+    let harder_first = multi_obs_position("gameA.csa", 1, &[120, 600]); // swing 480
+    let easier_second = multi_obs_position("gameB.csa", 1, &[100, 110]); // swing 10
+
+    let f = make_labeled_jsonl(&[harder_first, easier_second]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "select",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--strategy",
+            "hard",
+            "--count",
+            "1",
+            "--blunder-threshold",
+            "9999",
+            "--assume-grouped-by-source",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    let lines: Vec<serde_json::Value> = content
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(
+        lines[0]["source"]["path"], "gameA.csa",
+        "harder record must win globally, not just within its own group"
+    );
+}
+
+#[test]
 fn select_coverage_prioritizes_thin_bucket() {
     let mut records: Vec<serde_json::Value> = (0..5)
         .map(|_| position("opening", serde_json::json!([])))

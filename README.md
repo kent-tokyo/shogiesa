@@ -648,10 +648,14 @@ rank break deterministically by `--seed`, the same mechanism `sample` uses.
 `--strategy uncertain`/`coverage` stream the input and keep a bounded top-`--count` heap instead
 of materializing the whole dataset, so memory scales with `--count`, not with dataset size
 (`coverage` reads its input twice — once to tally bucket sizes, once to rank — since a bucket's
-size can't be known until every position naming it has been seen). `--strategy hard` still
-materializes the full dataset: its blunder-adjacency signal fundamentally needs a whole game's
+size can't be known until every position naming it has been seen). `--strategy hard` materializes
+the full dataset by default: its blunder-adjacency signal fundamentally needs a whole game's
 positions grouped together, which isn't safe to stream without assuming the input is contiguously
-grouped by source.
+grouped by source. Pass `--assume-grouped-by-source` when that assumption actually holds (e.g.
+straight `extract` output, or anything already run through `split`) to opt into the same
+one-game-at-a-time streaming bound `uncertain`/`coverage` already have — an incorrectly-set flag
+on genuinely ungrouped/interleaved input silently computes wrong blunder windows, so this stays
+off by default.
 
 ### `split` / `sample` — dataset slicing
 

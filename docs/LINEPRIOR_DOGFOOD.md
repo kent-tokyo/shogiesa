@@ -53,12 +53,15 @@ moves get searched first/deepest — not replacing search with a single predicte
 prior that reliably gets the teacher's move into the top 5 (high `top5_hit_rate`, low average rank
 via `mrr`) is useful for that even with a middling `top1_hit_rate`.
 
-**If every row in the metrics table reads `n/a`**, that's not "no data" — it means the installed
+**If any row in the metrics table reads `n/a`**, that's not "no data" — it means the installed
 `lineprior`'s JSON output uses different field names than the ones this script's `jq` expressions
 expect (`coverage`/`fallback_rate`/`top1_hit_rate`/`top3_hit_rate`/`top5_hit_rate`/`mrr`; see the
-caveat at the top of `scripts/lineprior_dogfood.sh`). The script still exits 0 in that case, since
-a schema mismatch is deliberately non-fatal — check `shogi_eval_report.json` directly and fix the
-`jq` expressions in the report-generation step, rather than assuming the run failed.
+caveat at the top of `scripts/lineprior_dogfood.sh`). By default the script still exits 0 in that
+case, since a schema mismatch should stay non-fatal for exploratory runs — check
+`shogi_eval_report.json` directly and fix the `jq` expressions in the report-generation step,
+rather than assuming the run failed. Pass `--strict-report-fields` for a reproducible/logged
+dogfood run you don't want to eyeball for `n/a` by hand: the script still writes `report.md`, but
+exits non-zero (naming the missing fields) if any of the six required metrics came back `n/a`.
 
 The Export section surfaces `export_manifest.json`'s counts directly, in particular
 `unknown_outcome_count` — every move inside a KIF `変化` (variation) branch resolves to

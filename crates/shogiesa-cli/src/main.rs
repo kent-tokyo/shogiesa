@@ -550,6 +550,14 @@ struct SelectArgs {
     /// (hard strategy) include positions within N plies of a blunder
     #[arg(long, default_value = "1")]
     blunder_window: usize,
+    /// (hard strategy) assume `--input` is already contiguously grouped by source game (e.g.
+    /// `extract`'s own output, or anything already run through `split`) -- lets `hard` bound
+    /// memory by one game's positions plus the top-`--count` heap instead of materializing the
+    /// whole dataset. Off by default: an incorrectly-set flag on genuinely ungrouped/interleaved
+    /// input silently computes wrong blunder windows (a game split across two non-adjacent
+    /// buffered chunks looks like two separate one-position "games" to the blunder detector).
+    #[arg(long)]
+    assume_grouped_by_source: bool,
 }
 
 #[derive(clap::Args)]
@@ -3630,11 +3638,13 @@ fn select_coverage_streaming(args: &SelectArgs) -> Result<(usize, Vec<PositionRe
     Ok((total, ranked_records))
 }
 
-/// `select --strategy hard`: unlike `uncertain`/`coverage` above, left fully materialized.
+/// `select --strategy hard`: unlike `uncertain`/`coverage` above, fully materialized by default.
 /// `blunder_adjacent_indices` fundamentally needs a whole game's positions grouped together, which
 /// isn't safe to stream without assuming the input is contiguously grouped by source (an
-/// assumption this codebase doesn't guarantee elsewhere) -- so this stays O(n) memory.
-/// ponytail: revisit only if `hard` is shown to actually hit a memory limit in practice.
+/// assumption this codebase doesn't guarantee elsewhere) -- so this stays O(n) memory and is the
+/// correctness-preserving fallback. `select_hard_grouped_streaming` below is the O(one game +
+/// --count) alternative for callers who can guarantee that assumption
+/// (`--assume-grouped-by-source`).
 fn select_hard_materialized(args: &SelectArgs) -> Result<(usize, Vec<PositionRecord>)> {
     let (records, _) = load_records(&args.input)?;
     let total = records.len();
@@ -3666,6 +3676,164 @@ fn select_hard_materialized(args: &SelectArgs) -> Result<(usize, Vec<PositionRec
     ranked.truncate(count);
     let ranked_records = ranked.into_iter().map(|i| records[i].clone()).collect();
     Ok((total, ranked_records))
+}
+
+/// Per-game hardness for one already-ply-sorted group of positions from the same game -- the
+/// blunder-adjacency + disagreement + swing math `select_hard_materialized` computes globally via
+/// `blunder_adjacent_indices`, scoped to a single game so `select_hard_grouped_streaming` only
+/// ever needs one game's positions in memory at a time. New code, not a refactor of
+/// `blunder_adjacent_indices`/`select_hard_materialized` -- those stay untouched as the tested,
+/// correctness-preserving fallback.
+fn hardness_for_group(
+    group: &[PositionRecord],
+    blunder_threshold: i32,
+    blunder_window: usize,
+) -> Vec<(bool, bool, i32)> {
+    let evals: Vec<Option<i32>> = group.iter().map(eval_black).collect();
+    let mut is_blunder_adjacent = vec![false; group.len()];
+    for j in 1..group.len() {
+        if let (Some(e0), Some(e1)) = (evals[j - 1], evals[j])
+            && (e1 - e0).abs() >= blunder_threshold
+        {
+            let lo = j.saturating_sub(blunder_window);
+            let hi = (j + blunder_window + 1).min(group.len());
+            for k in lo..hi {
+                if !group[k].observations.is_empty() {
+                    is_blunder_adjacent[k] = true;
+                }
+            }
+        }
+    }
+    group
+        .iter()
+        .enumerate()
+        .map(|(i, rec)| {
+            let cp_scores: Vec<i32> = rec
+                .observations
+                .iter()
+                .filter_map(|o| match o.score {
+                    Score::Cp { value } => Some(value),
+                    Score::Mate { .. } => None,
+                })
+                .collect();
+            (
+                is_blunder_adjacent[i],
+                !bestmove_agreement(&rec.observations),
+                score_swing(&cp_scores).unwrap_or(0),
+            )
+        })
+        .collect()
+}
+
+/// Heap key for `select_hard_grouped_streaming`: `push_bounded` keeps the smallest keys, and
+/// `into_sorted_vec()` returns ascending order, but `select_hard_materialized` wants descending
+/// hardness (hardest first) then ascending seeded-hash tie-break. `Reverse`-wrapping only the
+/// hardness tuple gets that: a bigger original hardness becomes a smaller `Reverse` value (sorts
+/// first), while the plain `u64` hash is left as-is since "smaller hash first" is already the
+/// wanted tie-break direction.
+type HardKey = (std::cmp::Reverse<(bool, bool, i32)>, u64);
+
+/// Scores one buffered game's positions and pushes them into the shared global top-`count` heap,
+/// then clears the buffer. Re-sorts by ply first (same as `blunder_adjacent_indices` does
+/// internally) since "grouped by source" only guarantees contiguity by game, not ply order within
+/// a game.
+fn flush_hard_group(
+    group: &mut Vec<PositionRecord>,
+    heap: &mut BinaryHeap<HeapEntry<HardKey, PositionRecord>>,
+    total: &mut usize,
+    count: usize,
+    seed: u64,
+    blunder_threshold: i32,
+    blunder_window: usize,
+) {
+    if group.is_empty() {
+        return;
+    }
+    group.sort_by_key(|r| r.source.ply);
+    let hardness = hardness_for_group(group, blunder_threshold, blunder_window);
+    for (rec, h) in group.drain(..).zip(hardness) {
+        let key = (std::cmp::Reverse(h), seeded_hash(seed, &rec.sfen));
+        let index = *total;
+        *total += 1;
+        push_bounded(
+            heap,
+            count,
+            HeapEntry {
+                key,
+                index,
+                record: rec,
+            },
+        );
+    }
+}
+
+/// Streaming `select --strategy hard --assume-grouped-by-source`: bounded by one game's positions
+/// plus the top-`count` heap, instead of `select_hard_materialized`'s full dataset, PROVIDED the
+/// input is already contiguously grouped by `source.path` (e.g. `extract`'s own output, or
+/// anything already run through `split`). Group boundary is a `source.path` change -- matching
+/// `blunder_adjacent_indices`'s exact existing grouping key, deliberately not `split_root_key`, so
+/// a KIF variation's `#varN@ply`-suffixed path keeps counting as its own separate "game" for
+/// blunder-adjacency purposes, same as `select_hard_materialized` does today. Output matches
+/// `select_hard_materialized` exactly for grouped, ply-sorted-within-group input; it may only
+/// differ in tie-break order among duplicate-SFEN positions right at the `--count` truncation
+/// boundary, since the two paths track a different (but equally valid) last-resort tie-break
+/// there -- materialized keeps file order, this keeps group-flush order.
+fn select_hard_grouped_streaming(args: &SelectArgs) -> Result<(usize, Vec<PositionRecord>)> {
+    let count = args.count;
+    let seed = args.seed;
+    let reader = BufReader::new(
+        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
+    );
+
+    let mut heap: BinaryHeap<HeapEntry<HardKey, PositionRecord>> =
+        BinaryHeap::with_capacity(count.saturating_add(1));
+    let mut total = 0usize;
+    let mut current_path: Option<String> = None;
+    let mut group: Vec<PositionRecord> = Vec::new();
+
+    for (i, line) in reader.lines().enumerate() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let record: PositionRecord = match serde_json::from_str(&line) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(line = i + 1, "parse error: {e}");
+                continue;
+            }
+        };
+        if current_path.as_deref() != Some(record.source.path.as_str()) {
+            flush_hard_group(
+                &mut group,
+                &mut heap,
+                &mut total,
+                count,
+                seed,
+                args.blunder_threshold,
+                args.blunder_window,
+            );
+            current_path = Some(record.source.path.clone());
+        }
+        group.push(record);
+    }
+    flush_hard_group(
+        &mut group,
+        &mut heap,
+        &mut total,
+        count,
+        seed,
+        args.blunder_threshold,
+        args.blunder_window,
+    );
+
+    Ok((
+        total,
+        heap.into_sorted_vec()
+            .into_iter()
+            .map(|e| e.record)
+            .collect(),
+    ))
 }
 
 /// One lineprior-style observation, one JSONL line per move actually played. Distinct from
@@ -3837,7 +4005,13 @@ fn cmd_select(args: SelectArgs) -> Result<()> {
     let (total, ranked_records) = match args.strategy.as_str() {
         "uncertain" => select_uncertain_streaming(&args)?,
         "coverage" => select_coverage_streaming(&args)?,
-        "hard" => select_hard_materialized(&args)?,
+        "hard" => {
+            if args.assume_grouped_by_source {
+                select_hard_grouped_streaming(&args)?
+            } else {
+                select_hard_materialized(&args)?
+            }
+        }
         other => anyhow::bail!("unknown --strategy {other:?} (expected uncertain/hard/coverage)"),
     };
 

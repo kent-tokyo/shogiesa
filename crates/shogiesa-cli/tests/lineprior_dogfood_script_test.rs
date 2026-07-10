@@ -59,3 +59,55 @@ fn lineprior_dogfood_script_produces_report() {
     .unwrap();
     assert!(export_manifest["records_exported"].as_u64().unwrap() > 0);
 }
+
+fn run_dogfood(lineprior_stub: &str, out_dir: &Path, extra: &[&str]) -> std::process::ExitStatus {
+    let mut args = vec![
+        "--games".to_string(),
+        fixtures_dir().to_str().unwrap().to_string(),
+        "--lineprior".to_string(),
+        fixture(lineprior_stub).to_str().unwrap().to_string(),
+        "--out".to_string(),
+        out_dir.to_str().unwrap().to_string(),
+        "--source".to_string(),
+        "test_dogfood".to_string(),
+        "--shogiesa".to_string(),
+        cargo_bin("shogiesa").to_str().unwrap().to_string(),
+    ];
+    args.extend(extra.iter().map(|s| s.to_string()));
+    std::process::Command::new("bash")
+        .arg(repo_root().join("scripts/lineprior_dogfood.sh"))
+        .args(args)
+        .status()
+        .unwrap()
+}
+
+#[test]
+fn lineprior_dogfood_script_strict_report_fields_passes_with_complete_metrics() {
+    let out_dir = TempDir::new().unwrap();
+    let status = run_dogfood(
+        "fake_lineprior.sh",
+        out_dir.path(),
+        &["--strict-report-fields"],
+    );
+    assert!(status.success());
+    assert!(out_dir.path().join("report.md").exists());
+}
+
+#[test]
+fn lineprior_dogfood_script_strict_report_fields_fails_on_missing_metrics() {
+    let out_dir = TempDir::new().unwrap();
+    let status = run_dogfood(
+        "fake_lineprior_incomplete.sh",
+        out_dir.path(),
+        &["--strict-report-fields"],
+    );
+    assert!(
+        !status.success(),
+        "must fail when top5_hit_rate/mrr are missing under --strict-report-fields"
+    );
+
+    // report.md is still written for debugging, even though the run itself failed.
+    let report = std::fs::read_to_string(out_dir.path().join("report.md")).unwrap();
+    assert!(report.contains("top1_hit_rate | 0.31"));
+    assert!(report.contains("top5_hit_rate | n/a"));
+}

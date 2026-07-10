@@ -34,6 +34,14 @@ Options:
                      run `cargo build --release` first, or pass e.g.
                      "cargo run --quiet --release -p shogiesa-cli --")
   --max-ply N       Max ply to export per game (default: 80)
+  --strict-report-fields
+                    Fail (after still writing report.md) if any required eval metric
+                    (coverage/fallback_rate/top1_hit_rate/top3_hit_rate/top5_hit_rate/mrr) comes
+                    back missing/"n/a" -- catches a lineprior JSON field-name mismatch that would
+                    otherwise silently produce an all-"n/a" report and exit 0. Off by default:
+                    a field mismatch should stay non-fatal for exploratory runs, where a partial
+                    report is still useful while iterating; a reproducible/logged dogfood run
+                    wants a hard failure instead of a report nobody double-checks by eye.
   -h, --help        Show this help
 EOF
 }
@@ -44,6 +52,7 @@ OUT_DIR=""
 SOURCE_NAME=""
 SHOGIESA_BIN="target/release/shogiesa"
 MAX_PLY="80"
+STRICT_REPORT_FIELDS=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -53,6 +62,7 @@ while [[ $# -gt 0 ]]; do
     --source) SOURCE_NAME="$2"; shift 2 ;;
     --shogiesa) SHOGIESA_BIN="$2"; shift 2 ;;
     --max-ply) MAX_PLY="$2"; shift 2 ;;
+    --strict-report-fields) STRICT_REPORT_FIELDS="1"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 1 ;;
   esac
@@ -116,6 +126,9 @@ lineprior eval "$OBSERVATIONS" \
 
 echo "== report =="
 report="$OUT_DIR/report.md"
+# Populated below inside the report block -- `{ ... } > "$report"` is a group command, not a
+# subshell, so this array's mutations are visible after the block closes.
+missing_fields=()
 {
   echo "# lineprior dogfood report"
   echo
@@ -141,6 +154,7 @@ report="$OUT_DIR/report.md"
   for field in coverage fallback_rate top1_hit_rate top3_hit_rate top5_hit_rate mrr; do
     value=$(jq -r --arg f "$field" '.[$f] // "n/a"' "$EVAL_REPORT")
     echo "| $field | $value |"
+    [[ "$value" == "n/a" ]] && missing_fields+=("$field")
   done
   echo
   echo "Especially watch \`top5_hit_rate\` and \`mrr\` over \`top1_hit_rate\` -- the intended"
@@ -173,3 +187,9 @@ report="$OUT_DIR/report.md"
 } > "$report"
 
 echo "done: $report"
+
+if [[ -n "$STRICT_REPORT_FIELDS" && ${#missing_fields[@]} -gt 0 ]]; then
+  echo "error: --strict-report-fields set and required eval metric(s) missing/n-a: ${missing_fields[*]}" >&2
+  echo "error: check $EVAL_REPORT directly and fix the jq field names in the report step of this script if lineprior's actual output uses different keys" >&2
+  exit 1
+fi

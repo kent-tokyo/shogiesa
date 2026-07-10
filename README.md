@@ -280,7 +280,8 @@ shogiesa lineprior export \
   --max-ply 80 \
   --source teacher_v012 \
   --outcome-mode game-result \
-  --score-mode none
+  --score-mode none \
+  --manifest export_manifest.json
 ```
 
 Exports CSA/KIF game records into `lineprior`-compatible JSONL, one line per move actually played,
@@ -310,6 +311,14 @@ handicap games (where the handicapped side conventionally moves first) resolve c
 `sequence_id` groups a KIF mainline with all of its variation branches (the same `source.root_id`
 convention `split`/`stratify`/`make-gate-openings` already use), so a `lineprior tune --split-by
 sequence`-style split doesn't leak near-duplicate correlated positions across train/test.
+
+`--manifest` writes record/sequence counts, an `outcome_distribution`, a phase `tag_distribution`,
+and `unknown_outcome_count` — the last one is a one-glance check for how much of a corpus is
+`変化` variation branches diluting the signal (see the outcome-resolution caveat above). Its
+`input_hash` covers only the game files the export actually read (a directory containing one
+unreadable/non-UTF-8 file still succeeds with that file skipped, same as without `--manifest`), so
+two runs against the same corpus always match, and it's meant for spotting when a corpus changed
+between runs, not as a strict precondition on every file in `--input`.
 
 Typical follow-up workflow (`lineprior` itself lives outside this repo):
 
@@ -874,7 +883,7 @@ shogiesa connects to engines via SFEN, JSONL, and USI — no engine-internal dep
 |---|---|
 | KIF `変化` (variation/branch) moves | extracted as separate positions (`source.path` suffixed `#varN@ply`), but only relative to the mainline — a variation nested inside another variation is not supported |
 | `Sfen`/`Board` legality checking | syntactic only, no full legal-move generation (by design) |
-| `lineprior export` KIF outcome detection | text-marker-based (`まで…`/`投了`/`持将棋`/`千日手`/`中断`), not exhaustive; unrecognized endings and all `変化` variation-branch moves fall back to `outcome: "unknown"` |
+| `lineprior export` KIF outcome detection | text-marker-based (`まで…`/`投了`/`持将棋`/`千日手`/`中断`), not exhaustive; unrecognized endings and all `変化` variation-branch moves fall back to `outcome: "unknown"` — check `--manifest`'s `unknown_outcome_count` to see how much of a corpus this affects |
 
 ## License
 

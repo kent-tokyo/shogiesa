@@ -7184,6 +7184,67 @@ fn lineprior_export_sequence_id_stable_across_repeated_runs() {
     assert_eq!(ids(out1.path()), ids(out2.path()));
 }
 
+#[test]
+fn lineprior_export_manifest_shape_and_counts() {
+    let dir = TempDir::new().unwrap();
+    std::fs::copy(fixture("sample.csa"), dir.path().join("a.csa")).unwrap();
+    std::fs::copy(fixture("sample.kif"), dir.path().join("b.kif")).unwrap();
+
+    let out = NamedTempFile::new().unwrap();
+    let manifest = NamedTempFile::new().unwrap();
+    lineprior_export(
+        dir.path(),
+        out.path(),
+        &["--manifest", manifest.path().to_str().unwrap()],
+    )
+    .success();
+
+    let m: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest.path()).unwrap()).unwrap();
+    assert_eq!(m["records_exported"], 10);
+    assert_eq!(m["games_read"], 2);
+    assert_eq!(m["games_skipped"], 0);
+    assert_eq!(m["sequence_count"], 2);
+    assert_eq!(m["unknown_outcome_count"], 0);
+    assert_eq!(
+        m["outcome_distribution"]["success"].as_u64().unwrap()
+            + m["outcome_distribution"]["failure"].as_u64().unwrap(),
+        10
+    );
+    assert_eq!(m["tag_distribution"]["opening"], 10);
+    assert_eq!(m["source"], "test_v1");
+}
+
+#[test]
+fn lineprior_export_manifest_input_hash_stable_across_repeated_runs() {
+    let dir = TempDir::new().unwrap();
+    std::fs::copy(fixture("sample.kif"), dir.path().join("a.kif")).unwrap();
+
+    let out1 = NamedTempFile::new().unwrap();
+    let out2 = NamedTempFile::new().unwrap();
+    let manifest1 = NamedTempFile::new().unwrap();
+    let manifest2 = NamedTempFile::new().unwrap();
+    lineprior_export(
+        dir.path(),
+        out1.path(),
+        &["--manifest", manifest1.path().to_str().unwrap()],
+    )
+    .success();
+    lineprior_export(
+        dir.path(),
+        out2.path(),
+        &["--manifest", manifest2.path().to_str().unwrap()],
+    )
+    .success();
+
+    let hash = |p: &Path| -> String {
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
+        v["input_hash"].as_str().unwrap().to_string()
+    };
+    assert_eq!(hash(manifest1.path()), hash(manifest2.path()));
+}
+
 // --- help smoke test ---
 
 #[test]

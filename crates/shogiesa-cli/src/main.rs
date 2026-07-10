@@ -514,6 +514,10 @@ struct LinePriorExportArgs {
     /// How `score` is derived -- only "none" is supported (v1 has no engine-eval scoring)
     #[arg(long, default_value = "none", value_parser = ["none"])]
     score_mode: String,
+    /// Write a run manifest (git sha, input hash, record/sequence counts, outcome and phase-tag
+    /// distributions) to this path
+    #[arg(long)]
+    manifest: Option<PathBuf>,
 }
 
 #[derive(clap::Args)]
@@ -2836,6 +2840,17 @@ fn hash_file(path: &Path) -> Result<String> {
     Ok(h.finalize().to_hex().to_string())
 }
 
+/// Folds one file's content into a shared outer hasher, for `lineprior export --manifest`'s
+/// whole-directory `input_hash`. Each fixed-width per-file digest is its own boundary marker, so
+/// two different splits of the same total bytes across files never collide -- unlike feeding raw
+/// file content into one hasher directly. Called only for files the export loop already read
+/// successfully (not a strict pass over every discovered path), so a directory containing one
+/// unreadable/non-UTF-8 file doesn't turn `--manifest` into a new failure mode for a run that
+/// would otherwise succeed with a skip.
+fn fold_file_hash(hasher: &mut blake3::Hasher, content: &str) {
+    hasher.update(blake3::hash(content.as_bytes()).as_bytes());
+}
+
 /// String form of `ScoreBound`, shared by every stat-reporting call site (`report`, `calibrate`,
 /// `audit`, `accumulate_candidate_coverage` below) that prints a score-bound distribution or a
 /// single bound's label, so the string mapping can't drift between them.
@@ -3670,6 +3685,39 @@ struct LinePriorObservation {
     tags: Vec<String>,
 }
 
+/// Manifest for `lineprior export` -- deliberately not `RunManifest`: none of that struct's
+/// fields (labeled/engine/score-bound/depth stats) apply to this command's move-level JSONL, and
+/// bolting sequence/outcome/tag distributions onto a struct already shared by unrelated commands
+/// (label/filter/sample/...) would force those commands to carry meaningless zero-defaults.
+#[derive(Debug, Serialize)]
+struct LinePriorExportManifest {
+    shogiesa_version: &'static str,
+    git_sha: &'static str,
+    input_path: String,
+    input_hash: String,
+    out_path: String,
+    source: String,
+    max_ply: Option<u32>,
+    state_format: String,
+    action_format: String,
+    outcome_mode: String,
+    score_mode: String,
+    games_read: usize,
+    games_skipped: usize,
+    records_exported: usize,
+    sequence_count: usize,
+    outcome_distribution: BTreeMap<&'static str, usize>,
+    /// Keyed on phase only (`phase_from_ply`'s `"opening"`/`"middlegame"`/`"endgame"`), not the
+    /// full `tags` vec -- every record already carries `"shogi"`, so distributing over the whole
+    /// vec would just add a useless `"shogi": records_exported` bucket next to the real counts.
+    tag_distribution: BTreeMap<String, usize>,
+    /// Same number as `outcome_distribution["unknown"]`, pulled out as its own field rather than
+    /// tracked separately -- a one-glance check for "did KIF `変化` branches dilute this corpus"
+    /// (they always resolve to `unknown`, see README's outcome-resolution caveat) without a
+    /// second source of truth that could drift from the map.
+    unknown_outcome_count: usize,
+}
+
 fn cmd_lineprior_export(args: LinePriorExportArgs) -> Result<()> {
     let paths = collect_game_paths(&args.input)?;
     if paths.is_empty() {
@@ -3683,6 +3731,10 @@ fn cmd_lineprior_export(args: LinePriorExportArgs) -> Result<()> {
     let mut total_games = 0usize;
     let mut total_moves = 0usize;
     let mut skipped_games = 0usize;
+    let mut sequence_ids: HashSet<String> = HashSet::new();
+    let mut outcome_distribution: BTreeMap<&'static str, usize> = BTreeMap::new();
+    let mut tag_distribution: BTreeMap<String, usize> = BTreeMap::new();
+    let mut input_hasher = blake3::Hasher::new();
 
     for path in &paths {
         total_games += 1;
@@ -3694,6 +3746,9 @@ fn cmd_lineprior_export(args: LinePriorExportArgs) -> Result<()> {
                 continue;
             }
         };
+        if args.manifest.is_some() {
+            fold_file_hash(&mut input_hasher, &content);
+        }
         let source_path = path.to_string_lossy().into_owned();
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let result = match ext {
@@ -3718,16 +3773,24 @@ fn cmd_lineprior_export(args: LinePriorExportArgs) -> Result<()> {
             if args.max_ply.is_some_and(|max| raw.ply > max) {
                 continue;
             }
+            let sequence_id = split_root_key(&raw.source).to_string();
+            let outcome = raw.outcome.for_mover(raw.mover);
+            let phase = phase_from_ply(raw.ply).to_string();
+
+            sequence_ids.insert(sequence_id.clone());
+            *outcome_distribution.entry(outcome).or_insert(0) += 1;
+            *tag_distribution.entry(phase.clone()).or_insert(0) += 1;
+
             let obs = LinePriorObservation {
-                sequence_id: split_root_key(&raw.source).to_string(),
+                sequence_id,
                 step: raw.ply,
                 state: raw.sfen_before.clone(),
                 action: raw.usi_move.clone(),
-                outcome: raw.outcome.for_mover(raw.mover),
+                outcome,
                 score: None,
                 weight: 1.0,
                 source: args.source.clone(),
-                tags: vec!["shogi".to_string(), phase_from_ply(raw.ply).to_string()],
+                tags: vec!["shogi".to_string(), phase],
             };
             serde_json::to_writer(&mut writer, &obs)?;
             writer.write_all(b"\n")?;
@@ -3736,6 +3799,33 @@ fn cmd_lineprior_export(args: LinePriorExportArgs) -> Result<()> {
     }
 
     writer.flush()?;
+
+    if let Some(manifest_path) = &args.manifest {
+        let unknown_outcome_count = outcome_distribution.get("unknown").copied().unwrap_or(0);
+        let manifest = LinePriorExportManifest {
+            shogiesa_version: env!("CARGO_PKG_VERSION"),
+            git_sha: env!("SHOGIESA_GIT_SHA"),
+            input_path: args.input.display().to_string(),
+            input_hash: input_hasher.finalize().to_hex().to_string(),
+            out_path: args.out.display().to_string(),
+            source: args.source.clone(),
+            max_ply: args.max_ply,
+            state_format: args.state_format.clone(),
+            action_format: args.action_format.clone(),
+            outcome_mode: args.outcome_mode.clone(),
+            score_mode: args.score_mode.clone(),
+            games_read: total_games,
+            games_skipped: skipped_games,
+            records_exported: total_moves,
+            sequence_count: sequence_ids.len(),
+            outcome_distribution,
+            tag_distribution,
+            unknown_outcome_count,
+        };
+        fs::write(manifest_path, serde_json::to_string_pretty(&manifest)?)
+            .with_context(|| format!("cannot write {manifest_path:?}"))?;
+    }
+
     eprintln!(
         "done: {total_games} games, {total_moves} moves exported, {skipped_games} games skipped → {:?}",
         args.out

@@ -6,7 +6,7 @@ use std::path::Path;
 use csa::{Action, GameRecord};
 pub use shogiesa_core::ExtractConfig;
 use shogiesa_core::{
-    GameOutcome, PositionRecord, PositionTags, RawMove, SourceInfo, phase_from_ply,
+    GameOutcome, GameResultInfo, PositionRecord, PositionTags, RawMove, SourceInfo, phase_from_ply,
 };
 use thiserror::Error;
 use tracing::warn;
@@ -33,6 +33,27 @@ pub fn extract_from_str(
     config: &ExtractConfig,
     seen: &mut HashSet<String>,
 ) -> Result<Vec<PositionRecord>, ExtractError> {
+    // Resolved via a full-game walk (see `extract_moves_from_str`) rather than re-derived here,
+    // so game-result resolution can't drift out of sync with -- or, worse, invert the winner of --
+    // the one already-tested implementation. Independent of `config.max_ply`: the terminal action
+    // this needs to see can be well past whatever ply the position-emitting loop below truncates
+    // at.
+    //
+    // `extract_moves_from_str` propagates a mid-game board error via `?` (unlike this function's
+    // own loop below, which warns-and-breaks to keep whatever positions it collected so far) --
+    // must not let that abort this whole extraction, or a structurally-valid CSA file that hits
+    // an illegal/inconsistent move partway through would silently yield zero positions instead of
+    // the ones before the break. Degrade to `Unknown` provenance instead; `csa::parse_csa` below
+    // still surfaces a genuine structural parse error.
+    let outcome = extract_moves_from_str(content, source_path)
+        .map(|(_, o)| o)
+        .unwrap_or(GameOutcome::Unknown);
+    let result_source = if outcome == GameOutcome::Unknown {
+        "unknown"
+    } else {
+        "csa_terminal"
+    };
+
     let record: GameRecord =
         csa::parse_csa(content).map_err(|e| ExtractError::Csa(format!("{e:?}")))?;
 
@@ -83,7 +104,12 @@ pub fn extract_from_str(
                 variation_id: None,
                 branch_from_ply: None,
             };
-            out.push(PositionRecord::new(sfen, source, tags));
+            let mut rec = PositionRecord::new(sfen, source, tags);
+            rec.game_result = Some(GameResultInfo {
+                outcome,
+                result_source: result_source.to_string(),
+            });
+            out.push(rec);
         }
     }
 
@@ -96,10 +122,14 @@ pub fn extract_from_str(
 /// correct before/after pairing, and outcome resolution needs the whole game regardless of any
 /// caller-side ply truncation. CSA has no variation concept, so every returned move shares the
 /// same resolved `outcome`.
+///
+/// Also returns the resolved `GameOutcome` directly (not just backfilled onto each `RawMove`),
+/// since `extract_from_str` needs it even when this game has zero moves before its terminal
+/// action -- a case where `out` would otherwise be empty and the outcome would be lost.
 pub fn extract_moves_from_str(
     content: &str,
     source_path: &str,
-) -> Result<Vec<RawMove>, ExtractError> {
+) -> Result<(Vec<RawMove>, GameOutcome), ExtractError> {
     let record: GameRecord =
         csa::parse_csa(content).map_err(|e| ExtractError::Csa(format!("{e:?}")))?;
 
@@ -167,7 +197,7 @@ pub fn extract_moves_from_str(
     for mv in &mut out {
         mv.outcome = outcome;
     }
-    Ok(out)
+    Ok((out, outcome))
 }
 
 fn resolve_csa_outcome(action: Action, side_to_move: shogiesa_core::SideToMove) -> GameOutcome {

@@ -3,7 +3,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA_VERSION: u32 = 9;
+pub const SCHEMA_VERSION: u32 = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -64,6 +64,8 @@ pub struct PositionRecord {
     pub observations: Vec<Observation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stability: Option<StabilityInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub game_result: Option<GameResultInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,7 +90,8 @@ pub struct SourceInfo {
 
 /// Game-level result, resolved once per game from its terminal action/marker -- independent of
 /// which side is on move at any individual ply.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum GameOutcome {
     BlackWins,
     WhiteWins,
@@ -120,6 +123,22 @@ impl GameOutcome {
             }
         }
     }
+}
+
+/// Game-level WDL provenance for `PositionRecord`, separate from `Observation`-derived signals --
+/// lets a raw-vs-curated dataset comparison check whether filtering biases the dataset toward
+/// wins/losses/certain phases, which nothing in the schema exposed before this. `outcome` is
+/// intentionally NOT mover-relative (unlike `GameOutcome::for_mover`'s lineprior string) -- a
+/// caller needing mover-relative WDL calls `outcome.for_mover(tags.side_to_move)` itself, so this
+/// struct stays the single absolute source of truth instead of caching a value that could drift
+/// from `tags.side_to_move`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GameResultInfo {
+    pub outcome: GameOutcome,
+    /// Where `outcome` was resolved from: `"csa_terminal"`, `"kif_marker"`, `"match_header"`, or
+    /// `"unknown"` (no terminal was resolved -- e.g. a KIF variation-branch position, matching
+    /// `RawMove`'s existing convention of always carrying `GameOutcome::Unknown` there).
+    pub result_source: String,
 }
 
 /// One played ply from an unfiltered full-game walk: the pre-move SFEN plus the move itself.
@@ -740,6 +759,7 @@ impl PositionRecord {
             tags,
             observations: Vec::new(),
             stability: None,
+            game_result: None,
         }
     }
 
@@ -1525,5 +1545,33 @@ mod tests {
         });
         let observation: Observation = serde_json::from_value(json).unwrap();
         assert_eq!(observation.requested_depth, None);
+    }
+
+    #[test]
+    fn position_record_without_game_result_key_deserializes_to_none() {
+        // Pre-schema-v10 JSONL has no `game_result` key at all on its records. #[serde(default)]
+        // must still load it as None rather than failing to parse.
+        let json = serde_json::json!({
+            "schema_version": 9,
+            "sfen": "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+            "source": { "kind": "csa", "path": "game.csa", "ply": 10 },
+            "tags": { "phase": "opening", "side_to_move": "black", "in_check": false, "has_capture": false },
+            "observations": []
+        });
+        let record: PositionRecord = serde_json::from_value(json).unwrap();
+        assert_eq!(record.game_result, None);
+    }
+
+    #[test]
+    fn game_outcome_serializes_snake_case() {
+        for (outcome, expected) in [
+            (GameOutcome::BlackWins, "black_wins"),
+            (GameOutcome::WhiteWins, "white_wins"),
+            (GameOutcome::Draw, "draw"),
+            (GameOutcome::Unknown, "unknown"),
+        ] {
+            let serialized = serde_json::to_string(&outcome).unwrap();
+            assert_eq!(serialized, format!("\"{expected}\""));
+        }
     }
 }

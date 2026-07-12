@@ -3,7 +3,7 @@
 //! ```text
 //! Header (10 bytes):
 //!   magic[8]  = b"SHOGIESA"
-//!   version   = u16 le  (= 8)
+//!   version   = u16 le  (= 10)
 //!
 //! Record (variable, repeated until EOF):
 //!   sfen              u16le + bytes
@@ -28,6 +28,9 @@
 //!     eng_agree       u8                  [if eng_agree_tag=1]
 //!     eng_swing_tag   u8  (0=none 1=some) [if stability_tag=1]
 //!     eng_swing_cp    i32le               [if eng_swing_tag=1]
+//!   game_result_tag   u8  (0=absent 1=present)
+//!     outcome         u8  (0=black_wins 1=white_wins 2=draw 3=unknown) [if game_result_tag=1]
+//!     result_source   u8le + bytes                                    [if game_result_tag=1]
 //!   obs_count         u16le
 //!   per observation:
 //!     engine          u8le  + bytes
@@ -66,12 +69,13 @@
 use std::io::{self, Read, Write};
 
 use shogiesa_core::{
-    BestMoveKind, CandidateMove, GamePhase, Observation, PositionRecord, PositionTags,
-    SCHEMA_VERSION, Score, ScoreBound, ScorePerspective, SideToMove, SourceInfo, StabilityInfo,
+    BestMoveKind, CandidateMove, GameOutcome, GamePhase, GameResultInfo, Observation,
+    PositionRecord, PositionTags, SCHEMA_VERSION, Score, ScoreBound, ScorePerspective, SideToMove,
+    SourceInfo, StabilityInfo,
 };
 
 pub const MAGIC: &[u8; 8] = b"SHOGIESA";
-pub const FORMAT_VERSION: u16 = 9;
+pub const FORMAT_VERSION: u16 = 10;
 
 // ── write helpers ─────────────────────────────────────────────────────────────
 
@@ -245,6 +249,23 @@ pub fn encode_record(rec: &PositionRecord, w: &mut impl Write) -> io::Result<()>
                     wi32(w, v)?;
                 }
             }
+        }
+    }
+
+    match &rec.game_result {
+        None => wu8(w, 0)?,
+        Some(gr) => {
+            wu8(w, 1)?;
+            wu8(
+                w,
+                match gr.outcome {
+                    GameOutcome::BlackWins => 0,
+                    GameOutcome::WhiteWins => 1,
+                    GameOutcome::Draw => 2,
+                    GameOutcome::Unknown => 3,
+                },
+            )?;
+            ws8(w, &gr.result_source)?;
         }
     }
 
@@ -423,6 +444,23 @@ pub fn decode_record(r: &mut impl Read) -> io::Result<PositionRecord> {
         })
     };
 
+    let game_result = if ru8(r)? == 0 {
+        None
+    } else {
+        let outcome = match ru8(r)? {
+            0 => GameOutcome::BlackWins,
+            1 => GameOutcome::WhiteWins,
+            2 => GameOutcome::Draw,
+            3 => GameOutcome::Unknown,
+            _ => return Err(bad("bad game outcome")),
+        };
+        let result_source = rs8(r)?;
+        Some(GameResultInfo {
+            outcome,
+            result_source,
+        })
+    };
+
     let obs_count = ru16(r)? as usize;
     let mut observations = Vec::with_capacity(obs_count);
     for _ in 0..obs_count {
@@ -528,6 +566,7 @@ pub fn decode_record(r: &mut impl Read) -> io::Result<PositionRecord> {
         tags,
         observations,
         stability,
+        game_result,
     })
 }
 
@@ -640,6 +679,10 @@ mod tests {
                 engine_bestmove_agreement: Some(false),
                 engine_score_swing_cp: Some(60),
             }),
+            game_result: Some(GameResultInfo {
+                outcome: GameOutcome::WhiteWins,
+                result_source: "csa_terminal".to_string(),
+            }),
         }
     }
 
@@ -733,6 +776,9 @@ mod tests {
         assert!(!stab.bestmove_agreement);
         assert_eq!(stab.engine_bestmove_agreement, Some(false));
         assert_eq!(stab.engine_score_swing_cp, Some(60));
+        let gr = got.game_result.as_ref().unwrap();
+        assert_eq!(gr.outcome, GameOutcome::WhiteWins);
+        assert_eq!(gr.result_source, "csa_terminal");
     }
 
     #[test]
@@ -776,6 +822,16 @@ mod tests {
         encode(std::slice::from_ref(&rec), &mut buf).unwrap();
         let got = &decode(&mut buf.as_slice()).unwrap()[0];
         assert!(got.stability.is_none());
+    }
+
+    #[test]
+    fn no_game_result_round_trips() {
+        let mut rec = sample();
+        rec.game_result = None;
+        let mut buf = Vec::new();
+        encode(std::slice::from_ref(&rec), &mut buf).unwrap();
+        let got = &decode(&mut buf.as_slice()).unwrap()[0];
+        assert!(got.game_result.is_none());
     }
 
     #[test]

@@ -125,7 +125,7 @@ fn side_to_move_tag_matches_sfen() {
 #[test]
 fn moves_state_is_pre_move_sfen() {
     let content = std::fs::read_to_string(fixture("sample.csa")).unwrap();
-    let moves = extract_moves_from_str(&content, "sample.csa").unwrap();
+    let moves = extract_moves_from_str(&content, "sample.csa").unwrap().0;
     assert_eq!(
         moves[0].sfen_before, "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
         "first move's pre-state must be the initial position, not post-move"
@@ -137,7 +137,7 @@ fn moves_state_is_pre_move_sfen() {
 #[test]
 fn moves_toryo_resolves_outcome_and_alternates_success_failure_by_mover() {
     let content = std::fs::read_to_string(fixture("sample.csa")).unwrap();
-    let moves = extract_moves_from_str(&content, "sample.csa").unwrap();
+    let moves = extract_moves_from_str(&content, "sample.csa").unwrap().0;
     assert_eq!(moves.len(), 5);
     let expected = ["success", "failure", "success", "failure", "success"];
     for (mv, exp) in moves.iter().zip(expected) {
@@ -149,7 +149,7 @@ fn moves_toryo_resolves_outcome_and_alternates_success_failure_by_mover() {
 #[test]
 fn moves_kachi_mover_wins() {
     let csa = "V2.2\nPI\n+\n+7776FU\n%KACHI\n";
-    let moves = extract_moves_from_str(csa, "test").unwrap();
+    let moves = extract_moves_from_str(csa, "test").unwrap().0;
     // %KACHI's mover is White (Black already moved once), opposite sign from %TORYO.
     assert_eq!(moves[0].outcome, GameOutcome::WhiteWins);
     assert_eq!(moves[0].outcome.for_mover(moves[0].mover), "failure");
@@ -158,21 +158,23 @@ fn moves_kachi_mover_wins() {
 #[test]
 fn moves_sennichite_is_draw() {
     let content = std::fs::read_to_string(fixture("sample_draw.csa")).unwrap();
-    let moves = extract_moves_from_str(&content, "sample_draw.csa").unwrap();
+    let moves = extract_moves_from_str(&content, "sample_draw.csa")
+        .unwrap()
+        .0;
     assert!(moves.iter().all(|m| m.outcome == GameOutcome::Draw));
 }
 
 #[test]
 fn moves_chudan_is_unknown() {
     let csa = "V2.2\nPI\n+\n+7776FU\n%CHUDAN\n";
-    let moves = extract_moves_from_str(csa, "test").unwrap();
+    let moves = extract_moves_from_str(csa, "test").unwrap().0;
     assert_eq!(moves[0].outcome, GameOutcome::Unknown);
 }
 
 #[test]
 fn moves_no_terminal_action_is_unknown() {
     let csa = "V2.2\nPI\n+\n+7776FU\n-3334FU\n";
-    let moves = extract_moves_from_str(csa, "test").unwrap();
+    let moves = extract_moves_from_str(csa, "test").unwrap().0;
     assert!(moves.iter().all(|m| m.outcome == GameOutcome::Unknown));
 }
 
@@ -180,13 +182,114 @@ fn moves_no_terminal_action_is_unknown() {
 fn moves_promotion_is_reflected_in_usi_move() {
     // Black's bishop 8h -> 2b, explicitly promoting (CSA piece code UM = Horse).
     let csa = "V2.2\nPI\n+\n+8822UM\n%TORYO\n";
-    let moves = extract_moves_from_str(csa, "test").unwrap();
+    let moves = extract_moves_from_str(csa, "test").unwrap().0;
     assert_eq!(moves[0].usi_move, "8h2b+");
 }
 
 #[test]
 fn moves_non_promotion_has_no_plus_suffix() {
     let csa = "V2.2\nPI\n+\n+7776FU\n%TORYO\n";
-    let moves = extract_moves_from_str(csa, "test").unwrap();
+    let moves = extract_moves_from_str(csa, "test").unwrap().0;
     assert_eq!(moves[0].usi_move, "7g7f");
+}
+
+// --- extract_from_str's PositionRecord.game_result (distinct from RawMove.outcome above) ---
+//
+// Winner-polarity matters more here than a passing test count suggests: a wrong-polarity bug
+// (labeling a black win as a white win) is a plausible-looking wrong label, worse than
+// `Unknown` -- it would silently corrupt exactly the raw-vs-curated WDL diagnostic this field
+// exists to enable. `extract_from_str` resolves `game_result` by delegating to
+// `extract_moves_from_str` (see extract.rs) rather than re-deriving side-to-move parity, so these
+// tests exercise the actual wiring, not a second hand-rolled resolver.
+
+#[test]
+fn extract_from_str_attaches_black_win_game_result() {
+    let config = ExtractConfig::default();
+    let mut seen = HashSet::new();
+    let records = extract_from_path(&fixture("sample.csa"), &config, &mut seen).unwrap();
+    assert!(!records.is_empty());
+    for rec in &records {
+        let gr = rec.game_result.as_ref().unwrap();
+        assert_eq!(gr.outcome, GameOutcome::BlackWins);
+        assert_eq!(gr.result_source, "csa_terminal");
+    }
+}
+
+#[test]
+fn extract_from_str_attaches_white_win_game_result() {
+    // %KACHI's mover is White (Black already moved once) -- same fixture as moves_kachi_mover_wins.
+    let csa = "V2.2\nPI\n+\n+7776FU\n%KACHI\n";
+    let config = ExtractConfig {
+        min_ply: 1,
+        max_ply: None,
+        every_n: 1,
+        dedup: false,
+    };
+    let mut seen = HashSet::new();
+    let records = extract_from_str(csa, "test", &config, &mut seen).unwrap();
+    assert_eq!(records.len(), 1);
+    let gr = records[0].game_result.as_ref().unwrap();
+    assert_eq!(gr.outcome, GameOutcome::WhiteWins);
+    assert_eq!(gr.result_source, "csa_terminal");
+}
+
+#[test]
+fn extract_from_str_attaches_draw_game_result() {
+    let config = ExtractConfig::default();
+    let mut seen = HashSet::new();
+    let records = extract_from_path(&fixture("sample_draw.csa"), &config, &mut seen).unwrap();
+    assert!(!records.is_empty());
+    for rec in &records {
+        let gr = rec.game_result.as_ref().unwrap();
+        assert_eq!(gr.outcome, GameOutcome::Draw);
+    }
+}
+
+#[test]
+fn extract_from_str_game_result_unknown_when_no_terminal() {
+    let csa = "V2.2\nPI\n+\n+7776FU\n-3334FU\n";
+    let config = ExtractConfig {
+        min_ply: 1,
+        max_ply: None,
+        every_n: 1,
+        dedup: false,
+    };
+    let mut seen = HashSet::new();
+    let records = extract_from_str(csa, "test", &config, &mut seen).unwrap();
+    assert!(!records.is_empty());
+    for rec in &records {
+        let gr = rec.game_result.as_ref().unwrap();
+        assert_eq!(gr.outcome, GameOutcome::Unknown);
+        assert_eq!(gr.result_source, "unknown");
+    }
+}
+
+#[test]
+fn extract_from_str_keeps_positions_before_a_mid_game_board_error() {
+    // Move 1 is legal (black pawn 7g7f); move 2 references square (5,5), which is empty at that
+    // point, so applying it fails with a board error. `extract_from_str`'s own loop already
+    // warns-and-breaks on this (keeping move 1's position), but `game_result` resolution now goes
+    // through `extract_moves_from_str`, which propagates this same error via `?` -- must not let
+    // that empty out the whole extraction.
+    let csa = "V2.2\nPI\n+\n+7776FU\n+5555FU\n%TORYO\n";
+    let config = ExtractConfig {
+        min_ply: 1,
+        max_ply: None,
+        every_n: 1,
+        dedup: false,
+    };
+    let mut seen = HashSet::new();
+    let records = extract_from_str(csa, "test", &config, &mut seen).unwrap();
+    assert_eq!(
+        records.len(),
+        1,
+        "move 1's position must survive move 2's board error, not be swallowed by it"
+    );
+    let gr = records[0].game_result.as_ref().unwrap();
+    assert_eq!(
+        gr.outcome,
+        GameOutcome::Unknown,
+        "a failed outcome-resolution walk degrades to Unknown rather than aborting extraction"
+    );
+    assert_eq!(gr.result_source, "unknown");
 }

@@ -259,10 +259,16 @@ instead of wasting two quota slots on an identical opening. Each output SFEN is 
 same parser `label`/`filter` use before being written, so a malformed input line is skipped
 (`invalid_sfen`) rather than handed to an external match-runner as-is.
 
+A syntactically valid SFEN can still be useless for gating if the side to move has zero legal
+moves (a checkmate/stalemate-adjacent terminal position) — these are dropped by default
+(`unplayable`), since an external match runner needs a playable starting position, not a game-over
+one. Legality is checked via `shogi_core`/`shogi_usi_parser`/`shogi_legality_lite`, not shogiesa's
+own move logic. Pass `--allow-unplayable` to keep them anyway.
+
 `--manifest` reports `distinct_roots_kept` and `max_root_share_in_any_bucket` (reused verbatim from
 `stratify`, reinterpreted here as the largest fraction of the whole suite contributed by any single
 source game) alongside the usual drop-reason breakdown (`invalid_sfen`, `below_min_ply`,
-`above_max_ply`, `duplicate_sfen`, `over_count`).
+`above_max_ply`, `unplayable`, `duplicate_sfen`, `over_count`).
 
 Producing this file is the easy part; whether it actually improves gate accuracy on Sekirei's own
 side (tighter Elo CIs, less opening-side bias, less single-root dominance) is a separate, external
@@ -564,7 +570,9 @@ Extracts positions around large eval swings (blunders) and/or a `--losing-thresh
 shogiesa balance --input positions.jsonl --by phase --by side --out balanced.jsonl
 ```
 
-Buckets by `phase`/`side`/`eval-bucket` and takes an equal number from each bucket. `eval-bucket`
+Buckets by `phase`/`side`/`eval-bucket`/`wdl` and takes an equal number from each bucket. `wdl` is
+mover-relative (`success`/`failure`/`draw`/`unknown`) — see the `game_result` schema note below.
+`eval-bucket`
 buckets on Black-perspective cp, so the same absolute outcome (e.g. "Black is winning by 300")
 lands in the same bucket regardless of whose turn the position was. Reads its input twice (once to
 tally each bucket's size, since `--target` defaults to the smallest bucket's size; once to rank)
@@ -582,7 +590,8 @@ shogiesa stratify --input positions.jsonl --quota quota.json --out stratified.js
 ```
 
 Unlike `balance` (one uniform `--target` applied to every bucket), `stratify` reads a *different*
-target count per phase/side/eval-bucket combination from a JSON quota file, and is *group-aware*:
+target count per phase/side/eval-bucket/wdl combination from a JSON quota file, and is
+*group-aware*:
 when a bucket must be downsampled, the kept subset spreads across distinct source games/roots
 (the same `root_id`-or-path-derived key `split --train/--valid/--test` uses for leakage safety)
 instead of concentrating on whichever root's positions happen to sort first — the concern being a
@@ -737,9 +746,10 @@ distinct engines) an engine-disagreement rate, a special-bestmove rate (fraction
 positions with at least one `resign`/`win`/`none` observation — excluded from both disagreement
 rates above, not counted as either agreement or disagreement), (when `label --multipv N` (N≥2)
 was used) MultiPV-candidate coverage and a separate `score_bound` distribution scoped to those
-candidates, and (when any observation has a recorded `requested_depth`) a requested-depth
-underreach rate. Streams its input in a single pass and never materializes the record set; memory
-scales with distinct SFEN/source-file count, not total records.
+candidates, (when any observation has a recorded `requested_depth`) a requested-depth underreach
+rate, and a mover-relative WDL distribution (from `game_result`, see the JSONL schema section).
+Streams its input in a single pass and never materializes the record set; memory scales with
+distinct SFEN/source-file count, not total records.
 
 ### `distribution` — bucket-coverage diagnostic
 
@@ -756,7 +766,7 @@ silently absent. Not named `coverage` — that word is already used for `select 
 (ranks existing records by thin-bucket membership, for re-labeling) and separately for MultiPV/
 quality-gate pass-rate coverage (`report`/`calibrate`/`audit`/`tune`); this command means neither.
 
-Three sections: **phase × side × eval-bucket coverage** (reuses the same `bucket_key` bucketing
+Four sections: **phase × side × eval-bucket coverage** (reuses the same `bucket_key` bucketing
 `balance`/`select --strategy coverage` already use, so the bucket notion can't drift — every 200cp
 bucket within the observed span is enumerated per phase/side pair, plus the `mate`/`unlabeled`
 sentinel cells crossed with every phase/side pair; a cp span wider than 50 buckets (±5000cp) falls
@@ -765,10 +775,13 @@ table or silently misrepresent an anomalous engine score range as fully covered)
 (histogram, bucket width via `--ply-bucket-size`, same missing-bucket detection); **source-root
 distribution** (distinct-root count and dominance %, grouped via the same `root_id`-aware key
 `split --train/--valid/--test` uses for leakage safety — unlike `report`'s own source stat, which
-groups by raw file path and so counts a game's mainline and its variations as separate sources).
-Present buckets are also flagged `UNDER`/`OVER` relative to the mean bucket count
-(`--under-ratio`/`--over-ratio`, defaults 0.5/2.0). Diagnostic only — no `--out`/`--manifest`, same
-shape as `report`.
+groups by raw file path and so counts a game's mainline and its variations as separate sources);
+and **wdl distribution** (mover-relative count/percentage per `game_result` category — a simple 1-D
+tally, not a zero-count enumeration like the eval-bucket grid above, since WDL's
+win/loss/draw/unknown categories are inherently unbalanced rather than expected-uniform). Present
+buckets are also flagged `UNDER`/`OVER` relative to the mean bucket count (`--under-ratio`/
+`--over-ratio`, defaults 0.5/2.0, not applied to the wdl tally). Diagnostic only — no
+`--out`/`--manifest`, same shape as `report`.
 
 ### `validate` — data integrity
 
@@ -783,12 +796,16 @@ Checks: broken JSON, invalid SFENs, duplicate SFENs, `side_to_move` tag vs SFEN 
 
 ```json
 {
-  "schema_version": 9,
+  "schema_version": 10,
   "sfen": "lnsgkgsnl/1r5b1/p1ppppppp/1p7/9/2P6/PP1PPPPPP/1B5R1/LNSGKGSNL b - 2",
   "source": {
     "kind": "csa",
     "path": "games/example.csa",
     "ply": 24
+  },
+  "game_result": {
+    "outcome": "black_wins",
+    "result_source": "csa_terminal"
   },
   "tags": {
     "phase": "middlegame",
@@ -859,6 +876,17 @@ exempts a salvaged mate score from its usual depth check unless
 `root_id` is shared by the mainline and every variation branching from it (the mainline's own
 `path`); `variation_id`/`branch_from_ply` are `null` on the mainline itself. All three are absent
 on CSA-extracted positions (no variation concept) and on JSONL predating this field.
+
+`game_result` is game-level win/draw/loss provenance: `outcome`
+(`black_wins`/`white_wins`/`draw`/`unknown`) is always black-relative and absolute, *not*
+mover-relative — a consumer wanting mover-relative WDL (`success`/`failure`/`draw`/`unknown`, the
+same convention `lineprior export`'s `outcome` field already uses; see the outcome caveats below)
+derives it themselves via `for_mover(side_to_move)`, rather than shogiesa storing a second,
+derivable field that could drift from `tags.side_to_move`. `result_source` records where `outcome`
+came from: `csa_terminal`, `kif_marker`, `match_header`, or `unknown` (no terminal was resolved —
+e.g. every KIF variation-branch position, whose own terminal isn't the actual game's result).
+`game_result` is `null`/absent on JSONL predating this field and on any source `extract`/`from-match`
+couldn't resolve a terminal for.
 
 ## Pipeline
 

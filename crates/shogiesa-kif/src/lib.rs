@@ -3,8 +3,8 @@ use std::fs;
 use std::path::Path;
 
 use shogiesa_core::{
-    Board, ExtractConfig, GameOutcome, PositionRecord, PositionTags, RawMove, SideToMove,
-    SourceInfo, UsiMove, board::PieceType, phase_from_ply,
+    Board, ExtractConfig, GameOutcome, GameResultInfo, PositionRecord, PositionTags, RawMove,
+    SideToMove, SourceInfo, UsiMove, board::PieceType, phase_from_ply,
 };
 use thiserror::Error;
 use tracing::warn;
@@ -231,6 +231,26 @@ pub fn extract_from_str(
     config: &ExtractConfig,
     seen: &mut HashSet<String>,
 ) -> Result<Vec<PositionRecord>, KifError> {
+    // Resolved via a full-game walk (see `extract_moves_from_str`) rather than re-derived here,
+    // so game-result resolution can't drift out of sync with -- or, worse, invert the winner of --
+    // the one already-tested implementation. Independent of `config.max_ply`: the terminal marker
+    // this needs to see can be well past whatever ply the position-emitting loop below truncates
+    // the mainline at.
+    //
+    // Degrades to `Unknown` provenance rather than propagating a failed walk (mirrors the CSA
+    // extractor's identical guard) -- this function's own loop below is deliberately lenient
+    // about mid-game errors (warns and stops just that block, keeping positions already
+    // collected), and an unsupported-handicap error is the one case both functions already fail
+    // on identically, so nothing is lost.
+    let outcome = extract_moves_from_str(content, source_path)
+        .map(|(_, o)| o)
+        .unwrap_or(GameOutcome::Unknown);
+    let mainline_result_source = if outcome == GameOutcome::Unknown {
+        "unknown"
+    } else {
+        "kif_marker"
+    };
+
     let mut board = Board::initial(SideToMove::Black);
     let mut out = Vec::new();
     let mut ply: u32 = 0;
@@ -441,7 +461,21 @@ pub fn extract_from_str(
             variation_id: current_variation_id.clone(),
             branch_from_ply: current_branch_from_ply,
         };
-        out.push(PositionRecord::new(sfen, source, tags));
+        let mut rec = PositionRecord::new(sfen, source, tags);
+        rec.game_result = if is_mainline {
+            Some(GameResultInfo {
+                outcome,
+                result_source: mainline_result_source.to_string(),
+            })
+        } else {
+            // A variation branch's own terminal (if any) isn't the actual game's result --
+            // matches the convention `RawMove.outcome` already uses for variation moves.
+            Some(GameResultInfo {
+                outcome: GameOutcome::Unknown,
+                result_source: "unknown".to_string(),
+            })
+        };
+        out.push(rec);
     }
 
     Ok(out)
@@ -512,7 +546,14 @@ fn resolve_kif_terminal(
 /// terminal marker instead of just stopping. Variation-branch moves always carry
 /// `GameOutcome::Unknown` -- a branch's own terminal text (if any) isn't the actual game's
 /// result -- but are still emitted and still share the mainline's `root_id`.
-pub fn extract_moves_from_str(content: &str, source_path: &str) -> Result<Vec<RawMove>, KifError> {
+/// Also returns the resolved mainline `GameOutcome` directly (not just backfilled onto each
+/// `RawMove`), since `extract_from_str` needs it even when the mainline has zero moves before its
+/// terminal marker -- a case where `out`'s mainline prefix would otherwise be empty and the
+/// outcome would be lost.
+pub fn extract_moves_from_str(
+    content: &str,
+    source_path: &str,
+) -> Result<(Vec<RawMove>, GameOutcome), KifError> {
     let mut board = Board::initial(SideToMove::Black);
     let mut out: Vec<RawMove> = Vec::new();
     let mut ply: u32 = 0;
@@ -721,7 +762,7 @@ pub fn extract_moves_from_str(content: &str, source_path: &str) -> Result<Vec<Ra
     for mv in out.iter_mut().take(mainline_move_count) {
         mv.outcome = outcome;
     }
-    Ok(out)
+    Ok((out, outcome))
 }
 
 #[cfg(test)]

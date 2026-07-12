@@ -2297,6 +2297,9 @@ side to move:
   black             3  (37.5%)
   white             5  (62.5%)
 
+wdl distribution (mover-relative):
+  unknown           8  (100.0%)
+
 tag ratios:
   in-check            0  (0.0%)
   capture             2  (25.0%)
@@ -7165,6 +7168,159 @@ fn make_gate_openings_manifest_reports_root_diversity_stats() {
     assert!(
         (manifest["max_root_share_in_any_bucket"].as_f64().unwrap() - (1.0 / 3.0)).abs() < 1e-9
     );
+}
+
+/// Like `gate_record`, but with a caller-chosen `sfen` instead of the fixed standard-position
+/// board -- needed for the unplayable-position tests below, which must inject a real
+/// zero-legal-move SFEN rather than vary the standard board's `hand`.
+fn gate_record_with_sfen(sfen: &str, path: &str, ply: u32) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "sfen": sfen,
+        "source": { "kind": "csa", "path": path, "ply": ply },
+        "tags": { "phase": "opening", "side_to_move": "black", "in_check": false, "has_capture": false },
+        "observations": []
+    })
+}
+
+/// One of the shortest mate sequences from startpos, verified against
+/// `shogi_legality_lite`'s own `status_partial_works` test (which asserts the side to move here
+/// -- White -- is checkmated, i.e. has zero legal moves).
+const UNPLAYABLE_MATE_SFEN: &str =
+    "lnsg1gsnl/5rkb1/ppppppp+Pp/9/9/9/PPPPPPP1P/1B5R1/LNSGKGSNL w P 8";
+
+#[test]
+fn make_gate_openings_keeps_playable_position() {
+    let input = make_labeled_jsonl(&[gate_record("P", "game.csa", 10)]);
+    let out = NamedTempFile::new().unwrap();
+    let manifest = NamedTempFile::new().unwrap();
+
+    shogiesa()
+        .args([
+            "make-gate-openings",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--count",
+            "10",
+            "--min-ply",
+            "1",
+            "--manifest",
+            manifest.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let sfens = gate_sfens_in_order(&std::fs::read_to_string(out.path()).unwrap());
+    assert_eq!(sfens.len(), 1);
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest.path()).unwrap()).unwrap();
+    assert_eq!(manifest["drop_reasons"]["unplayable"], 0);
+}
+
+#[test]
+fn make_gate_openings_drops_unplayable_position_by_default() {
+    let input = make_labeled_jsonl(&[
+        gate_record("P", "gameA.csa", 10),
+        gate_record_with_sfen(UNPLAYABLE_MATE_SFEN, "gameB.csa", 8),
+    ]);
+    let out = NamedTempFile::new().unwrap();
+
+    shogiesa()
+        .args([
+            "make-gate-openings",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--count",
+            "10",
+            "--min-ply",
+            "1",
+        ])
+        .assert()
+        .success();
+
+    let sfens = gate_sfens_in_order(&std::fs::read_to_string(out.path()).unwrap());
+    assert!(
+        !sfens.iter().any(|s| s == UNPLAYABLE_MATE_SFEN),
+        "the zero-legal-move SFEN must be dropped by default: {sfens:?}"
+    );
+    assert_eq!(
+        sfens.len(),
+        1,
+        "only the playable record survives: {sfens:?}"
+    );
+}
+
+#[test]
+fn make_gate_openings_manifest_reports_unplayable_count() {
+    let input = make_labeled_jsonl(&[
+        gate_record("P", "gameA.csa", 10),
+        gate_record_with_sfen(UNPLAYABLE_MATE_SFEN, "gameB.csa", 8),
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    let manifest = NamedTempFile::new().unwrap();
+
+    shogiesa()
+        .args([
+            "make-gate-openings",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--count",
+            "10",
+            "--min-ply",
+            "1",
+            "--manifest",
+            manifest.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest.path()).unwrap()).unwrap();
+    assert_eq!(manifest["drop_reasons"]["unplayable"], 1);
+}
+
+#[test]
+fn make_gate_openings_allow_unplayable_keeps_zero_legal_move_position() {
+    let input = make_labeled_jsonl(&[
+        gate_record("P", "gameA.csa", 10),
+        gate_record_with_sfen(UNPLAYABLE_MATE_SFEN, "gameB.csa", 8),
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    let manifest = NamedTempFile::new().unwrap();
+
+    shogiesa()
+        .args([
+            "make-gate-openings",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--count",
+            "10",
+            "--min-ply",
+            "1",
+            "--allow-unplayable",
+            "--manifest",
+            manifest.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let sfens = gate_sfens_in_order(&std::fs::read_to_string(out.path()).unwrap());
+    assert_eq!(
+        sfens.len(),
+        2,
+        "both records kept with --allow-unplayable: {sfens:?}"
+    );
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest.path()).unwrap()).unwrap();
+    assert_eq!(manifest["drop_reasons"]["unplayable"], 0);
 }
 
 // --- lineprior export ---

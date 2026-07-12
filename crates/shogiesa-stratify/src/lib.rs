@@ -44,10 +44,16 @@ pub fn eval_bucket_of(rec: &PositionRecord) -> EvalBucket {
         .unwrap_or(EvalBucket::Unlabeled)
 }
 
-/// Composite phase/side/eval-bucket key for one record. Shared by every caller that needs "which
-/// bucket is this record in" (balance, stratify, select --strategy coverage, distribution) so
-/// their notion of "bucket" can never drift apart.
-pub fn bucket_key(rec: &PositionRecord, by_phase: bool, by_side: bool, by_eval: bool) -> String {
+/// Composite phase/side/eval-bucket/wdl key for one record. Shared by every caller that needs
+/// "which bucket is this record in" (balance, stratify, select --strategy coverage, distribution)
+/// so their notion of "bucket" can never drift apart.
+pub fn bucket_key(
+    rec: &PositionRecord,
+    by_phase: bool,
+    by_side: bool,
+    by_eval: bool,
+    by_wdl: bool,
+) -> String {
     let mut key = String::new();
     if by_phase {
         key.push_str(&format!("{}:", rec.tags.phase));
@@ -57,6 +63,9 @@ pub fn bucket_key(rec: &PositionRecord, by_phase: bool, by_side: bool, by_eval: 
     }
     if by_eval {
         key.push_str(&format!("{}:", eval_bucket_of(rec)));
+    }
+    if by_wdl {
+        key.push_str(&format!("{}:", feature_wdl(rec)));
     }
     key
 }
@@ -75,6 +84,19 @@ pub fn feature_eval_bucket(rec: &PositionRecord) -> String {
 
 pub fn feature_ply_bin(rec: &PositionRecord, bucket_size: u32) -> u32 {
     bucket_floor(rec.source.ply, bucket_size)
+}
+
+/// Mover-relative WDL label for stratification -- `"success"`/`"failure"`/`"draw"`/`"unknown"`,
+/// matching `GameOutcome::for_mover`'s existing lineprior-string convention (the README's
+/// "outcome is a weak game-result signal" framing applies here too). `"unknown"` covers both a
+/// genuinely unresolved game result and a record with no `game_result` at all (pre-schema-v10
+/// JSONL, or a KIF variation-branch position) -- both mean "no WDL signal", so collapsing them is
+/// intentional, not a loss of information a caller could otherwise use.
+pub fn feature_wdl(rec: &PositionRecord) -> &'static str {
+    rec.game_result
+        .as_ref()
+        .map(|gr| gr.outcome.for_mover(rec.tags.side_to_move))
+        .unwrap_or("unknown")
 }
 
 /// The grouping key used to keep a game's mainline and its variations in the same sampling
@@ -207,6 +229,22 @@ mod tests {
     fn feature_ply_bin_floors_to_bucket_size() {
         let rec = record_at(GamePhase::Endgame, SideToMove::White, 47, None, "g.csa");
         assert_eq!(feature_ply_bin(&rec, 20), 40);
+    }
+
+    #[test]
+    fn feature_wdl_returns_success_for_winning_mover() {
+        let mut rec = record_at(GamePhase::Opening, SideToMove::Black, 5, None, "g.csa");
+        rec.game_result = Some(shogiesa_core::GameResultInfo {
+            outcome: shogiesa_core::GameOutcome::BlackWins,
+            result_source: "csa_terminal".to_string(),
+        });
+        assert_eq!(feature_wdl(&rec), "success");
+    }
+
+    #[test]
+    fn feature_wdl_returns_unknown_when_game_result_absent() {
+        let rec = record_at(GamePhase::Opening, SideToMove::Black, 5, None, "g.csa");
+        assert_eq!(feature_wdl(&rec), "unknown");
     }
 
     #[test]

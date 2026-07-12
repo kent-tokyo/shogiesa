@@ -315,7 +315,7 @@ fn variation_past_max_ply_does_not_abort_later_siblings() {
 #[test]
 fn moves_state_is_pre_move_sfen() {
     let content = std::fs::read_to_string(fixture("sample.kif")).unwrap();
-    let moves = extract_moves_from_str(&content, "sample.kif").unwrap();
+    let moves = extract_moves_from_str(&content, "sample.kif").unwrap().0;
     assert_eq!(
         moves[0].sfen_before, "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
         "first move's pre-state must be the initial position, not post-move"
@@ -326,7 +326,7 @@ fn moves_state_is_pre_move_sfen() {
 #[test]
 fn moves_toryo_and_summary_line_agree_and_alternate_by_mover() {
     let content = std::fs::read_to_string(fixture("sample.kif")).unwrap();
-    let moves = extract_moves_from_str(&content, "sample.kif").unwrap();
+    let moves = extract_moves_from_str(&content, "sample.kif").unwrap().0;
     assert_eq!(moves.len(), 5);
     let expected = ["success", "failure", "success", "failure", "success"];
     for (mv, exp) in moves.iter().zip(expected) {
@@ -339,21 +339,21 @@ fn moves_toryo_and_summary_line_agree_and_alternate_by_mover() {
 fn moves_promotion_is_reflected_in_usi_move() {
     // Ply 3, "２二角成(88)", is an explicit promotion in this fixture.
     let content = std::fs::read_to_string(fixture("sample.kif")).unwrap();
-    let moves = extract_moves_from_str(&content, "sample.kif").unwrap();
+    let moves = extract_moves_from_str(&content, "sample.kif").unwrap().0;
     assert_eq!(moves[2].usi_move, "8h2b+");
 }
 
 #[test]
 fn moves_jishogi_is_draw() {
     let kif = "手合割：平手\n先手：A\n後手：B\n手数----指手\n   1 ７六歩(77)   (0:01/0)\n持将棋\n";
-    let moves = extract_moves_from_str(kif, "test.kif").unwrap();
+    let moves = extract_moves_from_str(kif, "test.kif").unwrap().0;
     assert_eq!(moves[0].outcome, GameOutcome::Draw);
 }
 
 #[test]
 fn moves_chudan_is_unknown() {
     let kif = "手合割：平手\n先手：A\n後手：B\n手数----指手\n   1 ７六歩(77)   (0:01/0)\n中断\n";
-    let moves = extract_moves_from_str(kif, "test.kif").unwrap();
+    let moves = extract_moves_from_str(kif, "test.kif").unwrap().0;
     assert_eq!(moves[0].outcome, GameOutcome::Unknown);
 }
 
@@ -363,7 +363,9 @@ fn moves_handicap_first_mover_is_not_hardcoded_to_black() {
     // 勝ち", names Black ("Lower") the winner -- 先手/後手 track move ORDER, not a fixed color,
     // so resolving this correctly requires knowing White moved first in this game.
     let content = std::fs::read_to_string(fixture("sample_handicap.kif")).unwrap();
-    let moves = extract_moves_from_str(&content, "sample_handicap.kif").unwrap();
+    let moves = extract_moves_from_str(&content, "sample_handicap.kif")
+        .unwrap()
+        .0;
     assert_eq!(moves.len(), 2);
     assert_eq!(moves[0].mover, SideToMove::White);
     assert_eq!(moves[0].outcome, GameOutcome::BlackWins);
@@ -377,7 +379,7 @@ fn moves_variation_branch_outcome_is_unknown_but_shares_sequence_root() {
     let kif = "手合割：平手\n先手：A\n後手：B\n手数----指手\n\
    1 ７六歩(77)   (0:01/0)\n   2 ３四歩(33)   (0:01/0)\nまで2手で先手の勝ち\n\
 \n変化：2手\n   2 ８四歩(83)   (0:01/0)\n   3 ７八金(69)   (0:01/0)\n";
-    let moves = extract_moves_from_str(kif, "var.kif").unwrap();
+    let moves = extract_moves_from_str(kif, "var.kif").unwrap().0;
     let mainline: Vec<_> = moves
         .iter()
         .filter(|m| m.source.path == "var.kif")
@@ -406,4 +408,113 @@ fn jsonl_roundtrip() {
         assert_eq!(back.sfen, rec.sfen);
         assert_eq!(back.schema_version, shogiesa_core::SCHEMA_VERSION);
     }
+}
+
+// --- extract_from_str's PositionRecord.game_result (distinct from RawMove.outcome above) ---
+//
+// Winner-polarity matters more here than a passing test count suggests: a wrong-polarity bug
+// (labeling a black win as a white win) is a plausible-looking wrong label, worse than
+// `Unknown` -- it would silently corrupt exactly the raw-vs-curated WDL diagnostic this field
+// exists to enable. `extract_from_str` resolves `game_result` by delegating to
+// `extract_moves_from_str` (see lib.rs) rather than re-deriving side-to-move parity, so these
+// tests exercise the actual wiring, not a second hand-rolled resolver.
+
+#[test]
+fn extract_from_str_attaches_black_win_game_result() {
+    let config = ExtractConfig::default();
+    let mut seen = HashSet::new();
+    let records = extract_from_path(&fixture("sample.kif"), &config, &mut seen).unwrap();
+    assert!(!records.is_empty());
+    for rec in &records {
+        let gr = rec.game_result.as_ref().unwrap();
+        assert_eq!(gr.outcome, GameOutcome::BlackWins);
+        assert_eq!(gr.result_source, "kif_marker");
+    }
+}
+
+#[test]
+fn extract_from_str_attaches_white_win_game_result() {
+    // Standard (non-handicap) game: first_mover = Black, so "後手の勝ち" names White the winner.
+    let kif = "手合割：平手\n先手：A\n後手：B\n手数----指手\n   1 ７六歩(77)   (0:01/0)\nまで1手で後手の勝ち\n";
+    let config = ExtractConfig {
+        min_ply: 1,
+        max_ply: None,
+        every_n: 1,
+        dedup: false,
+    };
+    let mut seen = HashSet::new();
+    let records = extract_from_str(kif, "test.kif", &config, &mut seen).unwrap();
+    assert_eq!(records.len(), 1);
+    let gr = records[0].game_result.as_ref().unwrap();
+    assert_eq!(gr.outcome, GameOutcome::WhiteWins);
+    assert_eq!(gr.result_source, "kif_marker");
+}
+
+#[test]
+fn extract_from_str_handicap_game_result_uses_move_order_not_fixed_color() {
+    // Same fixture as moves_handicap_first_mover_is_not_hardcoded_to_black: White moves first
+    // (飛車落ち), and "後手の勝ち" (Black wins) requires knowing move order, not a fixed color.
+    let config = ExtractConfig::default();
+    let mut seen = HashSet::new();
+    let records = extract_from_path(&fixture("sample_handicap.kif"), &config, &mut seen).unwrap();
+    assert!(!records.is_empty());
+    for rec in &records {
+        assert_eq!(
+            rec.game_result.as_ref().unwrap().outcome,
+            GameOutcome::BlackWins
+        );
+    }
+}
+
+#[test]
+fn extract_from_str_attaches_draw_game_result() {
+    let kif = "手合割：平手\n先手：A\n後手：B\n手数----指手\n   1 ７六歩(77)   (0:01/0)   (0:01/0)\n持将棋\n";
+    let config = ExtractConfig {
+        min_ply: 1,
+        max_ply: None,
+        every_n: 1,
+        dedup: false,
+    };
+    let mut seen = HashSet::new();
+    let records = extract_from_str(kif, "test.kif", &config, &mut seen).unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        records[0].game_result.as_ref().unwrap().outcome,
+        GameOutcome::Draw
+    );
+}
+
+#[test]
+fn extract_from_str_variation_branch_game_result_is_unknown() {
+    let kif = "手合割：平手\n先手：A\n後手：B\n手数----指手\n\
+   1 ７六歩(77)   (0:01/0)\n   2 ３四歩(33)   (0:01/0)\nまで2手で先手の勝ち\n\
+\n変化：2手\n   2 ８四歩(83)   (0:01/0)\n   3 ７八金(69)   (0:01/0)\n";
+    let config = ExtractConfig {
+        min_ply: 1,
+        max_ply: None,
+        every_n: 1,
+        dedup: false,
+    };
+    let mut seen = HashSet::new();
+    let records = extract_from_str(kif, "var.kif", &config, &mut seen).unwrap();
+    let mainline: Vec<_> = records
+        .iter()
+        .filter(|r| r.source.path == "var.kif")
+        .collect();
+    let variation: Vec<_> = records
+        .iter()
+        .filter(|r| r.source.path == "var.kif#var1@2")
+        .collect();
+    assert!(!mainline.is_empty());
+    assert!(!variation.is_empty());
+    assert!(
+        mainline
+            .iter()
+            .all(|r| r.game_result.as_ref().unwrap().outcome == GameOutcome::BlackWins)
+    );
+    assert!(
+        variation
+            .iter()
+            .all(|r| r.game_result.as_ref().unwrap().outcome == GameOutcome::Unknown)
+    );
 }

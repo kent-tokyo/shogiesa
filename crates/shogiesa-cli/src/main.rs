@@ -11,11 +11,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 
 use shogiesa_core::{
-    Board, GamePhase, Observation, PositionRecord, PositionTags, QualityConfig, QualityDecision,
-    SCHEMA_VERSION, Score, ScorePerspective, SideToMove, SourceInfo, UsiMove, bestmove_agreement,
-    cp_from_black_perspective, effective_bestmove_kind, engine_bestmove_agreement,
-    evaluate_quality, has_special_bestmove, parse_usi_move, phase_from_ply,
-    requested_depth_underreached, score_swing, sfen::Sfen, zobrist_from_sfen,
+    Board, GameOutcome, GamePhase, GameResultInfo, Observation, PositionRecord, PositionTags,
+    QualityConfig, QualityDecision, SCHEMA_VERSION, Score, ScorePerspective, SideToMove,
+    SourceInfo, UsiMove, bestmove_agreement, cp_from_black_perspective, effective_bestmove_kind,
+    engine_bestmove_agreement, evaluate_quality, has_special_bestmove, parse_usi_move,
+    phase_from_ply, requested_depth_underreached, score_swing, sfen::Sfen, zobrist_from_sfen,
 };
 use shogiesa_pack as pack;
 use shogiesa_stratify::{EvalBucket, bucket_key, eval_bucket_of};
@@ -55,7 +55,7 @@ enum Commands {
     Sample(SampleArgs),
     /// Mine hard positions (blunders, losing positions) from labeled data
     Mine(MineArgs),
-    /// Balance dataset distribution by phase / side / eval-bucket
+    /// Balance dataset distribution by phase / side / eval-bucket / wdl
     Balance(BalanceArgs),
     /// Quota-based sampling to a per-bucket target distribution (unlike `balance`'s single
     /// uniform target), group-aware so one source game/root can't dominate a bucket's fill.
@@ -400,7 +400,7 @@ struct BalanceArgs {
     /// Output JSONL file
     #[arg(short, long)]
     out: PathBuf,
-    /// Dimension(s) to balance by: phase, side, eval-bucket (repeatable)
+    /// Dimension(s) to balance by: phase, side, eval-bucket, wdl (repeatable)
     #[arg(long = "by", value_name = "DIMENSION")]
     by: Vec<String>,
     /// Target per bucket; defaults to the smallest bucket's count
@@ -421,7 +421,7 @@ struct StratifyArgs {
     /// desired per-bucket targets, then feed the file to --quota.
     #[arg(long, conflicts_with_all = ["quota", "out", "manifest"])]
     write_template: Option<PathBuf>,
-    /// Dimension(s) to bucket by when writing a template: phase, side, eval-bucket (repeatable,
+    /// Dimension(s) to bucket by when writing a template: phase, side, eval-bucket, wdl (repeatable,
     /// same tokens as `balance --by`). Write-template-only -- `--quota` reads this from the quota
     /// file's own "by" field instead, so a stale/mismatched --by can never be passed at apply
     /// time.
@@ -470,6 +470,10 @@ struct MakeGateOpeningsArgs {
     /// this path
     #[arg(long)]
     manifest: Option<PathBuf>,
+    /// Keep positions where the side to move has zero legal moves (checkmate/stalemate-adjacent
+    /// terminal positions) instead of dropping them. Off by default.
+    #[arg(long)]
+    allow_unplayable: bool,
 }
 
 #[derive(clap::Args)]
@@ -1071,12 +1075,110 @@ fn collect_match_kifu_paths(input: &Path) -> Result<Vec<PathBuf>> {
 /// Parses one Sekirei match-runner kifu `.txt` file's header lines (everything before the
 /// `position ...` line). Unrecognized lines are ignored, not errors -- forward-compatible with
 /// extra headers the match-runner might add later.
-fn parse_match_kifu_header(line: &str, result: &mut Option<MatchResult>) {
-    match line.trim() {
+///
+/// Also captures each engine slot's color from its own header line (e.g. `# Engine1: ... (Black)`
+/// -- present in every match-runner kifu today, previously parsed for identity only). Needed to
+/// translate `MatchResult` (engine-slot-relative) into `GameOutcome` (color-absolute) for
+/// `game_result` provenance -- distinct from `match_qualifies`'s existing candidate/baseline
+/// reasoning, which stays engine-slot-relative and is unaffected by this.
+fn parse_match_kifu_header(
+    line: &str,
+    result: &mut Option<MatchResult>,
+    engine1_color: &mut Option<SideToMove>,
+    engine2_color: &mut Option<SideToMove>,
+) {
+    let line = line.trim();
+    if let Some(rest) = line.strip_prefix("# Engine1:") {
+        if rest.trim_end().ends_with("(Black)") {
+            *engine1_color = Some(SideToMove::Black);
+        } else if rest.trim_end().ends_with("(White)") {
+            *engine1_color = Some(SideToMove::White);
+        }
+        return;
+    }
+    if let Some(rest) = line.strip_prefix("# Engine2:") {
+        if rest.trim_end().ends_with("(Black)") {
+            *engine2_color = Some(SideToMove::Black);
+        } else if rest.trim_end().ends_with("(White)") {
+            *engine2_color = Some(SideToMove::White);
+        }
+        return;
+    }
+    match line {
         "# Result: Engine1 Win" => *result = Some(MatchResult::Engine1Win),
         "# Result: Engine2 Win" => *result = Some(MatchResult::Engine2Win),
         "# Result: Draw" => *result = Some(MatchResult::Draw),
         _ => {}
+    }
+}
+
+/// Translates a match-runner-relative `MatchResult` plus each engine's own color into a
+/// color-absolute `GameOutcome`, for `game_result` provenance. `None` if either engine's color
+/// wasn't parsed from the header -- defensive: the real match-runner format always has both, but
+/// this must not panic on a malformed or foreign kifu file.
+fn match_result_to_game_outcome(
+    result: MatchResult,
+    engine1_color: Option<SideToMove>,
+    engine2_color: Option<SideToMove>,
+) -> Option<GameOutcome> {
+    let wins = |color: SideToMove| match color {
+        SideToMove::Black => GameOutcome::BlackWins,
+        SideToMove::White => GameOutcome::WhiteWins,
+    };
+    match result {
+        MatchResult::Draw => Some(GameOutcome::Draw),
+        MatchResult::Engine1Win => engine1_color.map(wins),
+        MatchResult::Engine2Win => engine2_color.map(wins),
+    }
+}
+
+#[cfg(test)]
+mod match_result_to_game_outcome_tests {
+    use super::{GameOutcome, MatchResult, SideToMove, match_result_to_game_outcome};
+
+    #[test]
+    fn engine1_win_black_is_black_wins() {
+        assert_eq!(
+            match_result_to_game_outcome(
+                MatchResult::Engine1Win,
+                Some(SideToMove::Black),
+                Some(SideToMove::White)
+            ),
+            Some(GameOutcome::BlackWins)
+        );
+    }
+
+    #[test]
+    fn engine2_win_white_is_black_wins() {
+        // Engine2 plays White here, so Engine2 winning means Black (Engine1) lost.
+        assert_eq!(
+            match_result_to_game_outcome(
+                MatchResult::Engine2Win,
+                Some(SideToMove::Black),
+                Some(SideToMove::White)
+            ),
+            Some(GameOutcome::WhiteWins)
+        );
+    }
+
+    #[test]
+    fn draw_is_draw_regardless_of_colors() {
+        assert_eq!(
+            match_result_to_game_outcome(MatchResult::Draw, None, None),
+            Some(GameOutcome::Draw)
+        );
+    }
+
+    #[test]
+    fn missing_color_is_none() {
+        assert_eq!(
+            match_result_to_game_outcome(MatchResult::Engine1Win, None, Some(SideToMove::White)),
+            None
+        );
+        assert_eq!(
+            match_result_to_game_outcome(MatchResult::Engine2Win, Some(SideToMove::Black), None),
+            None
+        );
     }
 }
 
@@ -1104,17 +1206,25 @@ fn extract_from_match_kifu(
     seen: &mut HashSet<String>,
 ) -> Vec<PositionRecord> {
     let mut result = None;
+    let mut engine1_color = None;
+    let mut engine2_color = None;
     let mut position_line = None;
     for line in content.lines() {
         if line.starts_with("position ") {
             position_line = Some(line);
             break;
         }
-        parse_match_kifu_header(line, &mut result);
+        parse_match_kifu_header(line, &mut result, &mut engine1_color, &mut engine2_color);
     }
     if !match_qualifies(losing_side, result) {
         return Vec::new();
     }
+    let game_result = result
+        .and_then(|r| match_result_to_game_outcome(r, engine1_color, engine2_color))
+        .map(|outcome| GameResultInfo {
+            outcome,
+            result_source: "match_header".to_string(),
+        });
     let Some(position_line) = position_line else {
         tracing::warn!(
             path = source_path,
@@ -1216,10 +1326,14 @@ fn extract_from_match_kifu(
         };
         // A match-runner game is strictly linear (no variation/branch concept) -- the kifu
         // file's own path already carries unambiguous run+game identity, exactly how CSA
-        // extraction already relies on bare `path` with `root_id: None` today. No stamped
-        // win/loss "outcome" field either: `--losing-side` selection above already IS the
-        // filter, so by the time a record exists here its qualifying-game status is a fact
-        // about which file it came from, not something downstream code needs to re-check.
+        // extraction already relies on bare `path` with `root_id: None` today.
+        //
+        // `game_result` IS stamped per-record (computed above) for Gate-B-style raw-vs-curated
+        // WDL provenance -- additive and independent of `--losing-side`: that flag's
+        // pre-filtering (which games get extracted at all) is unchanged, and remains the only
+        // mechanism for selecting "the losing side's positions". `game_result` exists so a
+        // consumer inspecting WDL distribution on a NOT-pre-filtered extraction (e.g.
+        // `--losing-side` omitted, every game kept) has a signal to work with.
         let source = SourceInfo {
             kind: "from_match".to_string(),
             path: source_path.to_string(),
@@ -1228,7 +1342,9 @@ fn extract_from_match_kifu(
             variation_id: None,
             branch_from_ply: None,
         };
-        out.push(PositionRecord::new(sfen, source, tags));
+        let mut rec = PositionRecord::new(sfen, source, tags);
+        rec.game_result = game_result.clone();
+        out.push(rec);
     }
     out
 }
@@ -3141,11 +3257,12 @@ fn cmd_mine(args: MineArgs) -> Result<()> {
 
 fn cmd_balance(args: BalanceArgs) -> Result<()> {
     if args.by.is_empty() {
-        anyhow::bail!("--by requires at least one of: phase, side, eval-bucket");
+        anyhow::bail!("--by requires at least one of: phase, side, eval-bucket, wdl");
     }
     let by_phase = args.by.iter().any(|s| s == "phase");
     let by_side = args.by.iter().any(|s| s == "side");
     let by_eval = args.by.iter().any(|s| s == "eval-bucket");
+    let by_wdl = args.by.iter().any(|s| s == "wdl");
 
     // Pass 1: tally each bucket's size -- needed before any record can be ranked, since `target`
     // defaults to the smallest bucket's size, which can't be known until every bucket has been
@@ -3162,7 +3279,7 @@ fn cmd_balance(args: BalanceArgs) -> Result<()> {
         // parse errors are warned once, in pass 2 below -- not duplicated here
         if let Ok(record) = serde_json::from_str::<PositionRecord>(&line) {
             *bucket_sizes
-                .entry(bucket_key(&record, by_phase, by_side, by_eval))
+                .entry(bucket_key(&record, by_phase, by_side, by_eval, by_wdl))
                 .or_default() += 1;
         }
     }
@@ -3189,7 +3306,7 @@ fn cmd_balance(args: BalanceArgs) -> Result<()> {
                 continue;
             }
         };
-        let bucket = bucket_key(&record, by_phase, by_side, by_eval);
+        let bucket = bucket_key(&record, by_phase, by_side, by_eval, by_wdl);
         let key = record.sfen.clone();
         let index = total;
         total += 1;
@@ -3265,11 +3382,14 @@ fn cmd_stratify(args: StratifyArgs) -> Result<()> {
 
 fn cmd_stratify_write_template(args: &StratifyArgs, template_path: &Path) -> Result<()> {
     if args.by.is_empty() {
-        anyhow::bail!("--write-template requires --by (at least one of: phase, side, eval-bucket)");
+        anyhow::bail!(
+            "--write-template requires --by (at least one of: phase, side, eval-bucket, wdl)"
+        );
     }
     let by_phase = args.by.iter().any(|s| s == "phase");
     let by_side = args.by.iter().any(|s| s == "side");
     let by_eval = args.by.iter().any(|s| s == "eval-bucket");
+    let by_wdl = args.by.iter().any(|s| s == "wdl");
 
     // Same tally `balance`'s pass 1 already does -- observed counts become the template's starting
     // point, which the user then hand-edits down to their desired per-bucket targets.
@@ -3284,7 +3404,7 @@ fn cmd_stratify_write_template(args: &StratifyArgs, template_path: &Path) -> Res
         }
         if let Ok(record) = serde_json::from_str::<PositionRecord>(&line) {
             *bucket_sizes
-                .entry(bucket_key(&record, by_phase, by_side, by_eval))
+                .entry(bucket_key(&record, by_phase, by_side, by_eval, by_wdl))
                 .or_default() += 1;
         }
     }
@@ -3310,6 +3430,7 @@ fn cmd_stratify_apply(args: &StratifyArgs, quota_path: &Path, out: &Path) -> Res
     let by_phase = quota_file.by.iter().any(|s| s == "phase");
     let by_side = quota_file.by.iter().any(|s| s == "side");
     let by_eval = quota_file.by.iter().any(|s| s == "eval-bucket");
+    let by_wdl = quota_file.by.iter().any(|s| s == "wdl");
     let seed = args.seed;
 
     let reader = BufReader::new(
@@ -3337,7 +3458,7 @@ fn cmd_stratify_apply(args: &StratifyArgs, quota_path: &Path, out: &Path) -> Res
         records,
         &quota_file.quotas,
         seed,
-        |r| bucket_key(r, by_phase, by_side, by_eval),
+        |r| bucket_key(r, by_phase, by_side, by_eval, by_wdl),
         |r| shogiesa_stratify::group_key(&r.source),
     );
     if let Some(e) = io_error {
@@ -3400,6 +3521,45 @@ fn gate_opening_dedup_key(sfen: &str) -> String {
         .join(" ")
 }
 
+/// Why: gate opening suites feed external match runners as playable starting positions; a
+/// syntactically valid SFEN can still be useless for gating if the side to move has zero legal
+/// moves (checkmate/stalemate), and filtering here avoids every downstream engine/gate script
+/// repeating the same defensive check.
+///
+/// Reuses the `shogi_core`/`shogi_usi_parser`/`shogi_legality_lite` crate family instead of
+/// hand-rolling shogi legal-move generation (drops, forced promotion, nifu, uchifuzume, pins) --
+/// that's a correctness project of its own shogiesa doesn't otherwise need. `Err` means the
+/// external parser rejected a SFEN shogiesa's own `Sfen::parse` already accepted as syntactically
+/// valid (a format-compatibility gap, not a bad record) -- callers must not conflate this with a
+/// confirmed zero-legal-move position.
+fn has_legal_move_lite(sfen: &str) -> Result<bool, shogi_usi_parser::Error> {
+    use shogi_usi_parser::FromUsi;
+    // shogi_usi_parser::PartialPosition::from_usi requires a leading "sfen " token (or
+    // "startpos"); shogiesa's own SFEN strings are the bare 4-field body.
+    let pos = shogi_core::PartialPosition::from_usi(&format!("sfen {sfen}"))?;
+    Ok(!shogi_legality_lite::all_legal_moves_partial(&pos).is_empty())
+}
+
+#[cfg(test)]
+mod has_legal_move_lite_tests {
+    use super::has_legal_move_lite;
+
+    #[test]
+    fn startpos_has_legal_moves() {
+        let startpos = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1";
+        assert!(has_legal_move_lite(startpos).unwrap());
+    }
+
+    #[test]
+    fn checkmate_has_no_legal_moves() {
+        // One of the shortest mate sequences from startpos (verified against
+        // shogi_legality_lite's own `status_partial_works` test, which asserts the side to
+        // move here -- White -- is checkmated).
+        let mate = "lnsg1gsnl/5rkb1/ppppppp+Pp/9/9/9/PPPPPPP1P/1B5R1/LNSGKGSNL w P 8";
+        assert!(!has_legal_move_lite(mate).unwrap());
+    }
+}
+
 fn cmd_make_gate_openings(args: MakeGateOpeningsArgs) -> Result<()> {
     let seed = args.seed;
     let reader = BufReader::new(
@@ -3410,6 +3570,7 @@ fn cmd_make_gate_openings(args: MakeGateOpeningsArgs) -> Result<()> {
     let mut invalid_sfen = 0usize;
     let mut below_min_ply = 0usize;
     let mut above_max_ply = 0usize;
+    let mut unplayable = 0usize;
     let mut duplicate_sfen = 0usize;
     let mut seen: HashSet<String> = HashSet::new();
     let mut io_error: Option<std::io::Error> = None;
@@ -3452,6 +3613,24 @@ fn cmd_make_gate_openings(args: MakeGateOpeningsArgs) -> Result<()> {
                 above_max_ply += 1;
                 return None;
             }
+            // Why: gate opening suites feed external match runners as playable starting
+            // positions; a syntactically valid SFEN can still be useless for gating if the side
+            // to move has zero legal moves (checkmate/stalemate), and filtering here avoids every
+            // downstream engine/gate script repeating the same defensive check.
+            if !args.allow_unplayable {
+                match has_legal_move_lite(&record.sfen) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        unplayable += 1;
+                        return None;
+                    }
+                    Err(e) => {
+                        tracing::warn!(sfen = %record.sfen, "cannot evaluate legality, skipping: {e}");
+                        unplayable += 1;
+                        return None;
+                    }
+                }
+            }
             // Dedup before the fill's rank assignment -- a root full of duplicate SFENs must not
             // inflate its own rank counter and lose priority to a genuinely diverse root.
             if !seen.insert(gate_opening_dedup_key(&record.sfen)) {
@@ -3490,6 +3669,7 @@ fn cmd_make_gate_openings(args: MakeGateOpeningsArgs) -> Result<()> {
     eprintln!("  invalid_sfen             {invalid_sfen}");
     eprintln!("  below_min_ply            {below_min_ply}");
     eprintln!("  above_max_ply            {above_max_ply}");
+    eprintln!("  unplayable               {unplayable}");
     eprintln!("  duplicate_sfen           {duplicate_sfen}");
     eprintln!("  over_count               {over_count}");
 
@@ -3502,6 +3682,7 @@ fn cmd_make_gate_openings(args: MakeGateOpeningsArgs) -> Result<()> {
         manifest.drop_reasons.insert("invalid_sfen", invalid_sfen);
         manifest.drop_reasons.insert("below_min_ply", below_min_ply);
         manifest.drop_reasons.insert("above_max_ply", above_max_ply);
+        manifest.drop_reasons.insert("unplayable", unplayable);
         manifest
             .drop_reasons
             .insert("duplicate_sfen", duplicate_sfen);
@@ -3601,7 +3782,7 @@ fn select_coverage_streaming(args: &SelectArgs) -> Result<(usize, Vec<PositionRe
         // parse errors are warned once, in pass 2 below -- not duplicated here
         if let Ok(record) = serde_json::from_str::<PositionRecord>(&line) {
             *bucket_counts
-                .entry(bucket_key(&record, true, true, true))
+                .entry(bucket_key(&record, true, true, true, false))
                 .or_default() += 1;
         }
     }
@@ -3624,7 +3805,7 @@ fn select_coverage_streaming(args: &SelectArgs) -> Result<(usize, Vec<PositionRe
                 continue;
             }
         };
-        let bucket_count = bucket_counts[&bucket_key(&record, true, true, true)];
+        let bucket_count = bucket_counts[&bucket_key(&record, true, true, true, false)];
         let key = (bucket_count, seeded_hash(seed, &record.sfen));
         let index = total;
         total += 1;
@@ -3925,7 +4106,7 @@ fn cmd_lineprior_export(args: LinePriorExportArgs) -> Result<()> {
             _ => shogiesa_csa::extract_moves_from_str(&content, &source_path)
                 .map_err(|e| e.to_string()),
         };
-        let raw_moves = match result {
+        let (raw_moves, _outcome) = match result {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!(path = %path.display(), "skipped: {e}");
@@ -5750,6 +5931,7 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
     let mut broken = 0usize;
     let mut phases = BTreeMap::<String, usize>::new();
     let mut sides = BTreeMap::<String, usize>::new();
+    let mut wdl_counts = BTreeMap::<&'static str, usize>::new();
     let mut schema_versions = BTreeMap::<u32, usize>::new();
     let mut ply_sum = 0u64;
     let mut ply_min = u32::MAX;
@@ -5805,6 +5987,9 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
             .entry(format!("{}", rec.tags.side_to_move))
             .or_default() += 1;
         *schema_versions.entry(rec.schema_version).or_default() += 1;
+        *wdl_counts
+            .entry(shogiesa_stratify::feature_wdl(&rec))
+            .or_default() += 1;
         if rec.tags.in_check {
             in_check += 1;
         }
@@ -5966,6 +6151,14 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
     for (side, count) in &sides {
         println!(
             "  {side:<12} {count:>6}  ({:.1}%)",
+            *count as f64 / n as f64 * 100.0
+        );
+    }
+    println!();
+    println!("wdl distribution (mover-relative):");
+    for (label, count) in &wdl_counts {
+        println!(
+            "  {label:<12} {count:>6}  ({:.1}%)",
             *count as f64 / n as f64 * 100.0
         );
     }
@@ -6178,6 +6371,7 @@ fn cmd_distribution(args: DistributionArgs) -> Result<()> {
     let mut cross_tally: BTreeMap<(GamePhase, SideToMove, EvalBucket), usize> = BTreeMap::new();
     let mut ply_tally: BTreeMap<u32, usize> = BTreeMap::new();
     let mut root_tally: HashMap<String, usize> = HashMap::new();
+    let mut wdl_tally: BTreeMap<&'static str, usize> = BTreeMap::new();
     let mut eval_cp_min: Option<i32> = None;
     let mut eval_cp_max: Option<i32> = None;
     let mut ply_min: Option<u32> = None;
@@ -6217,6 +6411,10 @@ fn cmd_distribution(args: DistributionArgs) -> Result<()> {
         *root_tally
             .entry(shogiesa_stratify::group_key(&rec.source))
             .or_default() += 1;
+
+        *wdl_tally
+            .entry(shogiesa_stratify::feature_wdl(&rec))
+            .or_default() += 1;
     }
 
     if n == 0 {
@@ -6244,6 +6442,7 @@ fn cmd_distribution(args: DistributionArgs) -> Result<()> {
         args.over_ratio,
     );
     print_source_root_distribution(&root_tally, n);
+    print_wdl_distribution(&wdl_tally, n);
 
     Ok(())
 }
@@ -6411,6 +6610,18 @@ fn print_source_root_distribution(root_tally: &HashMap<String, usize>, n: usize)
     };
     println!("  distinct roots : {distinct_roots}");
     println!("  top root       : {top_root_pct:.1}%  {warn}");
+}
+
+/// A simple 1-D count/percentage tally, not the eval-bucket grid's full zero-count enumeration --
+/// WDL's `"success"`/`"failure"`/`"draw"`/`"unknown"` categories are inherently unbalanced (unlike
+/// the numeric eval/ply axes' expected-uniform-fill assumption), so there's no "gap" to flag here.
+fn print_wdl_distribution(wdl_tally: &BTreeMap<&'static str, usize>, n: usize) {
+    println!();
+    println!("wdl distribution (mover-relative):");
+    for (label, count) in wdl_tally {
+        let pct = *count as f64 / n as f64 * 100.0;
+        println!("  {label:<10}{count:>8}  {pct:.1}%");
+    }
 }
 
 fn cmd_validate(args: ValidateArgs) -> Result<()> {

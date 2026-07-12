@@ -747,9 +747,10 @@ positions with at least one `resign`/`win`/`none` observation — excluded from 
 rates above, not counted as either agreement or disagreement), (when `label --multipv N` (N≥2)
 was used) MultiPV-candidate coverage and a separate `score_bound` distribution scoped to those
 candidates, (when any observation has a recorded `requested_depth`) a requested-depth underreach
-rate, and a mover-relative WDL distribution (from `game_result`, see the JSONL schema section).
-Streams its input in a single pass and never materializes the record set; memory scales with
-distinct SFEN/source-file count, not total records.
+rate, a mover-relative WDL distribution (from `game_result`, see the JSONL schema section), and a
+`game_result.result_source` breakdown (why each `unknown` outcome is unknown, not just that it is —
+see the JSONL schema section). Streams its input in a single pass and never materializes the record
+set; memory scales with distinct SFEN/source-file count, not total records.
 
 ### `distribution` — bucket-coverage diagnostic
 
@@ -766,7 +767,7 @@ silently absent. Not named `coverage` — that word is already used for `select 
 (ranks existing records by thin-bucket membership, for re-labeling) and separately for MultiPV/
 quality-gate pass-rate coverage (`report`/`calibrate`/`audit`/`tune`); this command means neither.
 
-Four sections: **phase × side × eval-bucket coverage** (reuses the same `bucket_key` bucketing
+Five sections: **phase × side × eval-bucket coverage** (reuses the same `bucket_key` bucketing
 `balance`/`select --strategy coverage` already use, so the bucket notion can't drift — every 200cp
 bucket within the observed span is enumerated per phase/side pair, plus the `mate`/`unlabeled`
 sentinel cells crossed with every phase/side pair; a cp span wider than 50 buckets (±5000cp) falls
@@ -776,12 +777,16 @@ table or silently misrepresent an anomalous engine score range as fully covered)
 distribution** (distinct-root count and dominance %, grouped via the same `root_id`-aware key
 `split --train/--valid/--test` uses for leakage safety — unlike `report`'s own source stat, which
 groups by raw file path and so counts a game's mainline and its variations as separate sources);
-and **wdl distribution** (mover-relative count/percentage per `game_result` category — a simple 1-D
+**wdl distribution** (mover-relative count/percentage per `game_result` category — a simple 1-D
 tally, not a zero-count enumeration like the eval-bucket grid above, since WDL's
-win/loss/draw/unknown categories are inherently unbalanced rather than expected-uniform). Present
-buckets are also flagged `UNDER`/`OVER` relative to the mean bucket count (`--under-ratio`/
-`--over-ratio`, defaults 0.5/2.0, not applied to the wdl tally). Diagnostic only — no
-`--out`/`--manifest`, same shape as `report`.
+win/loss/draw/unknown categories are inherently unbalanced rather than expected-uniform); and
+**game_result source distribution** (same 1-D-tally shape, keyed on `game_result.result_source`
+instead of `outcome` — surfaces *why* an outcome is `unknown`, e.g. a corpus dominated by
+`csa_no_terminal` points at truncated game records, while one dominated by
+`kif_terminal_undetermined` points at unrecognized KIF terminal phrasing; see the JSONL schema
+section for the full reason-code list). Present buckets are also flagged `UNDER`/`OVER` relative to
+the mean bucket count (`--under-ratio`/`--over-ratio`, defaults 0.5/2.0, not applied to the wdl or
+result-source tallies). Diagnostic only — no `--out`/`--manifest`, same shape as `report`.
 
 ### `validate` — data integrity
 
@@ -882,11 +887,17 @@ on CSA-extracted positions (no variation concept) and on JSONL predating this fi
 mover-relative — a consumer wanting mover-relative WDL (`success`/`failure`/`draw`/`unknown`, the
 same convention `lineprior export`'s `outcome` field already uses; see the outcome caveats below)
 derives it themselves via `for_mover(side_to_move)`, rather than shogiesa storing a second,
-derivable field that could drift from `tags.side_to_move`. `result_source` records where `outcome`
-came from: `csa_terminal`, `kif_marker`, `match_header`, or `unknown` (no terminal was resolved —
-e.g. every KIF variation-branch position, whose own terminal isn't the actual game's result).
-`game_result` is `null`/absent on JSONL predating this field and on any source `extract`/`from-match`
-couldn't resolve a terminal for.
+derivable field that could drift from `tags.side_to_move`. `result_source` records not just where
+`outcome` came from but, when it's `unknown`, *why*: `csa_terminal`/`kif_marker`/`match_header` mean
+a real terminal resolved a decisive or draw result; `csa_interrupted`/`kif_interrupted` mean the
+game was explicitly aborted (`%CHUDAN`/`中断`); `csa_terminal_undetermined`/
+`kif_terminal_undetermined` mean a terminal marker was present but is itself ambiguous by spec
+(CSA `%MATTA`/`%FUZUMI`/`%ERROR`; an unrecognized KIF `まで`-suffix); `csa_no_terminal`/
+`kif_no_terminal` mean the walk never found any terminal marker at all; `csa_walk_error`/
+`kif_walk_error` mean outcome resolution itself failed and degraded; `kif_variation` marks a KIF
+variation-branch position, whose own terminal isn't the actual game's result. `game_result` is
+`null`/absent on JSONL predating this field and on any source `extract`/`from-match` couldn't
+resolve a terminal for.
 
 ## Pipeline
 

@@ -4106,7 +4106,7 @@ fn cmd_lineprior_export(args: LinePriorExportArgs) -> Result<()> {
             _ => shogiesa_csa::extract_moves_from_str(&content, &source_path)
                 .map_err(|e| e.to_string()),
         };
-        let (raw_moves, _outcome) = match result {
+        let (raw_moves, _outcome, _reason) = match result {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!(path = %path.display(), "skipped: {e}");
@@ -5932,6 +5932,7 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
     let mut phases = BTreeMap::<String, usize>::new();
     let mut sides = BTreeMap::<String, usize>::new();
     let mut wdl_counts = BTreeMap::<&'static str, usize>::new();
+    let mut result_source_counts = BTreeMap::<String, usize>::new();
     let mut schema_versions = BTreeMap::<u32, usize>::new();
     let mut ply_sum = 0u64;
     let mut ply_min = u32::MAX;
@@ -5989,6 +5990,14 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
         *schema_versions.entry(rec.schema_version).or_default() += 1;
         *wdl_counts
             .entry(shogiesa_stratify::feature_wdl(&rec))
+            .or_default() += 1;
+        *result_source_counts
+            .entry(
+                rec.game_result
+                    .as_ref()
+                    .map(|gr| gr.result_source.clone())
+                    .unwrap_or_else(|| "no_game_result".to_string()),
+            )
             .or_default() += 1;
         if rec.tags.in_check {
             in_check += 1;
@@ -6159,6 +6168,14 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
     for (label, count) in &wdl_counts {
         println!(
             "  {label:<12} {count:>6}  ({:.1}%)",
+            *count as f64 / n as f64 * 100.0
+        );
+    }
+    println!();
+    println!("game_result source distribution:");
+    for (label, count) in &result_source_counts {
+        println!(
+            "  {label:<24} {count:>6}  ({:.1}%)",
             *count as f64 / n as f64 * 100.0
         );
     }
@@ -6372,6 +6389,7 @@ fn cmd_distribution(args: DistributionArgs) -> Result<()> {
     let mut ply_tally: BTreeMap<u32, usize> = BTreeMap::new();
     let mut root_tally: HashMap<String, usize> = HashMap::new();
     let mut wdl_tally: BTreeMap<&'static str, usize> = BTreeMap::new();
+    let mut result_source_tally: BTreeMap<String, usize> = BTreeMap::new();
     let mut eval_cp_min: Option<i32> = None;
     let mut eval_cp_max: Option<i32> = None;
     let mut ply_min: Option<u32> = None;
@@ -6415,6 +6433,15 @@ fn cmd_distribution(args: DistributionArgs) -> Result<()> {
         *wdl_tally
             .entry(shogiesa_stratify::feature_wdl(&rec))
             .or_default() += 1;
+
+        *result_source_tally
+            .entry(
+                rec.game_result
+                    .as_ref()
+                    .map(|gr| gr.result_source.clone())
+                    .unwrap_or_else(|| "no_game_result".to_string()),
+            )
+            .or_default() += 1;
     }
 
     if n == 0 {
@@ -6443,6 +6470,7 @@ fn cmd_distribution(args: DistributionArgs) -> Result<()> {
     );
     print_source_root_distribution(&root_tally, n);
     print_wdl_distribution(&wdl_tally, n);
+    print_result_source_distribution(&result_source_tally, n);
 
     Ok(())
 }
@@ -6621,6 +6649,15 @@ fn print_wdl_distribution(wdl_tally: &BTreeMap<&'static str, usize>, n: usize) {
     for (label, count) in wdl_tally {
         let pct = *count as f64 / n as f64 * 100.0;
         println!("  {label:<10}{count:>8}  {pct:.1}%");
+    }
+}
+
+fn print_result_source_distribution(tally: &BTreeMap<String, usize>, n: usize) {
+    println!();
+    println!("game_result source distribution:");
+    for (label, count) in tally {
+        let pct = *count as f64 / n as f64 * 100.0;
+        println!("  {label:<24}{count:>8}  {pct:.1}%");
     }
 }
 

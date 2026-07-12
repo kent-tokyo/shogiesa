@@ -351,6 +351,22 @@ fn moves_jishogi_is_draw() {
 }
 
 #[test]
+fn moves_made_prefix_sennichite_is_draw() {
+    // Regression: a "まで"-prefixed summary line must fall through to the 千日手/持将棋 check,
+    // not stop at the 先手/後手の勝ち check and give up.
+    let kif = "手合割：平手\n先手：A\n後手：B\n手数----指手\n   1 ７六歩(77)   (0:01/0)\nまで1手で千日手\n";
+    let moves = extract_moves_from_str(kif, "test.kif").unwrap().0;
+    assert_eq!(moves[0].outcome, GameOutcome::Draw);
+}
+
+#[test]
+fn moves_made_prefix_jishogi_is_draw() {
+    let kif = "手合割：平手\n先手：A\n後手：B\n手数----指手\n   1 ７六歩(77)   (0:01/0)\nまで1手で持将棋\n";
+    let moves = extract_moves_from_str(kif, "test.kif").unwrap().0;
+    assert_eq!(moves[0].outcome, GameOutcome::Draw);
+}
+
+#[test]
 fn moves_chudan_is_unknown() {
     let kif = "手合割：平手\n先手：A\n後手：B\n手数----指手\n   1 ７六歩(77)   (0:01/0)\n中断\n";
     let moves = extract_moves_from_str(kif, "test.kif").unwrap().0;
@@ -517,4 +533,38 @@ fn extract_from_str_variation_branch_game_result_is_unknown() {
             .iter()
             .all(|r| r.game_result.as_ref().unwrap().outcome == GameOutcome::Unknown)
     );
+    assert!(
+        variation
+            .iter()
+            .all(|r| { r.game_result.as_ref().unwrap().result_source == "kif_variation" })
+    );
+}
+
+#[test]
+fn extract_from_str_no_terminal_result_source_is_kif_no_terminal() {
+    let kif = "手合割：平手\n先手：A\n後手：B\n手数----指手\n   1 ７六歩(77)   (0:01/0)\n";
+    let config = ExtractConfig {
+        min_ply: 1,
+        max_ply: None,
+        every_n: 1,
+        dedup: false,
+    };
+    let mut seen = HashSet::new();
+    let records = extract_from_str(kif, "test.kif", &config, &mut seen).unwrap();
+    assert_eq!(records.len(), 1);
+    let gr = records[0].game_result.as_ref().unwrap();
+    assert_eq!(gr.outcome, GameOutcome::Unknown);
+    assert_eq!(gr.result_source, "kif_no_terminal");
+}
+
+#[test]
+fn extract_from_str_chudan_result_source_is_interrupted() {
+    let kif = "手合割：平手\n先手：A\n後手：B\n手数----指手\n   1 ７六歩(77)   (0:01/0)\n中断\n";
+    let config = ExtractConfig::default();
+    let mut seen = HashSet::new();
+    let records = extract_from_str(kif, "test.kif", &config, &mut seen).unwrap();
+    assert_eq!(records.len(), 1);
+    let gr = records[0].game_result.as_ref().unwrap();
+    assert_eq!(gr.outcome, GameOutcome::Unknown);
+    assert_eq!(gr.result_source, "kif_interrupted");
 }

@@ -242,13 +242,9 @@ pub fn extract_from_str(
     // about mid-game errors (warns and stops just that block, keeping positions already
     // collected), and an unsupported-handicap error is the one case both functions already fail
     // on identically, so nothing is lost.
-    let outcome = extract_moves_from_str(content, source_path)
-        .map(|(_, o)| o)
-        .unwrap_or(GameOutcome::Unknown);
-    let mainline_result_source = if outcome == GameOutcome::Unknown {
-        "unknown"
-    } else {
-        "kif_marker"
+    let (outcome, mainline_result_source) = match extract_moves_from_str(content, source_path) {
+        Ok((_, o, reason)) => (o, reason),
+        Err(_) => (GameOutcome::Unknown, "kif_walk_error"),
     };
 
     let mut board = Board::initial(SideToMove::Black);
@@ -472,7 +468,7 @@ pub fn extract_from_str(
             // matches the convention `RawMove.outcome` already uses for variation moves.
             Some(GameResultInfo {
                 outcome: GameOutcome::Unknown,
-                result_source: "unknown".to_string(),
+                result_source: "kif_variation".to_string(),
             })
         };
         out.push(rec);
@@ -481,12 +477,33 @@ pub fn extract_from_str(
     Ok(out)
 }
 
+/// Decode raw KIF file bytes to a `String`, tolerating both UTF-8 and Shift_JIS (CP932) input.
+///
+/// Why: `.kif` is a legacy Windows-native Japanese format; a large fraction of real-world KIF
+/// files in the wild are Shift_JIS, not UTF-8. This strips a UTF-8 BOM first -- its bytes decode
+/// as valid UTF-8 `U+FEFF`, which is NOT whitespace by Unicode's definition, so leaving it in
+/// would make `extract_from_str`'s `line.trim()` + prefix checks silently miss the first content
+/// line (e.g. `手合割`) -- then attempts strict UTF-8 validation, falling back to a lossy
+/// Shift_JIS decode only if that fails. Shift_JIS byte sequences essentially never coincidentally
+/// validate as UTF-8 in real KIF text, so this two-step sniff is reliable in practice.
+fn decode_kif_bytes(bytes: &[u8]) -> String {
+    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        return s.to_string();
+    }
+    encoding_rs::SHIFT_JIS
+        .decode_without_bom_handling(bytes)
+        .0
+        .into_owned()
+}
+
 pub fn extract_from_path(
     path: &Path,
     config: &ExtractConfig,
     seen: &mut HashSet<String>,
 ) -> Result<Vec<PositionRecord>, KifError> {
-    let content = fs::read_to_string(path)?;
+    let bytes = fs::read(path)?;
+    let content = decode_kif_bytes(&bytes);
     let source = path.to_string_lossy().into_owned();
     extract_from_str(&content, &source, config, seen)
 }
@@ -495,6 +512,20 @@ fn opponent(color: SideToMove) -> SideToMove {
     match color {
         SideToMove::Black => SideToMove::White,
         SideToMove::White => SideToMove::Black,
+    }
+}
+
+/// Classifies a recognized terminal `token` (one `resolve_kif_terminal` already returned
+/// `Some(outcome)` for) into a `result_source` reason code, for the mainline only -- distinguishes
+/// an explicit abort (`中断`) from a genuinely ambiguous marker (an unrecognized `まで`-suffix,
+/// `outcome == Unknown`) from an ordinary resolved marker.
+fn kif_reason_for(token: &str, outcome: GameOutcome) -> &'static str {
+    if token.starts_with("中断") {
+        "kif_interrupted"
+    } else if outcome == GameOutcome::Unknown {
+        "kif_terminal_undetermined"
+    } else {
+        "kif_marker"
     }
 }
 
@@ -518,13 +549,27 @@ fn resolve_kif_terminal(
         } else {
             None
         };
-        return Some(match winner {
-            Some(SideToMove::Black) => GameOutcome::BlackWins,
-            Some(SideToMove::White) => GameOutcome::WhiteWins,
-            None => GameOutcome::Unknown,
-        });
+        if let Some(w) = winner {
+            return Some(match w {
+                SideToMove::Black => GameOutcome::BlackWins,
+                SideToMove::White => GameOutcome::WhiteWins,
+            });
+        }
+        // Must fall through here rather than return early -- real KIF summary lines like "まで
+        // 64手で千日手"/"まで120手で持将棋" carry their marker as a substring of the summary
+        // line, not as its own standalone line.
+        if token.contains("千日手") || token.contains("持将棋") {
+            return Some(GameOutcome::Draw);
+        }
+        if token.contains("詰み") {
+            return Some(match opponent(side_to_move) {
+                SideToMove::Black => GameOutcome::BlackWins,
+                SideToMove::White => GameOutcome::WhiteWins,
+            });
+        }
+        return Some(GameOutcome::Unknown);
     }
-    if token.starts_with("投了") {
+    if token.starts_with("投了") || token.starts_with("詰み") {
         return Some(match opponent(side_to_move) {
             SideToMove::Black => GameOutcome::BlackWins,
             SideToMove::White => GameOutcome::WhiteWins,
@@ -553,7 +598,7 @@ fn resolve_kif_terminal(
 pub fn extract_moves_from_str(
     content: &str,
     source_path: &str,
-) -> Result<(Vec<RawMove>, GameOutcome), KifError> {
+) -> Result<(Vec<RawMove>, GameOutcome, &'static str), KifError> {
     let mut board = Board::initial(SideToMove::Black);
     let mut out: Vec<RawMove> = Vec::new();
     let mut ply: u32 = 0;
@@ -570,6 +615,7 @@ pub fn extract_moves_from_str(
     // extending the mainline after a `変化` marker), so this stays a valid prefix bound.
     let mut mainline_move_count: usize = 0;
     let mut outcome = GameOutcome::Unknown;
+    let mut reason: &'static str = "kif_no_terminal";
     // Captured once the move list starts (after any 手合割 handicap reassignment), since 先手/
     // 後手 in the summary line name move order, not a fixed color.
     let mut first_mover = SideToMove::Black;
@@ -642,6 +688,7 @@ pub fn extract_moves_from_str(
         if let Some(o) = resolve_kif_terminal(line, board.side, first_mover) {
             if is_mainline {
                 outcome = o;
+                reason = kif_reason_for(line, o);
             }
             accepting = false;
             continue;
@@ -663,6 +710,7 @@ pub fn extract_moves_from_str(
         if let Some(o) = resolve_kif_terminal(move_token, board.side, first_mover) {
             if is_mainline {
                 outcome = o;
+                reason = kif_reason_for(move_token, o);
             }
             accepting = false;
             continue;
@@ -762,7 +810,7 @@ pub fn extract_moves_from_str(
     for mv in out.iter_mut().take(mainline_move_count) {
         mv.outcome = outcome;
     }
-    Ok((out, outcome))
+    Ok((out, outcome, reason))
 }
 
 #[cfg(test)]
@@ -837,5 +885,93 @@ mod tests {
     #[test]
     fn parse_same_square_move_without_prev_dest_fails() {
         assert!(parse_kif_move("同歩(77)", None).is_none());
+    }
+
+    #[test]
+    fn resolve_kif_terminal_made_prefix_sennichite_is_draw() {
+        assert_eq!(
+            resolve_kif_terminal("まで64手で千日手", SideToMove::White, SideToMove::Black),
+            Some(GameOutcome::Draw)
+        );
+    }
+
+    #[test]
+    fn resolve_kif_terminal_made_prefix_jishogi_is_draw() {
+        assert_eq!(
+            resolve_kif_terminal("まで120手で持将棋", SideToMove::Black, SideToMove::Black),
+            Some(GameOutcome::Draw)
+        );
+    }
+
+    #[test]
+    fn resolve_kif_terminal_made_prefix_tsumi_resolves_like_resignation() {
+        // Mate declared on White's turn -- Black (the opponent) wins, same polarity as 投了.
+        assert_eq!(
+            resolve_kif_terminal("まで77手で詰み", SideToMove::White, SideToMove::Black),
+            Some(GameOutcome::BlackWins)
+        );
+    }
+
+    #[test]
+    fn resolve_kif_terminal_standalone_tsumi_resolves_like_resignation() {
+        assert_eq!(
+            resolve_kif_terminal("詰み", SideToMove::Black, SideToMove::Black),
+            Some(GameOutcome::WhiteWins)
+        );
+    }
+
+    #[test]
+    fn resolve_kif_terminal_made_prefix_unrecognized_suffix_is_unknown() {
+        // Still `Some` (a terminal marker was present), not `None` -- distinguishes "seen but
+        // undetermined" from "no terminal seen at all" for the reason-code taxonomy.
+        // 反則勝ち is deliberately unhandled this round (see plan) -- must still resolve to
+        // `Some(Unknown)`, not silently guess a winner.
+        assert_eq!(
+            resolve_kif_terminal("まで999手で反則勝ち", SideToMove::Black, SideToMove::Black),
+            Some(GameOutcome::Unknown)
+        );
+    }
+
+    #[test]
+    fn kif_reason_for_chudan_is_interrupted() {
+        assert_eq!(
+            kif_reason_for("中断", GameOutcome::Unknown),
+            "kif_interrupted"
+        );
+    }
+
+    #[test]
+    fn kif_reason_for_unrecognized_made_suffix_is_terminal_undetermined() {
+        assert_eq!(
+            kif_reason_for("まで999手で謎", GameOutcome::Unknown),
+            "kif_terminal_undetermined"
+        );
+    }
+
+    #[test]
+    fn kif_reason_for_resolved_marker_is_kif_marker() {
+        assert_eq!(kif_reason_for("投了", GameOutcome::BlackWins), "kif_marker");
+    }
+
+    #[test]
+    fn decode_plain_utf8_unchanged() {
+        let src = "手合割：平手\n手数----指手\n   1 ７六歩(77)\n";
+        assert_eq!(decode_kif_bytes(src.as_bytes()), src);
+    }
+
+    #[test]
+    fn decode_strips_utf8_bom() {
+        let src = "手合割：平手\n手数----指手\n   1 ７六歩(77)\n";
+        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend_from_slice(src.as_bytes());
+        assert_eq!(decode_kif_bytes(&bytes), src);
+    }
+
+    #[test]
+    fn decode_shift_jis_fallback() {
+        let src = "手合割：平手\n手数----指手\n   1 ７六歩(77)\n";
+        let (sjis_bytes, _, had_errors) = encoding_rs::SHIFT_JIS.encode(src);
+        assert!(!had_errors, "test KIF text must be Shift_JIS-representable");
+        assert_eq!(decode_kif_bytes(&sjis_bytes), src);
     }
 }

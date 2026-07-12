@@ -45,13 +45,9 @@ pub fn extract_from_str(
     // an illegal/inconsistent move partway through would silently yield zero positions instead of
     // the ones before the break. Degrade to `Unknown` provenance instead; `csa::parse_csa` below
     // still surfaces a genuine structural parse error.
-    let outcome = extract_moves_from_str(content, source_path)
-        .map(|(_, o)| o)
-        .unwrap_or(GameOutcome::Unknown);
-    let result_source = if outcome == GameOutcome::Unknown {
-        "unknown"
-    } else {
-        "csa_terminal"
+    let (outcome, result_source) = match extract_moves_from_str(content, source_path) {
+        Ok((_, o, reason)) => (o, reason),
+        Err(_) => (GameOutcome::Unknown, "csa_walk_error"),
     };
 
     let record: GameRecord =
@@ -129,7 +125,7 @@ pub fn extract_from_str(
 pub fn extract_moves_from_str(
     content: &str,
     source_path: &str,
-) -> Result<(Vec<RawMove>, GameOutcome), ExtractError> {
+) -> Result<(Vec<RawMove>, GameOutcome, &'static str), ExtractError> {
     let record: GameRecord =
         csa::parse_csa(content).map_err(|e| ExtractError::Csa(format!("{e:?}")))?;
 
@@ -137,6 +133,7 @@ pub fn extract_moves_from_str(
     let mut out = Vec::new();
     let mut ply: u32 = 0;
     let mut outcome = GameOutcome::Unknown;
+    let mut reason: &'static str = "csa_no_terminal";
 
     for mr in &record.moves {
         match mr.action {
@@ -190,6 +187,11 @@ pub fn extract_moves_from_str(
                 // `board.side` is whoever's turn it is right here == the mover of this terminal
                 // action (every variant but `IllegalAction` is silent about its own color).
                 outcome = resolve_csa_outcome(terminal, board.side);
+                reason = match terminal {
+                    Action::Chudan => "csa_interrupted",
+                    Action::Matta | Action::Fuzumi | Action::Error => "csa_terminal_undetermined",
+                    _ => "csa_terminal",
+                };
             }
         }
     }
@@ -197,7 +199,7 @@ pub fn extract_moves_from_str(
     for mv in &mut out {
         mv.outcome = outcome;
     }
-    Ok((out, outcome))
+    Ok((out, outcome, reason))
 }
 
 fn resolve_csa_outcome(action: Action, side_to_move: shogiesa_core::SideToMove) -> GameOutcome {
@@ -211,13 +213,13 @@ fn resolve_csa_outcome(action: Action, side_to_move: shogiesa_core::SideToMove) 
         SideToMove::White => SideToMove::Black,
     };
     match action {
-        Action::Toryo | Action::TimeUp | Action::IllegalMove => wins(opponent(side_to_move)),
+        Action::Toryo | Action::TimeUp | Action::IllegalMove | Action::Tsumi => {
+            wins(opponent(side_to_move))
+        }
         Action::Kachi => wins(side_to_move),
         Action::IllegalAction(color) => wins(opponent(from_csa_color(color))),
         Action::Sennichite | Action::Hikiwake | Action::Jishogi => GameOutcome::Draw,
-        Action::Chudan | Action::Matta | Action::Tsumi | Action::Fuzumi | Action::Error => {
-            GameOutcome::Unknown
-        }
+        Action::Chudan | Action::Matta | Action::Fuzumi | Action::Error => GameOutcome::Unknown,
         Action::Move(..) => unreachable!("handled by the Move arm above"),
     }
 }

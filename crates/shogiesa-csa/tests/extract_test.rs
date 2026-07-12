@@ -147,6 +147,16 @@ fn moves_toryo_resolves_outcome_and_alternates_success_failure_by_mover() {
 }
 
 #[test]
+fn moves_tsumi_resolves_like_toryo() {
+    let csa = "V2.2\nPI\n+\n+7776FU\n%TSUMI\n";
+    let moves = extract_moves_from_str(csa, "test").unwrap().0;
+    // %TSUMI's mover is White (Black already moved once) -- the side to move is mated, so the
+    // opponent (Black) wins, same polarity as %TORYO.
+    assert_eq!(moves[0].outcome, GameOutcome::BlackWins);
+    assert_eq!(moves[0].outcome.for_mover(moves[0].mover), "success");
+}
+
+#[test]
 fn moves_kachi_mover_wins() {
     let csa = "V2.2\nPI\n+\n+7776FU\n%KACHI\n";
     let moves = extract_moves_from_str(csa, "test").unwrap().0;
@@ -260,8 +270,42 @@ fn extract_from_str_game_result_unknown_when_no_terminal() {
     for rec in &records {
         let gr = rec.game_result.as_ref().unwrap();
         assert_eq!(gr.outcome, GameOutcome::Unknown);
-        assert_eq!(gr.result_source, "unknown");
+        assert_eq!(gr.result_source, "csa_no_terminal");
     }
+}
+
+#[test]
+fn extract_from_str_chudan_result_source_is_interrupted() {
+    let csa = "V2.2\nPI\n+\n+7776FU\n%CHUDAN\n";
+    let config = ExtractConfig {
+        min_ply: 1,
+        max_ply: None,
+        every_n: 1,
+        dedup: false,
+    };
+    let mut seen = HashSet::new();
+    let records = extract_from_str(csa, "test", &config, &mut seen).unwrap();
+    assert_eq!(records.len(), 1);
+    let gr = records[0].game_result.as_ref().unwrap();
+    assert_eq!(gr.outcome, GameOutcome::Unknown);
+    assert_eq!(gr.result_source, "csa_interrupted");
+}
+
+#[test]
+fn extract_from_str_matta_result_source_is_terminal_undetermined() {
+    let csa = "V2.2\nPI\n+\n+7776FU\n%MATTA\n";
+    let config = ExtractConfig {
+        min_ply: 1,
+        max_ply: None,
+        every_n: 1,
+        dedup: false,
+    };
+    let mut seen = HashSet::new();
+    let records = extract_from_str(csa, "test", &config, &mut seen).unwrap();
+    assert_eq!(records.len(), 1);
+    let gr = records[0].game_result.as_ref().unwrap();
+    assert_eq!(gr.outcome, GameOutcome::Unknown);
+    assert_eq!(gr.result_source, "csa_terminal_undetermined");
 }
 
 #[test]
@@ -291,5 +335,5 @@ fn extract_from_str_keeps_positions_before_a_mid_game_board_error() {
         GameOutcome::Unknown,
         "a failed outcome-resolution walk degrades to Unknown rather than aborting extraction"
     );
-    assert_eq!(gr.result_source, "unknown");
+    assert_eq!(gr.result_source, "csa_walk_error");
 }

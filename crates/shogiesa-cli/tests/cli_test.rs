@@ -2300,6 +2300,9 @@ side to move:
 wdl distribution (mover-relative):
   unknown           8  (100.0%)
 
+game_result source distribution:
+  no_game_result                8  (100.0%)
+
 tag ratios:
   in-check            0  (0.0%)
   capture             2  (25.0%)

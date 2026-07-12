@@ -13,6 +13,7 @@ categories = ["game-engines", "parser-implementations"]
 shogiesa-core = { path = "../shogiesa-core", version = "0.7" }
 thiserror = "2"
 tracing = "0.1"
+encoding_rs = "0.8"
 
 [dev-dependencies]
 serde_json = "1"

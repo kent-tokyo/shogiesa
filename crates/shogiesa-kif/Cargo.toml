@@ -10,7 +10,7 @@ keywords = ["shogi", "kif", "sfen", "training-data"]
 categories = ["game-engines", "parser-implementations"]
 
 [dependencies]
-shogiesa-core = { path = "../shogiesa-core", version = "0.7" }
+shogiesa-core = { path = "../shogiesa-core", version = "0.8" }
 thiserror = "2"
 tracing = "0.1"
 encoding_rs = "0.8"

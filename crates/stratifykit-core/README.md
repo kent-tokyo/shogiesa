@@ -33,8 +33,11 @@ mechanically, so drift here fails the build rather than needing to be caught by 
 
 ## Status
 
-Not yet an independent repo or published crate. It's grown inside this workspace since being
-extracted from `shogiesa-cli`'s inline quota/bucket/sampling logic, and stays here until a real
-second consumer (e.g. a masstrust/quietset-style product) actually needs it outside this
-workspace — extracting on spec, before that need is concrete, would just be guessing at an API
-boundary nobody has stress-tested yet.
+Published on crates.io (required for `shogiesa-cli` itself to be installable — it's one of
+`shogiesa-cli`'s own dependencies), but **not yet an independent repo**: it still lives inside
+this workspace, versioned and released in lockstep with every other shogiesa crate rather than on
+its own release cadence. It's grown here since being extracted from `shogiesa-cli`'s inline
+quota/bucket/sampling logic, and stays inside this workspace until a real second consumer (e.g. a
+masstrust/quietset-style product) actually depends on it independently — moving it to its own repo
+on spec, before that need is concrete, would just be guessing at a release/versioning boundary
+nobody has stress-tested yet.

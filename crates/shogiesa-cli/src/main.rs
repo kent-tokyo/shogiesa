@@ -102,6 +102,13 @@ enum Commands {
     /// Sekirei's `--positions FILE`) -- input need not be labeled, since only `sfen`/`source` are
     /// read
     MakeGateOpenings(MakeGateOpeningsArgs),
+    /// Deterministically shuffle a positions dataset into training order, optionally writing a
+    /// sidecar `--order-manifest` (training_position -> sample_id/game_id/outcome/teacher_cp/
+    /// .../block_id) plus an `order_hash` so a later run can be verified to have produced the
+    /// identical sequence, not just "used the same seed" -- the first command in this codebase
+    /// that actually permutes output order (`sample`/`select`/`stratify`/`split` all preserve
+    /// input-line or rank order)
+    Shuffle(ShuffleArgs),
     /// Nested `lineprior` subcommands -- currently only `export`, for offline dogfooding of the
     /// external `lineprior` tool (not part of this repo). Measurement-only: does not integrate
     /// into Sekirei search.
@@ -369,6 +376,42 @@ struct SampleArgs {
     #[arg(long, default_value = "0")]
     seed: u64,
     /// Write a run manifest (git sha, input hash, counts, coverage stats) to this path
+    #[arg(long)]
+    manifest: Option<PathBuf>,
+}
+
+#[derive(clap::Args)]
+struct ShuffleArgs {
+    /// Input positions JSONL
+    #[arg(short, long)]
+    input: PathBuf,
+    /// Output JSONL file -- same schema as input, records re-emitted in shuffled order
+    #[arg(short, long)]
+    out: PathBuf,
+    /// Seed for the deterministic shuffle
+    #[arg(long, default_value = "0")]
+    seed: u64,
+    /// Positions per block, for --order-manifest's block_id column
+    #[arg(long, default_value = "32")]
+    block_size: u64,
+    /// Write a training-order manifest (JSONL, one line per output position) to this path
+    #[arg(long = "order-manifest")]
+    order_manifest: Option<PathBuf>,
+    /// Engine whose observation is treated as the teacher for --order-manifest's teacher_cp/
+    /// teacher_depth columns. Requires --teacher-depth too; omit both to leave those columns null
+    #[arg(long, requires = "teacher_depth")]
+    teacher_engine: Option<String>,
+    /// Depth to select the teacher observation at (see --teacher-engine)
+    #[arg(long, requires = "teacher_engine")]
+    teacher_depth: Option<u32>,
+    /// Opaque split label echoed into every --order-manifest line's split_id column -- this
+    /// command doesn't detect which split a file is, pass what you already know (e.g. "train")
+    #[arg(long)]
+    split_id: Option<String>,
+    /// Opaque tag echoed into --manifest, for correlating this run with an external pipeline run
+    #[arg(long)]
+    experiment_id: Option<String>,
+    /// Write a run manifest (git sha, input hash, counts, order_hash) to this path
     #[arg(long)]
     manifest: Option<PathBuf>,
 }
@@ -945,6 +988,7 @@ fn main() -> Result<()> {
         Commands::FromMatch(args) => cmd_from_match(args),
         Commands::MergeObservations(args) => cmd_merge_observations(args),
         Commands::MakeGateOpenings(args) => cmd_make_gate_openings(args),
+        Commands::Shuffle(args) => cmd_shuffle(args),
         Commands::LinePrior(args) => match args.action {
             LinePriorAction::Export(a) => cmd_lineprior_export(a),
         },
@@ -2894,6 +2938,16 @@ struct RunManifest {
     /// `stratify`-only: count of distinct source roots contributing >=1 kept record.
     #[serde(skip_serializing_if = "Option::is_none")]
     distinct_roots_kept: Option<usize>,
+    /// `shuffle`-only: blake3 over every output position's `sample_id` in final order. Lets a
+    /// later run be checked against this one -- byte-for-byte identical order, not just "used the
+    /// same seed" -- even after a code change to the shuffle algorithm itself, which same-seed
+    /// reproducibility alone can't detect.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    order_hash: Option<String>,
+    /// Opaque tag passed through from `--experiment-id`, for correlating this run with an
+    /// external pipeline run. shogiesa doesn't interpret or validate it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    experiment_id: Option<String>,
 }
 
 impl RunManifest {
@@ -2938,6 +2992,8 @@ impl RunManifest {
             resumed_count: None,
             max_root_share_in_any_bucket: None,
             distinct_roots_kept: None,
+            order_hash: None,
+            experiment_id: None,
         }
     }
 }
@@ -3130,6 +3186,153 @@ fn cmd_sample(args: SampleArgs) -> Result<()> {
         manifest.records_kept = kept.len();
         manifest.records_dropped = total - kept.len();
         accumulate_coverage(&mut manifest, &kept);
+        write_manifest(manifest_path, &manifest)?;
+    }
+    Ok(())
+}
+
+/// One line of `shuffle --order-manifest`: `training_position` -> full provenance for that
+/// output position, so "what were the 32 positions in block B5" is answerable later without
+/// re-running the shuffle. Every key is always present (unlike `RunManifest`'s sparse optional
+/// fields), since this file is meant to be loaded as a table, not skimmed as a summary.
+#[derive(serde::Serialize)]
+struct OrderManifestLine {
+    training_position: u64,
+    sample_id: String,
+    game_id: String,
+    game_position_index: u32,
+    outcome: Option<GameOutcome>,
+    /// Raw side-to-move-relative cp as stored on the selected teacher observation -- NOT
+    /// black-perspective normalized (unlike `report`/`audit`'s analysis views). This is
+    /// provenance passthrough, not an analysis field.
+    teacher_cp: Option<i32>,
+    teacher_depth: Option<u32>,
+    source_file: String,
+    split_id: Option<String>,
+    shuffle_seed: u64,
+    block_id: u64,
+    /// Always `None` this round -- the gate-opening SFEN a game started from isn't retained
+    /// anywhere on `PositionRecord` today (used transiently during extraction, then discarded).
+    /// Populate once extraction captures it; not this round's scope.
+    opening_id: Option<String>,
+}
+
+/// Deterministic per-record identity: a hash of the one existing "which real-world position is
+/// this" key (`merge_alignment_key`'s `(sfen, source.path, source.ply)` triple, already used by
+/// `merge-observations`'s collision detection for the same purpose).
+///
+/// ponytail: `source.path` isn't stable across independent re-extractions on a different
+/// machine/cwd layout (no extractor canonicalizes it), so this is a within-run join key, not a
+/// formula other tools should independently recompute -- the `--order-manifest` file itself is
+/// the durable, portable artifact to keep alongside the shuffled data. Upgrade path if
+/// independent recomputation by a tool that never sees the manifest becomes a real need: swap
+/// `source.path` for a content-hash of the source game file.
+fn sample_id(rec: &PositionRecord) -> String {
+    hash_parts(&[
+        rec.sfen.as_bytes(),
+        rec.source.path.as_bytes(),
+        &rec.source.ply.to_le_bytes(),
+    ])
+    .to_hex()
+    .to_string()
+}
+
+/// The observation matching `engine`+`depth`, for `shuffle --order-manifest`'s teacher_cp/
+/// teacher_depth columns. Reuses `find_at_depth` (requested_depth-first, depth-fallback) after
+/// narrowing to one engine -- the same selection logic `audit`/`tune` already use for their own
+/// teacher-depth lookups.
+fn select_teacher<'a>(
+    rec: &'a PositionRecord,
+    engine: &str,
+    depth: u32,
+) -> Option<&'a Observation> {
+    let matching: Vec<&Observation> = rec
+        .observations
+        .iter()
+        .filter(|o| o.engine == engine)
+        .collect();
+    find_at_depth(&matching, depth)
+}
+
+/// Deterministically permutes a dataset into training order -- the first command in this
+/// codebase that actually reorders output (every other seeded command preserves input-line or
+/// rank order). Sorts by `(seeded_hash(seed, sample_id), sample_id)` rather than a bare hash, so
+/// the order is a genuine total order (no unspecified tie-break) and therefore byte-identical
+/// across runs/toolchains for the same input+seed.
+fn cmd_shuffle(args: ShuffleArgs) -> Result<()> {
+    if args.block_size == 0 {
+        anyhow::bail!("--block-size must be > 0");
+    }
+    let (mut ordered, _broken) = load_records(&args.input)?;
+    let total = ordered.len();
+
+    ordered.sort_by_cached_key(|r| {
+        let id = sample_id(r);
+        (seeded_hash(args.seed, &id), id)
+    });
+    let sample_ids: Vec<String> = ordered.iter().map(sample_id).collect();
+
+    let out_file =
+        File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
+    let mut writer = BufWriter::new(out_file);
+    for record in &ordered {
+        serde_json::to_writer(&mut writer, record)?;
+        writer.write_all(b"\n")?;
+    }
+    writer.flush()?;
+
+    if let Some(order_manifest_path) = &args.order_manifest {
+        let order_file = File::create(order_manifest_path)
+            .with_context(|| format!("cannot create {order_manifest_path:?}"))?;
+        let mut order_writer = BufWriter::new(order_file);
+        for (i, rec) in ordered.iter().enumerate() {
+            let teacher = match (&args.teacher_engine, args.teacher_depth) {
+                (Some(engine), Some(depth)) => select_teacher(rec, engine, depth),
+                _ => None,
+            };
+            let (teacher_cp, teacher_depth) = match teacher {
+                Some(obs) => (
+                    match obs.score {
+                        Score::Cp { value } => Some(value),
+                        Score::Mate { .. } => None,
+                    },
+                    Some(obs.depth),
+                ),
+                None => (None, None),
+            };
+            let line = OrderManifestLine {
+                training_position: i as u64 + 1,
+                sample_id: sample_ids[i].clone(),
+                game_id: shogiesa_stratify::group_key(&rec.source),
+                game_position_index: rec.source.ply,
+                outcome: rec.game_result.as_ref().map(|g| g.outcome),
+                teacher_cp,
+                teacher_depth,
+                source_file: rec.source.path.clone(),
+                split_id: args.split_id.clone(),
+                shuffle_seed: args.seed,
+                block_id: i as u64 / args.block_size,
+                opening_id: None,
+            };
+            serde_json::to_writer(&mut order_writer, &line)?;
+            order_writer.write_all(b"\n")?;
+        }
+        order_writer.flush()?;
+    }
+
+    eprintln!(
+        "done: {total} shuffled (seed={}) -> {:?}",
+        args.seed, args.out
+    );
+
+    if let Some(manifest_path) = &args.manifest {
+        let mut manifest = RunManifest::new("shuffle", &args.input);
+        manifest.input_hash = hash_file(&args.input)?;
+        manifest.records_read = total;
+        manifest.records_kept = total;
+        let id_refs: Vec<&[u8]> = sample_ids.iter().map(|s| s.as_bytes()).collect();
+        manifest.order_hash = Some(hash_parts(&id_refs).to_hex().to_string());
+        manifest.experiment_id.clone_from(&args.experiment_id);
         write_manifest(manifest_path, &manifest)?;
     }
     Ok(())

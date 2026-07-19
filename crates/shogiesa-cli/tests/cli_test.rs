@@ -7538,6 +7538,367 @@ fn lineprior_export_manifest_input_hash_stable_across_repeated_runs() {
     assert_eq!(hash(manifest1.path()), hash(manifest2.path()));
 }
 
+// --- shuffle ---
+
+fn shuffle_record(path: &str, ply: u32, observations: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "sfen": "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+        "source": { "kind": "csa", "path": path, "ply": ply },
+        "tags": { "phase": "opening", "side_to_move": "black", "in_check": false, "has_capture": false },
+        "observations": observations
+    })
+}
+
+fn shuffle_manifest_json(p: &Path) -> serde_json::Value {
+    serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap()
+}
+
+fn shuffle_order_lines(p: &Path) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(p)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+#[test]
+fn shuffle_same_seed_same_order_and_hash() {
+    let f = make_labeled_jsonl(&[
+        source_record("a.csa", 1),
+        source_record("b.csa", 1),
+        source_record("c.csa", 1),
+        source_record("d.csa", 1),
+        source_record("e.csa", 1),
+    ]);
+
+    let run = || {
+        let out = NamedTempFile::new().unwrap();
+        let manifest = NamedTempFile::new().unwrap();
+        shogiesa()
+            .args([
+                "shuffle",
+                "--input",
+                f.path().to_str().unwrap(),
+                "--out",
+                out.path().to_str().unwrap(),
+                "--seed",
+                "7",
+                "--manifest",
+                manifest.path().to_str().unwrap(),
+            ])
+            .assert()
+            .success();
+        (
+            std::fs::read_to_string(out.path()).unwrap(),
+            shuffle_manifest_json(manifest.path())["order_hash"].clone(),
+        )
+    };
+    assert_eq!(run(), run());
+}
+
+#[test]
+fn shuffle_different_seed_different_order() {
+    let f = make_labeled_jsonl(&[
+        source_record("a.csa", 1),
+        source_record("b.csa", 1),
+        source_record("c.csa", 1),
+        source_record("d.csa", 1),
+        source_record("e.csa", 1),
+    ]);
+
+    let run_with_seed = |seed: &str| {
+        let out = NamedTempFile::new().unwrap();
+        shogiesa()
+            .args([
+                "shuffle",
+                "--input",
+                f.path().to_str().unwrap(),
+                "--out",
+                out.path().to_str().unwrap(),
+                "--seed",
+                seed,
+            ])
+            .assert()
+            .success();
+        std::fs::read_to_string(out.path()).unwrap()
+    };
+    assert_ne!(run_with_seed("1"), run_with_seed("2"));
+}
+
+#[test]
+fn shuffle_order_hash_changes_if_any_sample_id_changes() {
+    let run_with_ply = |ply: u32| {
+        let f = make_labeled_jsonl(&[
+            source_record("a.csa", 1),
+            source_record("b.csa", ply),
+            source_record("c.csa", 1),
+        ]);
+        let out = NamedTempFile::new().unwrap();
+        let manifest = NamedTempFile::new().unwrap();
+        shogiesa()
+            .args([
+                "shuffle",
+                "--input",
+                f.path().to_str().unwrap(),
+                "--out",
+                out.path().to_str().unwrap(),
+                "--manifest",
+                manifest.path().to_str().unwrap(),
+            ])
+            .assert()
+            .success();
+        shuffle_manifest_json(manifest.path())["order_hash"].clone()
+    };
+    assert_ne!(run_with_ply(1), run_with_ply(2));
+}
+
+#[test]
+fn shuffle_block_id_arithmetic_at_boundaries() {
+    let records: Vec<serde_json::Value> = (0..33)
+        .map(|i| source_record(&format!("g{i}.csa"), 1))
+        .collect();
+    let f = make_labeled_jsonl(&records);
+    let out = NamedTempFile::new().unwrap();
+    let order_manifest = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "shuffle",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--block-size",
+            "32",
+            "--order-manifest",
+            order_manifest.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let lines = shuffle_order_lines(order_manifest.path());
+    assert_eq!(lines.len(), 33);
+    for line in &lines {
+        let pos = line["training_position"].as_u64().unwrap();
+        let expected_block = (pos - 1) / 32;
+        assert_eq!(
+            line["block_id"].as_u64().unwrap(),
+            expected_block,
+            "training_position {pos} has wrong block_id"
+        );
+    }
+    assert!(
+        lines
+            .iter()
+            .any(|l| l["training_position"] == 32 && l["block_id"] == 0)
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l["training_position"] == 33 && l["block_id"] == 1)
+    );
+}
+
+#[test]
+fn shuffle_block_size_zero_rejected() {
+    let f = make_labeled_jsonl(&[source_record("a.csa", 1)]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "shuffle",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--block-size",
+            "0",
+        ])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn shuffle_teacher_flags_omitted_produces_null_columns() {
+    let f = make_labeled_jsonl(&[shuffle_record(
+        "a.csa",
+        1,
+        serde_json::json!([obs_with_engine("strong", "7g7f", 50, 10)]),
+    )]);
+    let out = NamedTempFile::new().unwrap();
+    let order_manifest = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "shuffle",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--order-manifest",
+            order_manifest.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let lines = shuffle_order_lines(order_manifest.path());
+    assert_eq!(lines[0]["teacher_cp"], serde_json::Value::Null);
+    assert_eq!(lines[0]["teacher_depth"], serde_json::Value::Null);
+}
+
+#[test]
+fn shuffle_teacher_flags_select_correct_observation() {
+    let f = make_labeled_jsonl(&[shuffle_record(
+        "a.csa",
+        1,
+        serde_json::json!([
+            obs_with_engine("weak", "7g7f", 999, 10),
+            obs_with_engine("strong", "2g2f", 42, 12),
+        ]),
+    )]);
+    let out = NamedTempFile::new().unwrap();
+    let order_manifest = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "shuffle",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--order-manifest",
+            order_manifest.path().to_str().unwrap(),
+            "--teacher-engine",
+            "strong",
+            "--teacher-depth",
+            "12",
+        ])
+        .assert()
+        .success();
+
+    let lines = shuffle_order_lines(order_manifest.path());
+    assert_eq!(lines[0]["teacher_cp"], serde_json::json!(42));
+    assert_eq!(lines[0]["teacher_depth"], serde_json::json!(12));
+}
+
+#[test]
+fn shuffle_teacher_flags_partial_is_rejected() {
+    let f = make_labeled_jsonl(&[source_record("a.csa", 1)]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "shuffle",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--teacher-engine",
+            "strong",
+        ])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn shuffle_split_id_passthrough() {
+    let f = make_labeled_jsonl(&[source_record("a.csa", 1), source_record("b.csa", 1)]);
+
+    let out = NamedTempFile::new().unwrap();
+    let order_manifest = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "shuffle",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--order-manifest",
+            order_manifest.path().to_str().unwrap(),
+            "--split-id",
+            "train",
+        ])
+        .assert()
+        .success();
+    for line in shuffle_order_lines(order_manifest.path()) {
+        assert_eq!(line["split_id"], serde_json::json!("train"));
+    }
+
+    let out2 = NamedTempFile::new().unwrap();
+    let order_manifest2 = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "shuffle",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out2.path().to_str().unwrap(),
+            "--order-manifest",
+            order_manifest2.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    for line in shuffle_order_lines(order_manifest2.path()) {
+        assert_eq!(line["split_id"], serde_json::Value::Null);
+    }
+}
+
+#[test]
+fn shuffle_outcome_column_reflects_game_result() {
+    let f = make_labeled_jsonl(&[serde_json::json!({
+        "schema_version": 1,
+        "sfen": "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+        "source": { "kind": "csa", "path": "a.csa", "ply": 1 },
+        "tags": { "phase": "opening", "side_to_move": "black", "in_check": false, "has_capture": false },
+        "observations": [],
+        "game_result": { "outcome": "black_wins", "result_source": "test" }
+    })]);
+    let out = NamedTempFile::new().unwrap();
+    let order_manifest = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "shuffle",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--order-manifest",
+            order_manifest.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let lines = shuffle_order_lines(order_manifest.path());
+    assert_eq!(lines[0]["outcome"], serde_json::json!("black_wins"));
+}
+
+#[test]
+fn shuffle_empty_input_deterministic() {
+    let f = NamedTempFile::new().unwrap();
+
+    let run = || {
+        let out = NamedTempFile::new().unwrap();
+        let manifest = NamedTempFile::new().unwrap();
+        shogiesa()
+            .args([
+                "shuffle",
+                "--input",
+                f.path().to_str().unwrap(),
+                "--out",
+                out.path().to_str().unwrap(),
+                "--manifest",
+                manifest.path().to_str().unwrap(),
+            ])
+            .assert()
+            .success();
+        (
+            std::fs::read_to_string(out.path()).unwrap(),
+            shuffle_manifest_json(manifest.path())["order_hash"].clone(),
+        )
+    };
+    let (content, hash1) = run();
+    let (content2, hash2) = run();
+    assert_eq!(content, "");
+    assert_eq!(content2, "");
+    assert_eq!(hash1, hash2);
+}
+
 // --- help smoke test ---
 
 #[test]

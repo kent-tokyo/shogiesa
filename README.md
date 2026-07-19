@@ -694,6 +694,56 @@ counts (these naturally deviate from the requested fractions since games vary in
 top-`--count` heap (by `seeded_hash`) instead of materializing the whole dataset, the same
 technique `select --strategy uncertain/coverage` uses.
 
+### `shuffle` — deterministic training order + provenance manifest
+
+```bash
+shogiesa shuffle \
+  --input positions.jsonl \
+  --out shuffled.jsonl \
+  --seed 42 \
+  --block-size 32 \
+  --order-manifest order.jsonl \
+  --split-id train \
+  --teacher-engine strong-engine --teacher-depth 14 \
+  --manifest manifest.json
+```
+
+The first command in this codebase that actually reorders output — every other seeded command
+(`sample`, `select`, `stratify`, `split`) preserves either input-line order or rank order.
+`shuffle` sorts records by `(seeded_hash(seed, sample_id), sample_id)`, so the same input + seed
+always produces byte-identical output order, regardless of Rust toolchain.
+
+**`sample_id`** is `blake3(sfen, source.path, source.ply)` — the same `(sfen, source.path,
+source.ply)` identity `merge-observations` already uses to mean "which real-world position is
+this." It is a *within-run join key*, not a portable formula: `source.path` is whatever string
+was passed to `--input` at extraction time, un-canonicalized, so it is **not** guaranteed to match
+across two independent re-extractions of "the same" corpus on a different machine or directory
+layout. Keep the `--order-manifest` file itself alongside the shuffled data as the durable,
+portable artifact — don't expect another tool to recompute a matching `sample_id` from scratch
+without it.
+
+**`--order-manifest PATH`** writes one JSONL line per output position — `training_position`
+(1-indexed), `sample_id`, `game_id` (same `group_key` used by `stratify`/`distribution`),
+`game_position_index` (`source.ply`), `outcome` (from `game_result.outcome`, `null` if
+unlabeled/unresolved), `teacher_cp`/`teacher_depth` (from the observation matching
+`--teacher-engine`/`--teacher-depth`, both `null` if the flags are omitted — raw side-to-move cp,
+not black-perspective normalized), `source_file` (`source.path`), `split_id` (passthrough of
+`--split-id`, `null` if omitted — `shuffle` doesn't detect which split a file is, since `split`
+doesn't stamp anything onto records today), `shuffle_seed`, and `block_id` (`(training_position -
+1) / block_size`, 0-indexed). `opening_id` is always `null` this round: the gate-opening SFEN a
+game started from isn't retained anywhere on `PositionRecord` today (used transiently during
+extraction, then discarded) — future work once extraction captures it. Every key is always
+present (unlike `RunManifest`'s sparse optional fields), since this file is meant to be loaded as
+a table.
+
+**`--manifest PATH`** (the usual run manifest, see below) gains `order_hash`: a blake3 digest over
+every output position's `sample_id` in final order. This is the actual answer to "did a later run
+— possibly after a code change — produce the identical training sequence": recompute it over a
+shuffled output's `sample_id` column and compare, rather than trusting that "same seed" alone
+implies "same order" (a shuffle-algorithm change under the same seed would defeat that argument,
+`order_hash` doesn't). `--experiment-id` is an opaque passthrough into the same manifest, for
+correlating a run with an external pipeline — shogiesa doesn't interpret it.
+
 ### `pack` / `unpack` — binary format
 
 ```bash
@@ -705,7 +755,7 @@ Compact binary encoding of the JSONL schema for faster loading by trainers.
 
 ### Run manifests
 
-`filter`/`balance`/`stratify`/`sample`/`pack`/`label` accept `--manifest PATH` to write a JSON provenance
+`filter`/`balance`/`stratify`/`sample`/`pack`/`label`/`shuffle` accept `--manifest PATH` to write a JSON provenance
 record alongside their normal output: shogiesa version, git sha (embedded at build time),
 schema/pack format version, the full command line, the input file's path and a content hash
 (`input_hash`, with `fingerprint_algorithm` naming the algorithm — `blake3`, chosen because its
@@ -728,6 +778,7 @@ wasn't requested" (`null`) from "resume was requested but matched nothing" (`0`)
 `engine_fingerprint_mode`. There's no separate `worker_count` field — `jobs` already is that
 value. It's opt-in and additive — no effect on the command's normal output when omitted. `split`
 doesn't have `--manifest`: it already writes its own tailored `manifest.json` (see above).
+(For `shuffle`) `order_hash` and `experiment_id` — see the `shuffle` section above.
 
 ### `report` — dataset statistics
 
@@ -927,6 +978,7 @@ shogiesa connects to engines via SFEN, JSONL, and USI — no engine-internal dep
 | KIF `変化` (variation/branch) moves | extracted as separate positions (`source.path` suffixed `#varN@ply`), but only relative to the mainline — a variation nested inside another variation is not supported |
 | `Sfen`/`Board` legality checking | syntactic only, no full legal-move generation (by design) |
 | `lineprior export` KIF outcome detection | text-marker-based (`まで…`/`投了`/`持将棋`/`千日手`/`中断`), not exhaustive; unrecognized endings and all `変化` variation-branch moves fall back to `outcome: "unknown"` — check `--manifest`'s `unknown_outcome_count` to see how much of a corpus this affects |
+| `shuffle`'s `sample_id` | a within-run join key (hashes `source.path`, which isn't canonicalized), not a formula portable across independent re-extractions on a different machine/layout — keep the `--order-manifest` file, don't recompute; `opening_id` is always `null` (origin SFEN isn't retained on `PositionRecord` today) |
 
 ## License
 

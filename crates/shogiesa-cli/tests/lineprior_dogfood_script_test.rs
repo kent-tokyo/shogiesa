@@ -20,6 +20,19 @@ fn repo_root() -> std::path::PathBuf {
         .unwrap()
 }
 
+/// `bash` on PATH resolves to the `C:\Windows\System32\bash.exe` WSL launcher stub on GitHub's
+/// `windows-latest` runners (present even without WSL installed), not Git for Windows' real bash
+/// -- invoking it fails immediately with "Windows Subsystem for Linux has no installed
+/// distributions." Git for Windows (pre-installed on that image) ships its own bash at this fixed
+/// path, so use it explicitly on Windows rather than relying on PATH order.
+fn bash_command() -> std::process::Command {
+    if cfg!(windows) {
+        std::process::Command::new(r"C:\Program Files\Git\bin\bash.exe")
+    } else {
+        std::process::Command::new("bash")
+    }
+}
+
 /// Runs `scripts/lineprior_dogfood.sh` end-to-end against the real, already-built `shogiesa`
 /// binary and `tests/fixtures/fake_lineprior.sh` standing in for the external `lineprior` tool --
 /// exercises the script's own plumbing (arg parsing, file wiring, jq extraction into report.md)
@@ -27,7 +40,7 @@ fn repo_root() -> std::path::PathBuf {
 #[test]
 fn lineprior_dogfood_script_produces_report() {
     let out_dir = TempDir::new().unwrap();
-    let status = std::process::Command::new("bash")
+    let status = bash_command()
         .arg(repo_root().join("scripts/lineprior_dogfood.sh"))
         .args([
             "--games",
@@ -74,7 +87,7 @@ fn run_dogfood(lineprior_stub: &str, out_dir: &Path, extra: &[&str]) -> std::pro
         cargo_bin("shogiesa").to_str().unwrap().to_string(),
     ];
     args.extend(extra.iter().map(|s| s.to_string()));
-    std::process::Command::new("bash")
+    bash_command()
         .arg(repo_root().join("scripts/lineprior_dogfood.sh"))
         .args(args)
         .status()

@@ -8,6 +8,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-07-26
+
 ### Added
 - `label --nodes N[,N2,...]` — a fixed-node-count search limit, as a first-class alternative to `--depths` (exactly one of the two is required; they're mutually exclusive). Sends `go nodes N` instead of `go depth N`. Motivation: comparing different engines/versions as teachers, "depth" isn't a comparable unit of search work across them, while a node count is. `Observation` gains `search_limit_kind` (`"depth"`/`"nodes"`, `#[serde(default)]` so it's always present) and `requested_nodes` (mirrors the existing `requested_depth`, `None` in depth mode) — the existing `nodes` field already serves as "actual nodes" in both modes, exactly parallel to how `depth` already serves as "actual depth" opposite `requested_depth`, so no separate `actual_nodes` field was added. `label`'s on-disk cache key now folds in a kind discriminant so `--depths 8` and `--nodes 8` never collide; the label-cache `CacheEntry` gains `search_limit_kind`/`search_limit_value` (additive, `#[serde(default)]`, not a rename of `requested_depth`, so pre-existing v2 cache entries keep parsing correctly).
 - `Observation` gains full search telemetry, parsed from the engine's own USI `info` line: `seldepth`, `nps`, `hashfull`. `RunManifest`/`label` gain `engine_threads`/`engine_hash_mb` (read from `--engine-option Threads=N`/`Hash=M`, case-insensitive; not duplicated per-`Observation`, same as `multipv`). `cache stats` gains a `search_limit_kind` distribution alongside its existing `requested_depth`/`multipv` breakdowns, so a node-limited cache dir doesn't just report `requested_depth: 0` for every entry with nothing explaining why.

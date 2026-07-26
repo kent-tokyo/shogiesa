@@ -33,6 +33,24 @@ fn bash_command() -> std::process::Command {
     }
 }
 
+/// A Windows `\`-separated path is not safe to pass as a bash argument verbatim: bash's own
+/// argument tokenizing treats `\` as an escape character, silently consuming it and the
+/// following letter (observed in CI: `D:\a\shogiesa\...` arrived at bash as
+/// `D:ashogiesa...`, since `\a`/`\s`/etc. were each swallowed as escaped-letter sequences) --
+/// this made every `--games`/`--lineprior`/`--out`/`--shogiesa` argument unusable on
+/// `windows-latest`, and even the script path itself (passed as bash's own argv). Git Bash (MSYS)
+/// accepts `/`-separated Windows paths (`D:/a/shogiesa/...`) natively, so converting is enough --
+/// no `/d/a/...`-style MSYS path translation needed. A no-op on non-Windows, where `\` isn't a
+/// path separator to begin with.
+fn to_bash_path(p: &Path) -> String {
+    let s = p.to_str().unwrap().to_string();
+    if cfg!(windows) {
+        s.replace('\\', "/")
+    } else {
+        s
+    }
+}
+
 /// Runs `scripts/lineprior_dogfood.sh` end-to-end against the real, already-built `shogiesa`
 /// binary and `tests/fixtures/fake_lineprior.sh` standing in for the external `lineprior` tool --
 /// exercises the script's own plumbing (arg parsing, file wiring, jq extraction into report.md)
@@ -41,18 +59,20 @@ fn bash_command() -> std::process::Command {
 fn lineprior_dogfood_script_produces_report() {
     let out_dir = TempDir::new().unwrap();
     let status = bash_command()
-        .arg(repo_root().join("scripts/lineprior_dogfood.sh"))
+        .arg(to_bash_path(
+            &repo_root().join("scripts/lineprior_dogfood.sh"),
+        ))
         .args([
             "--games",
-            fixtures_dir().to_str().unwrap(),
+            &to_bash_path(&fixtures_dir()),
             "--lineprior",
-            fixture("fake_lineprior.sh").to_str().unwrap(),
+            &to_bash_path(&fixture("fake_lineprior.sh")),
             "--out",
-            out_dir.path().to_str().unwrap(),
+            &to_bash_path(out_dir.path()),
             "--source",
             "test_dogfood",
             "--shogiesa",
-            cargo_bin("shogiesa").to_str().unwrap(),
+            &to_bash_path(&cargo_bin("shogiesa")),
         ])
         .status()
         .unwrap();
@@ -76,19 +96,21 @@ fn lineprior_dogfood_script_produces_report() {
 fn run_dogfood(lineprior_stub: &str, out_dir: &Path, extra: &[&str]) -> std::process::ExitStatus {
     let mut args = vec![
         "--games".to_string(),
-        fixtures_dir().to_str().unwrap().to_string(),
+        to_bash_path(&fixtures_dir()),
         "--lineprior".to_string(),
-        fixture(lineprior_stub).to_str().unwrap().to_string(),
+        to_bash_path(&fixture(lineprior_stub)),
         "--out".to_string(),
-        out_dir.to_str().unwrap().to_string(),
+        to_bash_path(out_dir),
         "--source".to_string(),
         "test_dogfood".to_string(),
         "--shogiesa".to_string(),
-        cargo_bin("shogiesa").to_str().unwrap().to_string(),
+        to_bash_path(&cargo_bin("shogiesa")),
     ];
     args.extend(extra.iter().map(|s| s.to_string()));
     bash_command()
-        .arg(repo_root().join("scripts/lineprior_dogfood.sh"))
+        .arg(to_bash_path(
+            &repo_root().join("scripts/lineprior_dogfood.sh"),
+        ))
         .args(args)
         .status()
         .unwrap()

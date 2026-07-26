@@ -83,7 +83,7 @@ shogiesa label \
   --input positions.jsonl \
   --engine ./engine-binary \
   --engine-name myengine \   # 省略可; USI の id name にフォールバック
-  --depths 4,6,8 \           # 探索深さ（カンマ区切り）
+  --depths 4,6,8 \           # 探索深さ（カンマ区切り、--nodes とは排他）
   --timeout-ms 10000 \
   --multipv 2 \              # 省略可; observations[].policy_margin_cp を計算
   --out observations.jsonl
@@ -99,6 +99,37 @@ margin が小さいほど、bestmove があってもラベルとしての信頼�
 単一PVラベリングでは出力サイズが増えません。`score_bound`（`exact`/`lowerbound`/`upperbound`）
 は候補のスコアが確定評価値か探索バウンドかを示し、bound タグ付きの runner-up は
 `policy_margin_cp` の計算に決して使われません。
+
+**`--nodes N[,N2,...]`** は `--depths` の代替となる固定ノード数指定です — 両者は排他で、
+どちらか一方が必須です。`go depth N` の代わりに `go nodes N` を送ります。異なるエンジン／
+バージョンを教師として比較する場合はこちらを使ってください: 「depth」はエンジン間で
+比較可能な探索量の単位ではありません（強いエンジンほど同じ時間でより深くまで到達するため）が、
+ノード数はそうではありません。`Observation.search_limit_kind`（`"depth"`/`"nodes"`）と
+`requested_nodes`（既存の `requested_depth` と対になり、depthモードでは `null`）を記録します
+— 既存の `nodes` フィールドは両モードで既に「実際に到達したノード数」を記録済みで、
+`depth` が `requested_depth` に対して「実際に到達した深さ」を記録するのと完全に対称なので、
+別途 `actual_nodes` フィールドは追加していません。ディスク上のラベルキャッシュ
+（`--cache-dir`）はキーに種別を折り込むため、同じ数値でも `--depths 8` と `--nodes 8` が
+衝突することはありません。
+
+各観測にはエンジン自身のUSI `info` 行から直接パースした探索テレメトリも記録されます:
+`seldepth`、`nps`、`hashfull`（エンジンが報告しなければすべて `null`）。`--engine-option
+Threads=N`/`Hash=M`（大小文字区別なし）は `--manifest` の `engine_threads`/`engine_hash_mb`
+としてそのまま出力されます — 実行全体で不変な値なので観測ごとに重複させず、マニフェストにのみ
+記録します（`multipv` と同じ扱い）。`Observation.engine_options_hash`（解決済みの
+`--engine-option` の組み合わせ全体のblake3ハッシュ、`--multipv` 使用時に合成される `MultiPV`
+エントリも含む）を見れば、生のオプション一覧を差分比較しなくても2回のラベリング実行間で
+エンジン設定が変わったかどうかを下流の消費者が検知できます。
+
+**`--weight-file PATH`** はそのファイル1つのSHA-256を計算し（ディレクトリを渡すと明確な
+エラーで拒否）、この実行が生成する全観測の `Observation.weight_sha256` と `--manifest` の
+`weight_sha256` に記録します — 例えば `--engine-option EvalFile=...` でエンジンに読み込ませる
+NNUE/評価用の重みファイルなどを想定しています。shogiesa はファイルの中身を読んだり解釈したり
+することは一切なく、ハッシュ計算にのみ使います。`engine_threads`/`engine_hash_mb` と異なり
+これは観測ごとにも重複記録されます（マニフェストだけではありません）— 同じオプション文字列の
+*パス* に読み込ませたまま再学習後の重みへ差し替えても `engine_options_hash` だけでは検知でき
+ませんし、観測は複数回の `label` 実行（`--resume-from`）をまたいで蓄積されうるため、データが
+マニフェストから切り離されてシャッフルされた後も生き残る情報は観測単位の記録だけだからです。
 
 `label` は入力を1行ずつストリーミングし、bounded な reader / worker プール / writer
 パイプラインで処理します — データセット全体をメモリに載せることはなく、メモリ使用量は
@@ -151,7 +182,8 @@ SIGKILL)すると、その時点でまだ書き出されていないものは常
 
 `--cache-dir PATH` は各観測を小さなJSONファイルとしてキャッシュします。ファイルは
 `(sfen, engine名, engineバージョン, engineオプション, engineバイナリのfingerprint,
-requested_depth, multipv, schema_version)` に対するコンテンツハッシュの先頭2文字で
+要求深さまたはノード数(種別タグ付きなので `--depths 8` と `--nodes 8` は衝突しません),
+multipv, schema_version)` に対するコンテンツハッシュの先頭2文字で
 サブディレクトリに分散配置され、DBは使いません — 手で覗いたり消したりできるファイルだけです。
 キャッシュへの書き込みはatomicです(一時ファイルに書いてからrename)。クラッシュで書き込み
 途中のファイルが残ることはありません — cache-dirは複数の`label`実行から同時に共有される
@@ -176,6 +208,46 @@ PATH経由で解決されるベア名の場合(プロセス起動と違い、読
 ため)、`content`/`metadata` はその実行に限り警告付きで `none` 相当の挙動にフォールバック
 します — `label` 自体を失敗させることはありません。
 
+**USIライフサイクルの厳格モード**（`--usi-strict` / `--restart-engine-every N` /
+`--restart-on-protocol-error` / `--transcript-on-error DIR`）は、desyncした（あるいは
+半分死んだ）エンジンプロセスの応答を鵜呑みにせず検知・復旧します — 姉妹プロジェクトで
+実際に起きたバグ（古いエンジンが別局面に対する応答を返し続け、無人のラベリング実行を
+サイレントに汚染した）が動機です。`--usi-strict` はプロトコル違反を検知します:
+対応する `go` が無いのに届いた bestmove、同じ `go` に対する重複 bestmove、既にtimeout
+救済済みの探索に後から届いた bestmove、そして（`make-gate-openings` と同じ
+`shogi_core`/`shogi_legality_lite` の合法手チェックを再利用して）与えられた局面で
+合法でない bestmove — 違法な bestmove は信頼できる観測として記録せず破棄します。
+検知した違反は `--manifest` の `protocol_violations_count` に集計されます（`--usi-strict`
+を指定しない限り `null` のままなので、「未チェック」と「チェック済みで0件」を区別できます）。
+
+根本原因の修正自体はどのフラグの有無にも関わらず適用されます: エンジンプロセスが死んでいる
+場合（I/Oエラー — パイプ自体が壊れている）、以前はそのままそのworkerスレッドの残り全ての
+局面で同じ（もう壊れた）プロセスを黙って使い続けていましたが、これは**無条件に**再起動される
+ようになりました。`--restart-on-protocol-error` は、プロセス自体が死んでいる証拠ではない
+エラー（timeout、パース不能な応答、あるいは `--usi-strict` が検知した違反）についても
+再起動対象を広げます — デフォルトでは無効です。単なる timeout はこのエンジンに対して
+`--timeout-ms` が短すぎるだけという可能性もあり、死んでいる証拠にはならないためです。
+`--restart-engine-every N` はエラーの有無に関わらず定期的に再起動し、長時間の無人実行での
+緩やかなリソース増加に対するヘッジとして機能します。`--transcript-on-error DIR` は探索
+エラー発生時（厳格モードの違反に限らず）に、直前の正常な `go` からの生のUSIやり取りを
+`{nanos}_worker{id}_{kind}.log` に書き出し、事後デバッグに使えます。`--manifest` は
+`engine_restarts` を新たに出力します（`timeout_salvaged_count` と同じく常に出力）—
+これら3つのフラグを一切指定していなくても、死んだエンジンの再起動は無条件なので0でない
+値になり得ます。
+
+**experiment envelope のパススルー**: `--experiment-id`/`--candidate-id`/`--baseline-id`/
+`--lineage-id`/`--teacher-manifest-sha256`/`--init-seed`/`--split-seed`/`--split-sha256`/
+`--validity` は `--manifest` へそのまま出力される opaque なタグです — shogiesa は解釈も
+検証もしません。より広いパイプライン（shogiesa → quietset → lineprior → veridict）向けに
+起案された共有provenance語彙の一部です。現在のステータス（まだ他の3リポジトリには
+採用されていないドラフト）は
+[`docs/design/experiment_envelope.md`](docs/design/experiment_envelope.md)、提案中の形式は
+[`schema/experiment_envelope.schema.json`](schema/experiment_envelope.schema.json)
+を参照してください。`--manifest` は計算済みの `dataset_sha256`（`--input` のSHA-256）と
+`binary_sha256`（engineバイナリのSHA-256）も出力します — このファイル内の他のハッシュと
+異なり両方とも本物のSHA-256です（blake3ではありません）。理由は、これらはクロスリポジトリ
+向けのフィールドであり、姉妹リポジトリが `shasum -a 256` で検証する可能性があるためです。
+
 ### `cache` — `label --cache-dir` の点検・保守
 
 ```bash
@@ -188,9 +260,11 @@ shogiesa cache prune  --cache-dir .shogiesa-cache --legacy-only --yes
 
 新しく書かれる全てのcacheエントリは、素の `Observation` ではなく小さなenvelope
 (`cache_schema_version`、`created_at`、`schema_version`、engine名/バージョン/fingerprint/
-fingerprint-mode、`requested_depth`、`multipv`、そして `observation` 自体)として保存されます
+fingerprint-mode、`requested_depth`、`search_limit_kind`/`search_limit_value`、`multipv`、
+そして `observation` 自体)として保存されます
 — cache key(`(sfen, engine名/バージョン, engineオプション, engineバイナリのfingerprint,
-requested_depth, multipv, schema_version)`)は既にこれら全てをエンコードしていますが、
+要求深さまたはノード数(種別タグ付き), multipv, schema_version)`)は既にこれら全てをエンコード
+していますが、
 一方向ハッシュなので、ファイル名だけから「これはどのschema_versionだったか」を復元する方法は
 ありません。ペイロード側にも保存しておくことは、書き込み時のコストはゼロで、読み込み時の
 実際の可視化を可能にします。このenvelopeが存在する前に作られたcacheディレクトリも変わらず
@@ -200,7 +274,9 @@ requested_depth, multipv, schema_version)`)は既にこれら全てをエンコ�
 
 `cache stats` はエントリ数・合計サイズ・最古/最新エントリの経過日数・エンジン別分布・
 legacy(envelope導入前)エントリ数、そして新しいメタデータを持つエントリについては
-`schema_version`/`engine_fingerprint`/`requested_depth`/`multipv` の分布を表示します。
+`schema_version`/`engine_fingerprint`/`requested_depth`/`multipv`/`search_limit_kind`
+の分布を表示します(最後の1つのおかげで、`--nodes` でラベル付けしたcacheディレクトリでも
+全エントリが `requested_depth: 0` とだけ表示されて理由が分からない、ということがなくなります)。
 `cache verify` は壊れた(どちらの形式としてもパースできない)エントリを検出し、同じ
 legacy/現行の内訳を報告します。**スコープに関する注記**: どちらのコマンドも「このエントリは
 現在のエンジン/schemaと一致するか」という *ライブ* チェックは行いません — それには
@@ -270,10 +346,29 @@ keptされたか、rankが低いものが無条件に優先され、同一rank�
 ありません。各出力SFENは `label`/`filter` と同じパーサで検証してから書き出すため、不正な
 入力行は外部match-runnerにそのまま渡さず(`invalid_sfen`)スキップします。
 
+構文的に正しいSFENでも、手番側に合法手が一切ない(詰み/ステイルメイトに近い終局局面)場合は
+gatingの開始局面として使い物になりません — 外部match-runnerには対局可能な開始局面が必要で
+対局終了済みの局面ではないため、これらはデフォルトで除外されます(`unplayable`)。合法性の
+判定は shogiesa 自身の指し手ロジックではなく `shogi_core`/`shogi_usi_parser`/
+`shogi_legality_lite` で行います。`--allow-unplayable` を渡せばそのまま残せます。
+
 `--manifest` は `distinct_roots_kept` と `max_root_share_in_any_bucket`(`stratify` から
-そのまま再利用し、ここではsuite全体に対する単一source gameの最大占有率として解釈)に加えて、
-通常のdrop-reasonの内訳(`invalid_sfen`、`below_min_ply`、`above_max_ply`、
-`duplicate_sfen`、`over_count`)を報告します。
+そのまま再利用し、ここではsuite全体に対する単一source gameの最大占有率として解釈)、通常の
+drop-reasonの内訳(`invalid_sfen`、`below_min_ply`、`above_max_ply`、`unplayable`、
+`duplicate_sfen`、`over_count`)に加え、以下を報告します: `selection_seed`(`--seed` を
+そのまま反映)、`canonical_valid_count`(`--count` のquotaで絞り込まれる**前**の、全フィルタを
+通過した件数 — post-quotaの `records_kept` とは異なります)、`output_sha256`(`--out` の
+書き出しバイト列のSHA-256)、`source_distribution`/`phase_distribution`/
+`material_distribution`(最終的なkept suiteに対する分布 — `material_distribution` は標準的な
+整数駒点数表を使います: 歩1/香3/桂3/銀5/金6/角8/飛10、成駒(歩香桂銀)は金と同じ価値、王は
+対象外 — このコードベースに既存の駒点数の概念は無かったため、外部標準への準拠ではなく
+新規の判断です)、そして `selection_algorithm_version`(このコマンド自身のtie-break/ランク付け
+/dedupの仕組み自体が変わったときのみbumpされ、無関係な変更ではbumpされません)。`--out` の
+出力行順は決定的な入力遭遇順で、seedによるシャッフルではありません — `--seed` は `--count`
+のquotaをどのレコードが勝ち取るかのタイブレークにのみ使われます — 固定の入力/seed/フィルタ/
+`--count` の組み合わせに対しては再実行しても順序は安定しますが、それ自体が持ち運び可能な
+cross-runのjoinキーというわけではありません(`--count` を変えるとquotaを通過するレコード自体
+が変わるため、ファイル中の行の位置もずれます)。
 
 このファイルを作ること自体は簡単な部分です。それがSekirei側のgate精度を実際に改善するか
 (Elo CIが狭まる、開始側バイアスが減る、単一rootへの偏りが減る)は別の、shogiesaの外側にある
@@ -754,7 +849,8 @@ JSONLスキーマをコンパクトなバイナリ形式にエンコードし、
 
 ### 実行マニフェスト
 
-`filter`/`balance`/`stratify`/`sample`/`pack`/`label`/`shuffle` は `--manifest PATH` で JSON 形式の実行記録を
+`filter`/`balance`/`stratify`/`sample`/`pack`/`label`/`shuffle`/`make-gate-openings` は
+`--manifest PATH` で JSON 形式の実行記録を
 通常出力と一緒に書き出せます: shogiesa バージョン、git sha（ビルド時に埋め込み）、
 スキーマ/パック形式バージョン、実行時の完全なコマンドライン、入力ファイルのパスと
 コンテンツハッシュ（`input_hash`、アルゴリズム名は `fingerprint_algorithm` に記録 — 使用しているのは
@@ -763,7 +859,8 @@ JSONLスキーマをコンパクトなバイナリ形式にエンコードし、
 「前回実行から入力が変わったか」を見るためのものであり、検証可能な整合性チェックサムではありません）、
 読み込み/採用/棄却件数、
 棄却理由別カウント、ラベル済み/未ラベル件数、MultiPV候補カバレッジ、`score_bound` 分布、
-requested_depth の合計数/未達数、そして（`filter` の場合は）解決済みの品質設定、（`label` の場合は）エンジン名/深さ/MultiPV/
+requested_depth の合計数/未達数、そして（`filter` の場合は）解決済みの品質設定、（`label` の場合は）
+エンジン名/深さまたはノード数/MultiPV/
 エンジンオプション/ジョブ数/エンジン起動失敗数、`records_per_sec`(壁時計時間ベース。読み込み
 件数ではなく実際に書き出された件数を基準にします — 読み込み件数だと、エンジンまで届かなかった
 skip/パース不能行の分だけ数値が水増しされるため)、`average_engine_time_ms`(書き出した各
@@ -772,13 +869,28 @@ skip/パース不能行の分だけ数値が水増しされるため)、`average
 含まれます — 今回の実行純粋な処理速度を見るには `records_per_sec` を使ってください)、
 `preserve_order`、`resume_from`/`resumed_count`(`--resume-from` 使用時 — `resumed_count` は
 「resumeを指定していない」(`null`)と「resumeを指定したが何もマッチしなかった」(`0`)を
-区別できます)、(`stratify` の場合は)`max_root_share_in_any_bucket`/`distinct_roots_kept`、
+区別できます)、`timeout_salvaged_count`、`protocol_violations_count`/`engine_restarts`
+(上記 `label` の節のUSI厳格モードの段落を参照)、(`stratify` の場合は)
+`max_root_share_in_any_bucket`/`distinct_roots_kept`、(`make-gate-openings` の場合は)
+`selection_seed`/`canonical_valid_count`/`output_sha256`/`source_distribution`/
+`phase_distribution`/`material_distribution`/`selection_algorithm_version`(上記
+`make-gate-openings` の節を参照)、
 そして(`--cache-dir` 使用時は)cache hit/miss件数、`cache_hit_rate`、
 `engine_fingerprint_mode` です。`worker_count` という別フィールドはありません —
 既存の `jobs` がまさにその値だからです。オプトインかつ加算的な機能であり、
 省略時はコマンドの通常動作に影響しません。`split` には `--manifest` はありません
 — 既に専用の `manifest.json` を書き出しているためです(前述)。
 (`shuffle` の場合は)`order_hash`・`experiment_id` — 詳細は上記の `shuffle` の節を参照してください。
+
+**experiment envelope**(現状 `label` のみ — 個々のフラグは上記 `label` の節を参照):
+`experiment_id`/`candidate_id`/`baseline_id`/`lineage_id`/`dataset_sha256`/`split_sha256`/
+`teacher_manifest_sha256`/`binary_sha256`/`weight_sha256`/`init_seed`/`split_seed`/
+`shuffle_seed`/`validity` は、より広い4リポジトリ構成のパイプライン向けに起案された共有
+provenance語彙です。`shuffle_seed` は `shuffle --manifest` にも記録されます。この形式はまだ
+ドラフトです(詳細は
+[`docs/design/experiment_envelope.md`](docs/design/experiment_envelope.md)) — まだ全ての
+マニフェスト出力コマンドに組み込まれているわけではなく、姉妹リポジトリにもまだvendorされて
+いません。
 
 ### `report` — 統計レポート
 
@@ -846,12 +958,16 @@ shogiesa validate --input observations.jsonl --strict  # 問題あれば exit 1�
 
 ```json
 {
-  "schema_version": 9,
+  "schema_version": 11,
   "sfen": "lnsgkgsnl/1r5b1/p1ppppppp/1p7/9/2P6/PP1PPPPPP/1B5R1/LNSGKGSNL b - 2",
   "source": {
     "kind": "csa",
     "path": "games/example.csa",
     "ply": 24
+  },
+  "game_result": {
+    "outcome": "black_wins",
+    "result_source": "csa_terminal"
   },
   "tags": {
     "phase": "middlegame",
@@ -865,18 +981,25 @@ shogiesa validate --input observations.jsonl --strict  # 問題あれば exit 1�
       "engine_version": "0.1.0",
       "depth": 8,
       "requested_depth": 8,
+      "requested_nodes": null,
+      "search_limit_kind": "depth",
       "score": { "kind": "cp", "value": 43 },
       "score_perspective": "side_to_move",
       "score_bound": "exact",
       "bestmove": "7g7f",
       "nodes": 123456,
       "time_ms": 120,
+      "seldepth": 14,
+      "nps": 987654,
+      "hashfull": 321,
       "pv": ["7g7f", "8h7g"],
       "policy_margin_cp": 310,
       "candidates": [
         { "multipv": 1, "bestmove": "7g7f", "score": { "kind": "cp", "value": 43 }, "score_bound": "exact", "pv": ["7g7f", "8h7g"] },
         { "multipv": 2, "bestmove": "2g2f", "score": { "kind": "cp", "value": -267 }, "score_bound": "exact", "pv": ["2g2f"] }
       ],
+      "engine_options_hash": "a1b2c3...64文字の16進数",
+      "weight_sha256": null,
       "was_timeout_salvaged": false
     }
   ]
@@ -905,6 +1028,36 @@ USIの `info score cp` はプロトコル上の慣習として手番側視点で
 救済された観測を含むレコードを除外し、`--require-requested-depth-reached` は
 `--allow-timeout-salvaged-mate` が指定されない限り、救済された mate スコアに通常の
 深さチェックの除外を適用しなくなります。
+
+`search_limit_kind`(`"depth"`/`"nodes"`、常に存在し、このフィールドより前の古い JSONL では
+`"depth"` がデフォルト値 — そのデータが常に意味していたことそのものです)は、この呼び出しの
+実際の探索制限が `requested_depth`/`requested_nodes` のどちらだったかを示します。もう片方は
+常に `null` です。`nodes` はモードに関わらず既に「実際に到達したノード数」を記録しており、
+`depth` が既に「実際に到達した深さ」を記録しているのと完全に対称なので、別途 `actual_nodes`
+フィールドはありません。`seldepth`/`nps`/`hashfull` はエンジン自身のUSI `info` 行から直接
+パースされ、エンジンが報告しなければ `null` です。`engine_options_hash` はこの実行で解決済みの
+`--engine-option` の組み合わせ全体のblake3ハッシュ(使用時は合成される `MultiPV` エントリも
+含む)です — 生のオプション一覧を差分比較しなくても2回のラベリング実行間でエンジン設定の
+変更を検知できます。`weight_sha256` は `label --weight-file` のSHA-256で、そのフラグを
+使わなければ `null` です。これら7フィールドは全て `#[serde(default, ...)]`(`search_limit_kind`
+のみデフォルト値付きで常に出力)なので、schema v11 より前の古い JSONL も変わらずパースできます。
+
+`game_result` は対局レベルの勝敗provenanceです: `outcome`
+(`black_wins`/`white_wins`/`draw`/`unknown`)は常に先手視点かつ絶対的な値で、*手番相対*では
+ありません — 手番相対のWDL(`success`/`failure`/`draw`/`unknown`、`lineprior export` の
+`outcome` フィールドと同じ規約)が必要な呼び出し側は自分で `for_mover(side_to_move)` を
+呼んで導出します。shogiesa側で `tags.side_to_move` と食い違いうる第二の派生フィールドを
+別途保存することはしません。`result_source` は `outcome` がどこから来たかだけでなく、
+`unknown` の場合は*なぜ*かも記録します: `csa_terminal`/`kif_marker`/`match_header` は
+本物の終局マーカーから決着/引き分けが確定したことを、`csa_interrupted`/`kif_interrupted` は
+対局が明示的に中断されたこと(`%CHUDAN`/`中断`)を、`csa_terminal_undetermined`/
+`kif_terminal_undetermined` は終局マーカー自体は存在するが規格上それ自体が曖昧であること
+(CSAの `%MATTA`/`%FUZUMI`/`%ERROR`、未認識のKIF `まで`サフィックス)を、
+`csa_no_terminal`/`kif_no_terminal` は走査が一度も終局マーカーを見つけられなかったことを、
+`csa_walk_error`/`kif_walk_error` は決着解決処理自体が失敗し縮退したことを、`kif_variation`
+はKIFの変化枝の局面(その枝自身の終局は対局本来の結果ではない)であることを意味します。
+`game_result` はこのフィールドより前の JSONL、および `extract`/`from-match` が終局を解決
+できなかったソースでは `null`/欠落です。
 
 `source` は任意項目として `root_id`/`variation_id`/`branch_from_ply` も持ちます。例えば
 KIF `変化` の枝の場合:
@@ -953,6 +1106,8 @@ shogiesa はエンジン内部に依存しません。SFEN・JSONL・USI とい�
 | `Sfen`/`Board` の合法性検証 | 構文レベルのみ。完全な合法手生成はしない（意図的な設計） |
 | `lineprior export` のKIF outcome判定 | テキストマーカーベース（`まで…`/`投了`/`持将棋`/`千日手`/`中断`）で網羅的ではない。未知の終局パターンと`変化`内の全ての手は`outcome: "unknown"`にフォールバックする — コーパスへの影響度は`--manifest`の`unknown_outcome_count`で確認できる |
 | `shuffle` の `sample_id` | このrun内でのjoinキー（`source.path` は正規化されない）であり、別マシン/別ディレクトリ構成での独立な再抽出間で可搬な公式ではない — 再計算せず `--order-manifest` ファイルを保持すること。`opening_id` は常に `null`（開始SFENは現状 `PositionRecord` に保持されない） |
+| experiment envelope | ドラフト提案の段階（[`docs/design/experiment_envelope.md`](docs/design/experiment_envelope.md) 参照）— `label`/`shuffle` にのみ組み込み済みで `pack`/`split`/`make-gate-openings` には未対応。姉妹リポジトリ（quietset/lineprior/veridict）にはまだvendor・レビューされていない |
+| `label --usi-strict` の違法bestmove検知 | `make-gate-openings --allow-unplayable` と同じSFEN構文レベルの合法性チェッカー（`shogi_core`/`shogi_usi_parser`/`shogi_legality_lite`）を再利用しており、shogiesa自身の指し手ロジックではない — 同じ適用範囲・注意点を共有する |
 
 ## ライセンス
 

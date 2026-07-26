@@ -79,7 +79,7 @@ shogiesa label \
   --input positions.jsonl \
   --engine ./engine-binary \
   --engine-name myengine \   # optional; falls back to USI id name
-  --depths 4,6,8 \           # search depths
+  --depths 4,6,8 \           # search depths (mutually exclusive with --nodes)
   --timeout-ms 10000 \
   --multipv 2 \              # optional; populates observations[].policy_margin_cp
   --out observations.jsonl
@@ -95,6 +95,36 @@ its own `multipv`/`bestmove`/`score`/`score_bound`/`pv`), not just the top two u
 gains no extra output. `score_bound` (`exact`/`lowerbound`/`upperbound`) marks whether a
 candidate's score is a confirmed evaluation or a search bound — a bound-tagged runner-up is
 never trusted for `policy_margin_cp`.
+
+**`--nodes N[,N2,...]`** is a fixed-node-count alternative to `--depths` — exactly one of the two
+is required, they're mutually exclusive. Sends `go nodes N` instead of `go depth N`. Use this when
+comparing different engines/versions as teachers: "depth" isn't a comparable unit of search work
+across engines (a stronger engine reaches a deeper depth in the same time), while a node count is.
+Populates `Observation.search_limit_kind` (`"depth"`/`"nodes"`) and `requested_nodes` (mirroring
+the existing `requested_depth`, `null` in depth mode) — the existing `nodes` field already records
+"actual nodes reached" in both modes, exactly parallel to how `depth` already records "actual
+depth reached" opposite `requested_depth`. The on-disk label cache (`--cache-dir`) folds the kind
+into its key, so `--depths 8` and `--nodes 8` never collide on the same cache entry despite the
+same numeric value.
+
+Every observation also records full search telemetry parsed straight from the engine's own USI
+`info` line: `seldepth`, `nps`, `hashfull` (all `null` if the engine never reported them).
+`--engine-option Threads=N`/`Hash=M` (case-insensitive) are echoed into `--manifest` as
+`engine_threads`/`engine_hash_mb` — constant for the whole run, so they live on the manifest, not
+duplicated per observation (same precedent as `multipv`). `Observation.engine_options_hash` (a
+full blake3 hex digest of the resolved `--engine-option` pairs, including a synthesized `MultiPV`
+entry if `--multipv` was used) lets a downstream consumer detect an engine-config change between
+two labeling runs without diffing the raw option list itself.
+
+**`--weight-file PATH`** computes the SHA-256 of that one file (rejecting a directory with a clear
+error) and records it as `Observation.weight_sha256` on every observation this run produces, plus
+`weight_sha256` on `--manifest` — e.g. the NNUE/eval weight file the engine is configured to load
+via `--engine-option EvalFile=...`. shogiesa never reads or interprets the file's contents beyond
+hashing it. Unlike `engine_threads`/`engine_hash_mb`, this is duplicated per observation (not just
+on the manifest): a retrained net loaded from the same option-string *path* is invisible to
+`engine_options_hash` alone, and observations can accumulate across multiple `label` invocations
+(`--resume-from`), so per-observation attribution is what survives once data is shuffled away from
+the manifest that produced it.
 
 `label` streams its input line-by-line through a bounded reader / worker-pool / writer pipeline
 instead of loading the whole dataset into memory — memory use scales with `--jobs`, not with
@@ -145,7 +175,8 @@ stats) — see "Run manifests" further down.
 
 `--cache-dir PATH` caches each observation as a small JSON file, sharded into subdirectories by
 the first two hex characters of a content hash over `(sfen, engine name, engine version, engine
-options, engine binary fingerprint, requested depth, multipv, schema version)` — no database,
+options, engine binary fingerprint, requested depth or node count (kind-tagged, so `--depths 8`
+and `--nodes 8` never collide), multipv, schema version)` — no database,
 just files you can inspect or delete by hand. Cache writes are atomic (temp file + rename), so a
 crash mid-write can never leave a torn file visible to a concurrent reader — relevant since a
 cache dir is meant to be shared across simultaneous `label` runs. Labeling (running the engine)
@@ -168,6 +199,43 @@ USI id strings alone. If `--engine` names a bare command resolved via `PATH` (wh
 stat-ing the binary can't follow the way process spawning does), `content`/`metadata` fall back
 to `none`'s behavior for that run with a warning, rather than failing `label` outright.
 
+**USI lifecycle strict mode** (`--usi-strict` / `--restart-engine-every N` /
+`--restart-on-protocol-error` / `--transcript-on-error DIR`) detects and recovers from a desynced
+or half-dead engine process instead of silently trusting whatever it says — motivated by a real
+bug in a sibling project where a stale engine kept answering for the wrong position, silently
+corrupting an unattended labeling run. `--usi-strict` detects protocol violations: a bestmove with
+no matching `go`, a duplicate bestmove for the same `go`, a bestmove that arrives after its search
+was already timeout-salvaged, and (reusing the same `shogi_core`/`shogi_legality_lite` legality
+check `make-gate-openings` uses) a bestmove that isn't legal in the position it was given — an
+illegal bestmove is discarded rather than recorded as a trusted observation. Violations are
+counted in `--manifest` as `protocol_violations_count` (`null` unless `--usi-strict` is given, so
+a reader can distinguish "not checked" from "checked, found none").
+
+The actual root-cause fix ships regardless of any flag: a dead engine process (an I/O error — the
+pipe itself is broken) is now **unconditionally** relaunched instead of being silently reused for
+every remaining position on that worker thread. `--restart-on-protocol-error` extends relaunching
+to non-fatal failures too (a timeout, an unparseable response, or a `--usi-strict` violation) — off
+by default, since a bare timeout alone can just mean `--timeout-ms` is too tight for this engine,
+not proof it's dead. `--restart-engine-every N` relaunches periodically regardless of errors, as a
+hedge against slow resource growth in long unattended runs. `--transcript-on-error DIR` dumps the
+raw USI exchange since the last clean `go` to `{nanos}_worker{id}_{kind}.log` on any search error
+(not just strict-mode violations), for post-mortem debugging. `--manifest` gains `engine_restarts`,
+always populated (like `timeout_salvaged_count`) — it can be nonzero even with none of these flags
+set, since the dead-engine relaunch is unconditional.
+
+**Experiment envelope passthrough**: `--experiment-id`/`--candidate-id`/`--baseline-id`/
+`--lineage-id`/`--teacher-manifest-sha256`/`--init-seed`/`--split-seed`/`--split-sha256`/
+`--validity` are opaque tags echoed verbatim into `--manifest` — shogiesa doesn't interpret or
+validate any of them. Part of a shared provenance vocabulary drafted for a wider pipeline
+(shogiesa → quietset → lineprior → veridict); see
+[`docs/design/experiment_envelope.md`](docs/design/experiment_envelope.md) for the current status
+(a draft, not yet adopted by the other three repos) and
+[`schema/experiment_envelope.schema.json`](schema/experiment_envelope.schema.json) for the
+proposed shape. `--manifest` also gains computed `dataset_sha256` (SHA-256 of `--input`) and
+`binary_sha256` (SHA-256 of the engine binary) — both genuine SHA-256 (not blake3, unlike every
+other hash in this file), specifically because these are cross-repo-facing fields a sibling repo
+may verify with `shasum -a 256`.
+
 ### `cache` — inspect/maintain a `label --cache-dir`
 
 ```bash
@@ -179,10 +247,11 @@ shogiesa cache prune  --cache-dir .shogiesa-cache --legacy-only --yes
 ```
 
 Every new cache entry is written as a small envelope (`cache_schema_version`, `created_at`,
-`schema_version`, engine name/version/fingerprint/fingerprint-mode, `requested_depth`, `multipv`,
-and the `observation` itself) instead of a bare `Observation` — the cache *key*
-(`(sfen, engine name/version, engine options, engine binary fingerprint, requested depth, multipv,
-schema version)`) already encodes all of this, but it's a one-way hash: there's no way to recover
+`schema_version`, engine name/version/fingerprint/fingerprint-mode, `requested_depth`,
+`search_limit_kind`/`search_limit_value`, `multipv`, and the `observation` itself) instead of a
+bare `Observation` — the cache *key*
+(`(sfen, engine name/version, engine options, engine binary fingerprint, requested depth or node
+count, multipv, schema version)`) already encodes all of this, but it's a one-way hash: there's no way to recover
 "what schema version was this?" from the filename alone. Storing it in the payload too costs
 nothing at write time and unlocks real introspection at read time. Cache dirs populated before
 this envelope existed keep working unchanged — every read tries the new format first, falling back
@@ -191,8 +260,10 @@ re-labeling.
 
 `cache stats` reports entry count, total size, oldest/newest entry age (in days), a per-engine
 distribution, a legacy (pre-envelope) entry count, and — for entries with the new metadata —
-`schema_version`/`engine_fingerprint`/`requested_depth`/`multipv` distributions. `cache verify`
-detects corrupted (unparseable-as-either-format) entries and reports the same legacy/current split.
+`schema_version`/`engine_fingerprint`/`requested_depth`/`multipv`/`search_limit_kind`
+distributions (the last so a `--nodes`-labeled cache dir doesn't just report `requested_depth: 0`
+for every entry with nothing explaining why). `cache verify` detects corrupted
+(unparseable-as-either-format) entries and reports the same legacy/current split.
 **Scope note**: neither command does a *live* "does this entry match today's engine/schema" check
 — that would need `--engine`/`--engine-fingerprint-mode` arguments here to recompute the current
 fingerprint and compare, a real but separate feature. It's also not a correctness gap without it:
@@ -268,7 +339,19 @@ own move logic. Pass `--allow-unplayable` to keep them anyway.
 `--manifest` reports `distinct_roots_kept` and `max_root_share_in_any_bucket` (reused verbatim from
 `stratify`, reinterpreted here as the largest fraction of the whole suite contributed by any single
 source game) alongside the usual drop-reason breakdown (`invalid_sfen`, `below_min_ply`,
-`above_max_ply`, `unplayable`, `duplicate_sfen`, `over_count`).
+`above_max_ply`, `unplayable`, `duplicate_sfen`, `over_count`), plus: `selection_seed` (echoes
+`--seed`); `canonical_valid_count` (count surviving every filter, *before* `--count`'s quota trims
+it — distinct from `records_kept`, which is post-quota); `output_sha256` (SHA-256 of `--out`'s
+written bytes); `source_distribution`/`phase_distribution`/`material_distribution` over the final
+kept suite (`material_distribution` uses a standard integer piece-point table — P1/L3/N3/S5/G6/
+B8/R10, promoted minor pieces at Gold's value, King excluded — a fresh judgment call with no
+external-standard citation, since no prior material concept existed anywhere in this codebase);
+and `selection_algorithm_version` (bumped only when the underlying tie-break/ranking/dedup scheme
+itself changes, not for unrelated edits to this command). Line order in `--out` is deterministic
+input-encounter order, not seed-shuffled — `--seed` only breaks ties over which records win a
+`--count` quota — stable across repeated runs for a fixed input/seed/filter/`--count` combination,
+but not a portable cross-run join key on its own (changing `--count` changes which records survive
+the quota, so a line's position in the file shifts too).
 
 Producing this file is the easy part; whether it actually improves gate accuracy on Sekirei's own
 side (tighter Elo CIs, less opening-side bias, less single-root dominance) is a separate, external
@@ -755,30 +838,42 @@ Compact binary encoding of the JSONL schema for faster loading by trainers.
 
 ### Run manifests
 
-`filter`/`balance`/`stratify`/`sample`/`pack`/`label`/`shuffle` accept `--manifest PATH` to write a JSON provenance
-record alongside their normal output: shogiesa version, git sha (embedded at build time),
-schema/pack format version, the full command line, the input file's path and a content hash
-(`input_hash`, with `fingerprint_algorithm` naming the algorithm — `blake3`, chosen because its
-digest for a given input is stable across Rust toolchain versions, unlike the
-`std::collections::hash_map::DefaultHasher` used before; this is a "did the input change between
-runs" marker, not a verifiable integrity checksum), records read/kept/dropped, drop-reason
-counts, labeled/unlabeled record counts, MultiPV candidate coverage, `score_bound` distribution,
-requested-depth total/underreach counts, and (for `filter`) the resolved quality configuration or
-(for `label`) the engine name/depths/MultiPV/engine options/job count, engine-launch-failure
-count, `records_per_sec` (wall-clock, based on records durably written — not records read, which
-would inflate the rate with skipped/unparseable rows that never reached the engine),
-`average_engine_time_ms` (averaged from `Observation.time_ms` across each written record; under
-`--skip-existing`/`--replace-existing`/the default append policy this includes any observations
-inherited from a prior `label` run on the same file, not purely this invocation's own engine
-calls — use `records_per_sec` to judge this run's actual throughput), `preserve_order`,
+`filter`/`balance`/`stratify`/`sample`/`pack`/`label`/`shuffle`/`make-gate-openings` accept
+`--manifest PATH` to write a JSON provenance record alongside their normal output: shogiesa
+version, git sha (embedded at build time), schema/pack format version, the full command line, the
+input file's path and a content hash (`input_hash`, with `fingerprint_algorithm` naming the
+algorithm — `blake3`, chosen because its digest for a given input is stable across Rust toolchain
+versions, unlike the `std::collections::hash_map::DefaultHasher` used before; this is a "did the
+input change between runs" marker, not a verifiable integrity checksum), records read/kept/dropped,
+drop-reason counts, labeled/unlabeled record counts, MultiPV candidate coverage, `score_bound`
+distribution, requested-depth total/underreach counts, and (for `filter`) the resolved quality
+configuration or (for `label`) the engine name/depths-or-nodes/MultiPV/engine options/job count,
+engine-launch-failure count, `records_per_sec` (wall-clock, based on records durably written — not
+records read, which would inflate the rate with skipped/unparseable rows that never reached the
+engine), `average_engine_time_ms` (averaged from `Observation.time_ms` across each written record;
+under `--skip-existing`/`--replace-existing`/the default append policy this includes any
+observations inherited from a prior `label` run on the same file, not purely this invocation's own
+engine calls — use `records_per_sec` to judge this run's actual throughput), `preserve_order`,
 `resume_from`/`resumed_count` (when `--resume-from` is used — `resumed_count` distinguishes "resume
-wasn't requested" (`null`) from "resume was requested but matched nothing" (`0`)), (for `stratify`)
-`max_root_share_in_any_bucket`/`distinct_roots_kept`, and
-(when `--cache-dir` is used) cache hit/miss counts, `cache_hit_rate`, and
-`engine_fingerprint_mode`. There's no separate `worker_count` field — `jobs` already is that
-value. It's opt-in and additive — no effect on the command's normal output when omitted. `split`
-doesn't have `--manifest`: it already writes its own tailored `manifest.json` (see above).
+wasn't requested" (`null`) from "resume was requested but matched nothing" (`0`)),
+`timeout_salvaged_count`, `protocol_violations_count`/`engine_restarts` (see the USI strict mode
+paragraph in the `label` section above), (for `stratify`) `max_root_share_in_any_bucket`/
+`distinct_roots_kept`, (for `make-gate-openings`) `selection_seed`/`canonical_valid_count`/
+`output_sha256`/`source_distribution`/`phase_distribution`/`material_distribution`/
+`selection_algorithm_version` (see the `make-gate-openings` section above), and (when
+`--cache-dir` is used) cache hit/miss counts, `cache_hit_rate`, and `engine_fingerprint_mode`.
+There's no separate `worker_count` field — `jobs` already is that value. It's opt-in and
+additive — no effect on the command's normal output when omitted. `split` doesn't have
+`--manifest`: it already writes its own tailored `manifest.json` (see above).
 (For `shuffle`) `order_hash` and `experiment_id` — see the `shuffle` section above.
+
+**Experiment envelope** (`label` only, as of this writing — see the `label` section above for the
+individual flags): `experiment_id`/`candidate_id`/`baseline_id`/`lineage_id`/`dataset_sha256`/
+`split_sha256`/`teacher_manifest_sha256`/`binary_sha256`/`weight_sha256`/`init_seed`/
+`split_seed`/`shuffle_seed`/`validity` are a shared provenance vocabulary drafted for a wider
+4-repo pipeline. `shuffle_seed` is also populated on `shuffle --manifest`. This shape is a draft
+(see [`docs/design/experiment_envelope.md`](docs/design/experiment_envelope.md)) — not yet wired
+into every manifest-producing command, and not yet vendored into any sibling repo.
 
 ### `report` — dataset statistics
 
@@ -852,7 +947,7 @@ Checks: broken JSON, invalid SFENs, duplicate SFENs, `side_to_move` tag vs SFEN 
 
 ```json
 {
-  "schema_version": 10,
+  "schema_version": 11,
   "sfen": "lnsgkgsnl/1r5b1/p1ppppppp/1p7/9/2P6/PP1PPPPPP/1B5R1/LNSGKGSNL b - 2",
   "source": {
     "kind": "csa",
@@ -875,18 +970,25 @@ Checks: broken JSON, invalid SFENs, duplicate SFENs, `side_to_move` tag vs SFEN 
       "engine_version": "0.1.0",
       "depth": 8,
       "requested_depth": 8,
+      "requested_nodes": null,
+      "search_limit_kind": "depth",
       "score": { "kind": "cp", "value": 43 },
       "score_perspective": "side_to_move",
       "score_bound": "exact",
       "bestmove": "7g7f",
       "nodes": 123456,
       "time_ms": 120,
+      "seldepth": 14,
+      "nps": 987654,
+      "hashfull": 321,
       "pv": ["7g7f", "8h7g"],
       "policy_margin_cp": 310,
       "candidates": [
         { "multipv": 1, "bestmove": "7g7f", "score": { "kind": "cp", "value": 43 }, "score_bound": "exact", "pv": ["7g7f", "8h7g"] },
         { "multipv": 2, "bestmove": "2g2f", "score": { "kind": "cp", "value": -267 }, "score_bound": "exact", "pv": ["2g2f"] }
       ],
+      "engine_options_hash": "a1b2c3...64 hex chars",
+      "weight_sha256": null,
       "was_timeout_salvaged": false
     }
   ]
@@ -914,6 +1016,19 @@ defaults to `false` on older JSONL that predates this field. `filter --exclude-t
 drops any record with a salvaged observation; `--require-requested-depth-reached` no longer
 exempts a salvaged mate score from its usual depth check unless
 `--allow-timeout-salvaged-mate` is also given.
+
+`search_limit_kind` (`"depth"`/`"nodes"`, always present, defaulting to `"depth"` on older JSONL
+that predates it — which is exactly what that data always meant) says which of `requested_depth`/
+`requested_nodes` was the actual search limit for this call; the other is always `null`. `nodes`
+already records "actual nodes reached" regardless of mode, exactly parallel to how `depth` already
+records "actual depth reached" — there's no separate `actual_nodes` field. `seldepth`/`nps`/
+`hashfull` are parsed straight from the engine's own USI `info` line, `null` if it never reported
+them. `engine_options_hash` is a full blake3 hex digest of the resolved `--engine-option` pairs for
+this run (including a synthesized `MultiPV` entry, if used) — lets a consumer detect an
+engine-config change between two labeling runs without diffing the raw option list. `weight_sha256`
+is the SHA-256 of `label --weight-file`, `null` unless that flag was given. All 7 fields are
+`#[serde(default, ...)]` (or default-and-always-present for `search_limit_kind`), so older JSONL
+predating schema v11 still parses unchanged.
 
 `source` also carries optional `root_id`/`variation_id`/`branch_from_ply` fields, e.g. for a KIF
 `変化` branch:
@@ -979,6 +1094,8 @@ shogiesa connects to engines via SFEN, JSONL, and USI — no engine-internal dep
 | `Sfen`/`Board` legality checking | syntactic only, no full legal-move generation (by design) |
 | `lineprior export` KIF outcome detection | text-marker-based (`まで…`/`投了`/`持将棋`/`千日手`/`中断`), not exhaustive; unrecognized endings and all `変化` variation-branch moves fall back to `outcome: "unknown"` — check `--manifest`'s `unknown_outcome_count` to see how much of a corpus this affects |
 | `shuffle`'s `sample_id` | a within-run join key (hashes `source.path`, which isn't canonicalized), not a formula portable across independent re-extractions on a different machine/layout — keep the `--order-manifest` file, don't recompute; `opening_id` is always `null` (origin SFEN isn't retained on `PositionRecord` today) |
+| Experiment envelope | a draft proposal (see [`docs/design/experiment_envelope.md`](docs/design/experiment_envelope.md)) — wired into `label`/`shuffle` only, not `pack`/`split`/`make-gate-openings`; not yet vendored into or reviewed by the sibling repos (quietset/lineprior/veridict) it's meant to be shared with |
+| `label --usi-strict`'s illegal-bestmove check | reuses the same SFEN-syntactic legality checker as `make-gate-openings --allow-unplayable` (`shogi_core`/`shogi_usi_parser`/`shogi_legality_lite`), not shogiesa's own move logic — same scope/caveats as that check |
 
 ## License
 

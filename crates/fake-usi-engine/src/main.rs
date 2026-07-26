@@ -16,6 +16,14 @@
 ///                          Observation.candidates capturing every rank, not just top-2)
 ///   --bestmove MOVE      : report MOVE instead of the default "7g7f" (used to simulate two
 ///                          engines disagreeing)
+///   --exit-after-go N    : exit(1) with no response at all after receiving the Nth "go",
+///                          simulating an engine process that crashes mid-search
+///   --duplicate-bestmove : after answering a "go" normally, immediately write a second,
+///                          unsolicited "bestmove" line for the same go
+///   --goless-bestmove    : immediately after "usinewgame" (before any "go" is ever received),
+///                          write an unsolicited "bestmove" line
+///   --invalid-bestmove-line : on "go", write "bestmove " with no move token instead of a real
+///                          bestmove
 ///
 /// Also honors, sent over stdin (as the real `label` command does via `--engine-option`,
 /// since `label` never passes extra argv to the spawned engine):
@@ -29,6 +37,11 @@
 ///                                           deterministically make one specific position finish
 ///                                           last, so tests of label's write-order behavior don't
 ///                                           depend on OS thread-scheduling jitter)
+///   setoption name ExitAfterGo value N    : same effect as --exit-after-go N (used to test
+///                                           label's unconditional Io-triggered engine restart
+///                                           from a CLI-level integration test, which can't pass
+///                                           --exit-after-go as argv the way shogiesa-usi's own
+///                                           tests do)
 use std::io::{self, BufRead, Write};
 use std::thread;
 use std::time::Duration;
@@ -63,9 +76,18 @@ fn main() {
         .and_then(|i| args.get(i + 1))
         .cloned()
         .unwrap_or_else(|| "7g7f".to_string());
+    let mut exit_after_go: Option<u32> = args
+        .iter()
+        .position(|a| a == "--exit-after-go")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse().ok());
+    let duplicate_bestmove = args.iter().any(|a| a == "--duplicate-bestmove");
+    let goless_bestmove = args.iter().any(|a| a == "--goless-bestmove");
+    let invalid_bestmove_line = args.iter().any(|a| a == "--invalid-bestmove-line");
     let mut current_move_count: Option<u32> = None;
     let mut slow_move_count: Option<u32> = None;
     let mut slow_delay_ms: u64 = 0;
+    let mut go_count: u32 = 0;
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut out = io::BufWriter::new(stdout.lock());
@@ -84,7 +106,12 @@ fn main() {
                 writeln!(out, "readyok").unwrap();
                 out.flush().unwrap();
             }
-            "usinewgame" => {}
+            "usinewgame" => {
+                if goless_bestmove {
+                    writeln!(out, "bestmove {bestmove}").unwrap();
+                    out.flush().unwrap();
+                }
+            }
             s if s.starts_with("setoption name MultiPV value ") => {
                 let n: u32 = s
                     .rsplit(' ')
@@ -113,6 +140,9 @@ fn main() {
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(0);
             }
+            s if s.starts_with("setoption name ExitAfterGo value ") => {
+                exit_after_go = s.rsplit(' ').next().and_then(|v| v.parse().ok());
+            }
             s if s.starts_with("position") => {
                 current_move_count = s
                     .split_whitespace()
@@ -120,6 +150,10 @@ fn main() {
                     .and_then(|t| t.parse().ok());
             }
             s if s.starts_with("go") => {
+                go_count += 1;
+                if exit_after_go == Some(go_count) {
+                    std::process::exit(1);
+                }
                 if hang {
                     thread::sleep(Duration::from_secs(9999));
                 }
@@ -140,6 +174,17 @@ fn main() {
                         .and_then(|t| t.parse().ok())
                         .unwrap_or(1)
                 });
+                let seldepth = depth + 2;
+                // Echoes whatever "go nodes N" requested back as the reported nodes count, so
+                // shogiesa-cli's `label --nodes` tests can assert on both requested_nodes and the
+                // engine's own reported nodes. Absent (a plain "go depth N"), falls back to the
+                // same 1000 this always reported before nodes mode existed.
+                let requested_nodes: Option<u64> = s
+                    .split_whitespace()
+                    .skip_while(|&t| t != "nodes")
+                    .nth(1)
+                    .and_then(|t| t.parse().ok());
+                let nodes_value = requested_nodes.unwrap_or(1000);
                 let effective_count = if multipv_count >= 2 {
                     multipv_count
                 } else if multipv_margin.is_some() || multipv_bound || bestmove_bound {
@@ -150,7 +195,7 @@ fn main() {
                 if effective_count == 0 {
                     writeln!(
                         out,
-                        "info depth {depth} score cp 100 nodes 1000 time 50 pv 7g7f 8h7g"
+                        "info depth {depth} seldepth {seldepth} score cp 100 nodes {nodes_value} nps 500000 hashfull 321 time 50 pv 7g7f 8h7g"
                     )
                     .unwrap();
                 } else {
@@ -170,12 +215,19 @@ fn main() {
                             };
                         writeln!(
                             out,
-                            "info depth {depth} multipv {rank} score cp {score}{bound_suffix} nodes 1000 time 50 pv {mv} 8h7g"
+                            "info depth {depth} seldepth {seldepth} multipv {rank} score cp {score}{bound_suffix} nodes {nodes_value} nps 500000 hashfull 321 time 50 pv {mv} 8h7g"
                         )
                         .unwrap();
                     }
                 }
-                writeln!(out, "bestmove {bestmove}").unwrap();
+                if invalid_bestmove_line {
+                    writeln!(out, "bestmove ").unwrap();
+                } else {
+                    writeln!(out, "bestmove {bestmove}").unwrap();
+                    if duplicate_bestmove {
+                        writeln!(out, "bestmove {bestmove}").unwrap();
+                    }
+                }
                 out.flush().unwrap();
             }
             "quit" => break,

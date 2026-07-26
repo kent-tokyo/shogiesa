@@ -1107,6 +1107,788 @@ fn label_manifest_reports_timeout_salvaged_count() {
 }
 
 #[test]
+fn label_nodes_sends_go_nodes_and_populates_requested_nodes() {
+    let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--nodes",
+            "50000",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let output: serde_json::Value =
+        serde_json::from_str(std::fs::read_to_string(out.path()).unwrap().trim()).unwrap();
+    let obs = &output["observations"][0];
+    assert_eq!(obs["search_limit_kind"], "nodes");
+    assert_eq!(obs["requested_nodes"], 50000);
+    // fake-usi-engine echoes the requested node count back as its reported "nodes" value.
+    assert_eq!(obs["nodes"], 50000);
+    assert!(obs["requested_depth"].is_null());
+}
+
+#[test]
+fn label_depths_and_nodes_conflict() {
+    let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--nodes",
+            "50000",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn label_requires_depths_or_nodes() {
+    let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn label_records_seldepth_nps_hashfull() {
+    let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let output: serde_json::Value =
+        serde_json::from_str(std::fs::read_to_string(out.path()).unwrap().trim()).unwrap();
+    let obs = &output["observations"][0];
+    assert_eq!(obs["seldepth"], 6); // fake engine reports depth + 2
+    assert_eq!(obs["nps"], 500000);
+    assert_eq!(obs["hashfull"], 321);
+}
+
+#[test]
+fn label_records_engine_options_hash() {
+    let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
+    let run = |option: &str| -> String {
+        let out = NamedTempFile::new().unwrap();
+        shogiesa()
+            .args([
+                "label",
+                "--input",
+                f.path().to_str().unwrap(),
+                "--engine",
+                fake_usi_engine_bin().to_str().unwrap(),
+                "--depths",
+                "4",
+                "--engine-option",
+                option,
+                "--out",
+                out.path().to_str().unwrap(),
+            ])
+            .assert()
+            .success();
+        let output: serde_json::Value =
+            serde_json::from_str(std::fs::read_to_string(out.path()).unwrap().trim()).unwrap();
+        output["observations"][0]["engine_options_hash"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+
+    let hash_a = run("Hash=64");
+    assert_eq!(
+        hash_a.len(),
+        64,
+        "full blake3 hex digest, not the truncated cache-key u64"
+    );
+    assert!(hash_a.chars().all(|c| c.is_ascii_hexdigit()));
+
+    let hash_b = run("Hash=128");
+    assert_ne!(
+        hash_a, hash_b,
+        "different --engine-option values must hash differently"
+    );
+}
+
+#[test]
+fn label_weight_file_populates_weight_sha256_on_observations_and_manifest() {
+    let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
+    let out = NamedTempFile::new().unwrap();
+    let manifest_path = NamedTempFile::new().unwrap();
+    let mut weight_file = NamedTempFile::new().unwrap();
+    weight_file.write_all(b"fake nnue weight bytes").unwrap();
+    weight_file.flush().unwrap();
+
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--weight-file",
+            weight_file.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--manifest",
+            manifest_path.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    use sha2::{Digest, Sha256};
+    let expected: String = Sha256::digest(b"fake nnue weight bytes")
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+
+    let output: serde_json::Value =
+        serde_json::from_str(std::fs::read_to_string(out.path()).unwrap().trim()).unwrap();
+    assert_eq!(output["observations"][0]["weight_sha256"], expected);
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest_path.path()).unwrap()).unwrap();
+    assert_eq!(manifest["weight_sha256"], expected);
+}
+
+#[test]
+fn label_weight_file_directory_errors_clearly() {
+    let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
+    let out = NamedTempFile::new().unwrap();
+    let weight_dir = TempDir::new().unwrap();
+
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--weight-file",
+            weight_dir.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "weight_sha256 requires a single file, got a directory",
+        ));
+}
+
+#[test]
+fn label_manifest_records_experiment_envelope_fields() {
+    let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
+    let out = NamedTempFile::new().unwrap();
+    let manifest_path = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--experiment-id",
+            "exp-1",
+            "--candidate-id",
+            "cand-1",
+            "--baseline-id",
+            "base-1",
+            "--lineage-id",
+            "lineage-1",
+            "--init-seed",
+            "7",
+            "--split-seed",
+            "9",
+            "--split-sha256",
+            "deadbeef",
+            "--teacher-manifest-sha256",
+            "feedface",
+            "--validity",
+            "valid",
+            "--out",
+            out.path().to_str().unwrap(),
+            "--manifest",
+            manifest_path.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest_path.path()).unwrap()).unwrap();
+    assert_eq!(manifest["experiment_id"], "exp-1");
+    assert_eq!(manifest["candidate_id"], "cand-1");
+    assert_eq!(manifest["baseline_id"], "base-1");
+    assert_eq!(manifest["lineage_id"], "lineage-1");
+    assert_eq!(manifest["init_seed"], 7);
+    assert_eq!(manifest["split_seed"], 9);
+    assert_eq!(manifest["split_sha256"], "deadbeef");
+    assert_eq!(manifest["teacher_manifest_sha256"], "feedface");
+    assert_eq!(manifest["validity"], "valid");
+}
+
+#[test]
+fn label_manifest_records_dataset_sha256_matching_raw_file_hash() {
+    let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
+    let out = NamedTempFile::new().unwrap();
+    let manifest_path = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--out",
+            out.path().to_str().unwrap(),
+            "--manifest",
+            manifest_path.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    use sha2::{Digest, Sha256};
+    let raw_bytes = std::fs::read(f.path()).unwrap();
+    let expected: String = Sha256::digest(&raw_bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest_path.path()).unwrap()).unwrap();
+    assert_eq!(manifest["dataset_sha256"], expected);
+}
+
+#[test]
+fn label_manifest_records_binary_sha256() {
+    let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
+    let out = NamedTempFile::new().unwrap();
+    let manifest_path = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--out",
+            out.path().to_str().unwrap(),
+            "--manifest",
+            manifest_path.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    use sha2::{Digest, Sha256};
+    let engine_bytes = std::fs::read(fake_usi_engine_bin()).unwrap();
+    let expected: String = Sha256::digest(&engine_bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest_path.path()).unwrap()).unwrap();
+    assert_eq!(manifest["binary_sha256"], expected);
+}
+
+#[test]
+fn label_manifest_records_engine_threads_and_hash_mb() {
+    let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
+    let out = NamedTempFile::new().unwrap();
+    let manifest_path = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--engine-option",
+            "threads=4",
+            "--engine-option",
+            "Hash=256",
+            "--out",
+            out.path().to_str().unwrap(),
+            "--manifest",
+            manifest_path.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest_path.path()).unwrap()).unwrap();
+    // "threads" (lowercase) must still match "Threads" -- engine_option_u32 is case-insensitive.
+    assert_eq!(manifest["engine_threads"], 4);
+    assert_eq!(manifest["engine_hash_mb"], 256);
+}
+
+#[test]
+fn label_usi_strict_off_does_not_flag_illegal_bestmove() {
+    // 5i5g is a king "move" two ranks in one step -- not legal for any piece, regardless of
+    // board state (see is_legal_bestmove_lite_accepts_drop_and_promotion's own use of it).
+    let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--engine-option",
+            "Bestmove=5i5g",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let written = std::fs::read_to_string(out.path()).unwrap();
+    let record: serde_json::Value = serde_json::from_str(written.lines().next().unwrap()).unwrap();
+    assert_eq!(
+        record["observations"].as_array().unwrap().len(),
+        1,
+        "without --usi-strict, an illegal bestmove is trusted same as before this feature existed"
+    );
+}
+
+#[test]
+fn label_usi_strict_detects_illegal_bestmove_and_discards_observation() {
+    let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
+    let out = NamedTempFile::new().unwrap();
+    let manifest_path = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--engine-option",
+            "Bestmove=5i5g",
+            "--usi-strict",
+            "--out",
+            out.path().to_str().unwrap(),
+            "--manifest",
+            manifest_path.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest_path.path()).unwrap()).unwrap();
+    assert_eq!(manifest["protocol_violations_count"], 1);
+
+    let written = std::fs::read_to_string(out.path()).unwrap();
+    let record: serde_json::Value = serde_json::from_str(written.lines().next().unwrap()).unwrap();
+    assert_eq!(
+        record["observations"].as_array().unwrap().len(),
+        0,
+        "an illegal bestmove must not be recorded as a trusted observation"
+    );
+}
+
+#[test]
+fn label_without_restart_on_protocol_error_keeps_reusing_engine_after_violation() {
+    let f = make_labeled_jsonl(&[
+        position_with_path(
+            "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+            "g1.csa",
+            serde_json::json!([]),
+        ),
+        position_with_path(
+            "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+            "g2.csa",
+            serde_json::json!([]),
+        ),
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    let manifest_path = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--engine-option",
+            "Bestmove=5i5g",
+            "--usi-strict",
+            "--jobs",
+            "1",
+            "--out",
+            out.path().to_str().unwrap(),
+            "--manifest",
+            manifest_path.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest_path.path()).unwrap()).unwrap();
+    assert_eq!(manifest["protocol_violations_count"], 2);
+    assert_eq!(
+        manifest["engine_restarts"], 0,
+        "--usi-strict alone (no --restart-on-protocol-error) must not relaunch the engine"
+    );
+}
+
+#[test]
+fn label_restart_on_protocol_error_relaunches_engine_after_violation() {
+    let f = make_labeled_jsonl(&[
+        position_with_path(
+            "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+            "g1.csa",
+            serde_json::json!([]),
+        ),
+        position_with_path(
+            "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+            "g2.csa",
+            serde_json::json!([]),
+        ),
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    let manifest_path = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--engine-option",
+            "Bestmove=5i5g",
+            "--usi-strict",
+            "--restart-on-protocol-error",
+            "--jobs",
+            "1",
+            "--out",
+            out.path().to_str().unwrap(),
+            "--manifest",
+            manifest_path.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest_path.path()).unwrap()).unwrap();
+    assert_eq!(manifest["protocol_violations_count"], 2);
+    assert!(
+        manifest["engine_restarts"].as_u64().unwrap() >= 1,
+        "--restart-on-protocol-error must relaunch the engine after a detected violation, got {manifest:?}"
+    );
+}
+
+#[test]
+fn label_transcript_on_error_writes_a_file() {
+    let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
+    let out = NamedTempFile::new().unwrap();
+    let transcript_dir = TempDir::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--engine-option",
+            "Bestmove=5i5g",
+            "--usi-strict",
+            "--transcript-on-error",
+            transcript_dir.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let files: Vec<_> = std::fs::read_dir(transcript_dir.path()).unwrap().collect();
+    assert_eq!(
+        files.len(),
+        1,
+        "--transcript-on-error must write one file per detected violation"
+    );
+}
+
+#[test]
+fn label_restart_engine_every_cycles_without_losing_data() {
+    // 2 limits per record (--depths 4,6) with --restart-engine-every 2: the threshold is only
+    // hit *after* both of a record's searches complete (the check runs once, after the `for
+    // &limit` loop, not per-iteration) -- proving a periodic restart can't cut a record off
+    // mid-way and drop its second limit's observation.
+    let f = make_labeled_jsonl(&[
+        position_with_path(
+            "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+            "g1.csa",
+            serde_json::json!([]),
+        ),
+        position_with_path(
+            "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+            "g2.csa",
+            serde_json::json!([]),
+        ),
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    let manifest_path = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4,6",
+            "--restart-engine-every",
+            "2",
+            "--jobs",
+            "1",
+            "--out",
+            out.path().to_str().unwrap(),
+            "--manifest",
+            manifest_path.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest_path.path()).unwrap()).unwrap();
+    assert!(
+        manifest["engine_restarts"].as_u64().unwrap() >= 1,
+        "--restart-engine-every 2 must relaunch after every 2 searches, got {manifest:?}"
+    );
+    assert_eq!(manifest["records_kept"], 2);
+
+    let written = std::fs::read_to_string(out.path()).unwrap();
+    for line in written.lines() {
+        let record: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(
+            record["observations"].as_array().unwrap().len(),
+            2,
+            "a periodic restart landing after a record's last limit must not lose the earlier \
+             limit's observation from that same record"
+        );
+    }
+}
+
+#[test]
+fn label_dead_engine_unconditionally_restarts_and_recovers_next_position() {
+    // Zero Phase 2 flags set -- proves the root-cause fix (a dead engine is now always
+    // relaunched) independent of --usi-strict/--restart-on-protocol-error/--restart-engine-every.
+    // With --jobs 1, ExitAfterGo=2 means: position 1 labeled normally; position 2's `go` kills
+    // the child (recv sees Disconnected -> UsiError::Timeout, no restart yet -- a crashed child
+    // surfaces as Io only on the *next* call's write to the now-dead pipe, not immediately);
+    // position 3's `go` write hits that dead pipe -> Io -> unconditional restart; position 4 is
+    // labeled by the freshly relaunched process.
+    let f = make_labeled_jsonl(&[
+        position_with_path(
+            "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+            "g1.csa",
+            serde_json::json!([]),
+        ),
+        position_with_path(
+            "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+            "g2.csa",
+            serde_json::json!([]),
+        ),
+        position_with_path(
+            "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+            "g3.csa",
+            serde_json::json!([]),
+        ),
+        position_with_path(
+            "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+            "g4.csa",
+            serde_json::json!([]),
+        ),
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    let manifest_path = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--engine-option",
+            "ExitAfterGo=2",
+            "--jobs",
+            "1",
+            "--out",
+            out.path().to_str().unwrap(),
+            "--manifest",
+            manifest_path.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest_path.path()).unwrap()).unwrap();
+    assert!(
+        manifest["engine_restarts"].as_u64().unwrap() >= 1,
+        "a dead engine (Io) must be relaunched even with zero Phase 2 flags set, got {manifest:?}"
+    );
+
+    let written = std::fs::read_to_string(out.path()).unwrap();
+    let records: Vec<serde_json::Value> = written
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(records.len(), 4);
+    assert_eq!(
+        records[3]["observations"].as_array().unwrap().len(),
+        1,
+        "position 4 must be labeled by the freshly relaunched engine, got {:?}",
+        records[3]
+    );
+}
+
+#[test]
+fn label_cache_dir_distinguishes_depth_and_nodes_at_same_numeric_value() {
+    let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
+    let cache_dir = TempDir::new().unwrap();
+
+    let out1 = NamedTempFile::new().unwrap();
+    let manifest1 = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "8",
+            "--cache-dir",
+            cache_dir.path().to_str().unwrap(),
+            "--out",
+            out1.path().to_str().unwrap(),
+            "--manifest",
+            manifest1.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let manifest1: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest1.path()).unwrap()).unwrap();
+    assert_eq!(manifest1["cache_hits"], 0);
+
+    // Same numeric value, but --nodes instead of --depths -- must be a full cache miss, not a
+    // false hit against the --depths 8 entry cached above.
+    let out2 = NamedTempFile::new().unwrap();
+    let manifest2 = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--nodes",
+            "8",
+            "--cache-dir",
+            cache_dir.path().to_str().unwrap(),
+            "--out",
+            out2.path().to_str().unwrap(),
+            "--manifest",
+            manifest2.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let manifest2: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest2.path()).unwrap()).unwrap();
+    assert_eq!(
+        manifest2["cache_hits"], 0,
+        "--nodes 8 must not hit the --depths 8 cache entry"
+    );
+}
+
+#[test]
+fn shuffle_manifest_records_shuffle_seed() {
+    let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
+    let out = NamedTempFile::new().unwrap();
+    let manifest_path = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "shuffle",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--seed",
+            "42",
+            "--manifest",
+            manifest_path.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest_path.path()).unwrap()).unwrap();
+    assert_eq!(manifest["shuffle_seed"], 42);
+}
+
+#[test]
 fn label_cache_dir_hits_on_second_run_and_output_matches() {
     let pos = NamedTempFile::new().unwrap();
     shogiesa()
@@ -1643,6 +2425,54 @@ fn cache_stats_reports_entry_count_and_engine_distribution() {
         .success()
         .stdout(predicate::str::contains("cache entries : 10"))
         .stdout(predicate::str::contains("FakeUsiEngine"));
+}
+
+#[test]
+fn cache_stats_reports_search_limit_kind_distribution() {
+    let pos = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "extract",
+            "--input",
+            fixture("sample.csa").to_str().unwrap(),
+            "--out",
+            pos.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let cache_dir = TempDir::new().unwrap();
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            pos.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--nodes",
+            "50000",
+            "--cache-dir",
+            cache_dir.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    shogiesa()
+        .args([
+            "cache",
+            "stats",
+            "--cache-dir",
+            cache_dir.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "search_limit_kind distribution (v2 entries only):",
+        ))
+        .stdout(predicate::str::contains("nodes"));
 }
 
 #[test]
@@ -7171,6 +8001,178 @@ fn make_gate_openings_manifest_reports_root_diversity_stats() {
     assert!(
         (manifest["max_root_share_in_any_bucket"].as_f64().unwrap() - (1.0 / 3.0)).abs() < 1e-9
     );
+}
+
+#[test]
+fn make_gate_openings_manifest_records_selection_seed_and_algorithm_version() {
+    let input = make_labeled_jsonl(&[gate_record("-", "gameA.csa", 10)]);
+    let out = NamedTempFile::new().unwrap();
+    let manifest = NamedTempFile::new().unwrap();
+
+    shogiesa()
+        .args([
+            "make-gate-openings",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--count",
+            "1",
+            "--min-ply",
+            "1",
+            "--seed",
+            "7",
+            "--manifest",
+            manifest.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest.path()).unwrap()).unwrap();
+    assert_eq!(manifest["selection_seed"], 7);
+    assert_eq!(
+        manifest["selection_algorithm_version"],
+        "gate-openings-group-aware-fill-v1"
+    );
+}
+
+#[test]
+fn make_gate_openings_manifest_canonical_valid_count_distinct_from_records_kept_when_count_trims() {
+    // 5 distinct starting positions (varied hand -- board+side+hand is the dedup key), same
+    // source root, --count 2: all 5 pass every filter (canonical_valid_count), but the quota
+    // trims the kept suite down to 2 (records_kept) -- the two must differ to prove
+    // canonical_valid_count isn't just an alias for records_kept.
+    let input = make_labeled_jsonl(&[
+        gate_record("-", "gameA.csa", 10),
+        gate_record("P", "gameA.csa", 10),
+        gate_record("PP", "gameA.csa", 10),
+        gate_record("PPP", "gameA.csa", 10),
+        gate_record("PPPP", "gameA.csa", 10),
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    let manifest = NamedTempFile::new().unwrap();
+
+    shogiesa()
+        .args([
+            "make-gate-openings",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--count",
+            "2",
+            "--min-ply",
+            "1",
+            "--manifest",
+            manifest.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest.path()).unwrap()).unwrap();
+    assert_eq!(manifest["canonical_valid_count"], 5);
+    assert_eq!(manifest["records_kept"], 2);
+}
+
+#[test]
+fn make_gate_openings_manifest_output_sha256_is_deterministic_and_changes_with_count() {
+    let input = make_labeled_jsonl(&[
+        gate_record("-", "gameA.csa", 10),
+        gate_record("P", "gameA.csa", 10),
+        gate_record("PP", "gameA.csa", 10),
+    ]);
+
+    let run = |count: &str| -> String {
+        let out = NamedTempFile::new().unwrap();
+        let manifest = NamedTempFile::new().unwrap();
+        shogiesa()
+            .args([
+                "make-gate-openings",
+                "--input",
+                input.path().to_str().unwrap(),
+                "--out",
+                out.path().to_str().unwrap(),
+                "--count",
+                count,
+                "--min-ply",
+                "1",
+                "--manifest",
+                manifest.path().to_str().unwrap(),
+            ])
+            .assert()
+            .success();
+        let manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(manifest.path()).unwrap()).unwrap();
+        manifest["output_sha256"].as_str().unwrap().to_string()
+    };
+
+    let hash_count_2_first = run("2");
+    let hash_count_2_second = run("2");
+    assert_eq!(
+        hash_count_2_first, hash_count_2_second,
+        "identical input/seed/count must produce the same output_sha256 across runs"
+    );
+
+    let hash_count_3 = run("3");
+    assert_ne!(
+        hash_count_2_first, hash_count_3,
+        "a different --count (different --out contents) must change output_sha256"
+    );
+}
+
+#[test]
+fn make_gate_openings_manifest_distributions_sum_to_records_kept() {
+    let input = make_labeled_jsonl(&[
+        gate_record("-", "gameA.csa", 10),
+        gate_record("P", "gameB.csa", 10),
+        gate_record("PP", "gameC.csa", 10),
+    ]);
+    let out = NamedTempFile::new().unwrap();
+    let manifest = NamedTempFile::new().unwrap();
+
+    shogiesa()
+        .args([
+            "make-gate-openings",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--count",
+            "3",
+            "--min-ply",
+            "1",
+            "--manifest",
+            manifest.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest.path()).unwrap()).unwrap();
+    let records_kept = manifest["records_kept"].as_u64().unwrap();
+
+    for field in [
+        "source_distribution",
+        "phase_distribution",
+        "material_distribution",
+    ] {
+        let dist = manifest[field].as_object().unwrap();
+        let sum: u64 = dist.values().map(|v| v.as_u64().unwrap()).sum();
+        assert_eq!(sum, records_kept, "{field} must sum to records_kept");
+    }
+
+    // 3 distinct source roots, 1 kept record each.
+    assert_eq!(
+        manifest["source_distribution"].as_object().unwrap().len(),
+        3
+    );
+    // material differs per record: 122 (board only), 123 (+1 pawn in hand), 124 (+2 pawns).
+    let material_dist = manifest["material_distribution"].as_object().unwrap();
+    assert_eq!(material_dist.get("122").and_then(|v| v.as_u64()), Some(1));
+    assert_eq!(material_dist.get("123").and_then(|v| v.as_u64()), Some(1));
+    assert_eq!(material_dist.get("124").and_then(|v| v.as_u64()), Some(1));
 }
 
 /// Like `gate_record`, but with a caller-chosen `sfen` instead of the fixed standard-position

@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kent-tokyo/shogiesa/blob/main/schema/experiment_envelope.schema.json",
+  "title": "Experiment envelope",
+  "description": "Shared provenance fields for the shogiesa -> quietset -> lineprior -> veridict pipeline (shogiesa generates teacher observations, quietset scores stability/reliability, lineprior predicts gate-evaluation priority, veridict makes the final judgment). This file is vendored IDENTICALLY into all four repos -- not a shared library, just the same JSON Schema copied into each one -- so a record's provenance survives moving between them. ASSUMPTION (unconfirmed as of this writing -- flag to a human before treating it as settled): shogiesa's copy was authored fresh for this round, not copied from an existing sibling-repo schema, since none of quietset/lineprior/veridict were visible from the session that wrote it. All fields are optional: shogiesa (and presumably each sibling) only populates the subset relevant to what it produces.",
+  "type": "object",
+  "properties": {
+    "experiment_id": {
+      "type": "string",
+      "description": "Opaque identifier for the overall experiment run, supplied by the orchestrator. Not interpreted by any one repo."
+    },
+    "candidate_id": {
+      "type": "string",
+      "description": "Opaque identifier for the candidate engine/model/config under evaluation."
+    },
+    "baseline_id": {
+      "type": "string",
+      "description": "Opaque identifier for the baseline being compared against."
+    },
+    "lineage_id": {
+      "type": "string",
+      "description": "Opaque identifier grouping a chain of related experiments (e.g. successive iterations of the same candidate)."
+    },
+    "dataset_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 (lowercase hex, verifiable with `shasum -a 256`) of the raw bytes of the dataset file this stage consumed or produced."
+    },
+    "split_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 of the split-assignment artifact in use, if any. shogiesa treats this as opaque passthrough -- it cannot itself determine whether a given input file 'is a split'."
+    },
+    "teacher_manifest_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 identifying the upstream teacher-generation run manifest (i.e. a shogiesa `label --manifest` output) this stage's input was derived from, if any."
+    },
+    "binary_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 of the engine/model binary used to produce this stage's output."
+    },
+    "weight_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 of the NNUE/eval weight file the engine was configured to use, distinct from binary_sha256 when weights are loaded from a separate file rather than compiled into the binary."
+    },
+    "init_seed": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Seed governing initialization (e.g. weight init) upstream of this stage. Opaque passthrough for shogiesa."
+    },
+    "split_seed": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Seed governing the train/eval split assignment. Opaque passthrough for shogiesa."
+    },
+    "shuffle_seed": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Seed governing this dataset's shuffle/permutation order (shogiesa's `shuffle --seed`)."
+    },
+    "schema_version": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "The data schema version this record/manifest was produced under (shogiesa's SCHEMA_VERSION)."
+    },
+    "validity": {
+      "type": "string",
+      "description": "Opaque validity tag for this stage's output (e.g. \"valid\"/\"invalid\"/\"pending\"). Type chosen as a plain string since no repo in this pipeline interprets it as a closed enum yet -- confirm against what quietset/lineprior/veridict actually emit before relying on specific values."
+    }
+  },
+  "additionalProperties": true
+}

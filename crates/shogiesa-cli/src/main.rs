@@ -11,15 +11,16 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 
 use shogiesa_core::{
-    Board, GameOutcome, GamePhase, GameResultInfo, Observation, PositionRecord, PositionTags,
-    QualityConfig, QualityDecision, SCHEMA_VERSION, Score, ScorePerspective, SideToMove,
-    SourceInfo, UsiMove, bestmove_agreement, cp_from_black_perspective, effective_bestmove_kind,
-    engine_bestmove_agreement, evaluate_quality, has_special_bestmove, parse_usi_move,
-    phase_from_ply, requested_depth_underreached, score_swing, sfen::Sfen, zobrist_from_sfen,
+    Board, GameOutcome, GamePhase, GameResultInfo, Observation, PieceType, PositionRecord,
+    PositionTags, QualityConfig, QualityDecision, SCHEMA_VERSION, Score, ScorePerspective,
+    SearchLimitKind, SideToMove, SourceInfo, UsiMove, bestmove_agreement,
+    cp_from_black_perspective, effective_bestmove_kind, engine_bestmove_agreement,
+    evaluate_quality, has_special_bestmove, parse_usi_move, phase_from_ply,
+    requested_depth_underreached, score_swing, sfen::Sfen, zobrist_from_sfen,
 };
 use shogiesa_pack as pack;
 use shogiesa_stratify::{EvalBucket, bucket_key, eval_bucket_of};
-use shogiesa_usi::UsiEngine;
+use shogiesa_usi::{SearchLimit, UsiEngine, UsiError};
 use stratifykit_core::{
     BucketStatus, HeapEntry, QuotaSpec, TotalF32, bucket_floor, classify_bucket, group_aware_fill,
     mean_of, push_bounded, reservoir_sample, seeded_hash,
@@ -42,7 +43,7 @@ enum Commands {
     /// Extract positions from CSA game records
     Extract(ExtractArgs),
     /// Label positions with engine evaluations
-    Label(LabelArgs),
+    Label(Box<LabelArgs>),
     /// Compute stability scores and attach them to each position record
     Stability(StabilityArgs),
     /// Pack positions JSONL into binary format
@@ -239,10 +240,17 @@ struct LabelArgs {
     /// Engine name (defaults to USI id name)
     #[arg(long)]
     engine_name: Option<String>,
-    /// Comma-separated search depths, e.g. "4,6,8"
-    #[arg(long)]
-    depths: String,
-    /// Per-depth timeout in milliseconds
+    /// Comma-separated search depths, e.g. "4,6,8". Exactly one of --depths/--nodes is required.
+    #[arg(long, required_unless_present = "nodes", conflicts_with = "nodes")]
+    depths: Option<String>,
+    /// Comma-separated fixed node-count search limits, e.g. "50000,200000" -- alternative to
+    /// --depths for comparing different engines/versions, where "depth" doesn't mean a
+    /// comparable amount of search work across them. Sends `go nodes N` instead of `go depth N`;
+    /// populates search_limit_kind="nodes" and requested_nodes -- the existing depth/nodes
+    /// fields still record whatever the engine actually reported reaching.
+    #[arg(long, required_unless_present = "depths", conflicts_with = "depths")]
+    nodes: Option<String>,
+    /// Per-depth (or per-node-budget) timeout in milliseconds
     #[arg(long, default_value = "10000")]
     timeout_ms: u64,
     /// Number of parallel engine processes (1 = sequential)
@@ -305,6 +313,72 @@ struct LabelArgs {
         value_parser = ["content", "metadata", "none"]
     )]
     engine_fingerprint_mode: String,
+    /// SHA-256 of this file is recorded as weight_sha256 on every observation this run produces,
+    /// and in --manifest if given -- e.g. the NNUE weight file the engine is configured to use
+    /// via --engine-option EvalFile=... shogiesa does not read or interpret the file's contents
+    /// beyond hashing it. Must be a single file, not a directory.
+    #[arg(long)]
+    weight_file: Option<PathBuf>,
+    /// Opaque tag echoed into --manifest verbatim; shogiesa doesn't interpret or validate it.
+    /// Part of the shared "experiment envelope" vendored across shogiesa/quietset/lineprior/
+    /// veridict -- see schema/experiment_envelope.schema.json.
+    #[arg(long)]
+    experiment_id: Option<String>,
+    /// Opaque tag echoed into --manifest verbatim; shogiesa doesn't interpret or validate it.
+    #[arg(long)]
+    candidate_id: Option<String>,
+    /// Opaque tag echoed into --manifest verbatim; shogiesa doesn't interpret or validate it.
+    #[arg(long)]
+    baseline_id: Option<String>,
+    /// Opaque tag echoed into --manifest verbatim; shogiesa doesn't interpret or validate it.
+    #[arg(long)]
+    lineage_id: Option<String>,
+    /// Opaque tag echoed into --manifest verbatim; shogiesa doesn't interpret or validate it --
+    /// identifies an upstream teacher-manifest this run's input was derived from, if any.
+    #[arg(long)]
+    teacher_manifest_sha256: Option<String>,
+    /// Opaque value echoed into --manifest verbatim; shogiesa doesn't interpret or validate it.
+    #[arg(long)]
+    init_seed: Option<u64>,
+    /// Opaque value echoed into --manifest verbatim; shogiesa doesn't interpret or validate it.
+    #[arg(long)]
+    split_seed: Option<u64>,
+    /// Opaque tag echoed into --manifest verbatim; shogiesa doesn't interpret or validate it --
+    /// shogiesa can't itself tell whether --input is a split, so this is passthrough only.
+    #[arg(long)]
+    split_sha256: Option<String>,
+    /// Opaque tag echoed into --manifest verbatim; shogiesa doesn't interpret or validate it.
+    #[arg(long)]
+    validity: Option<String>,
+    /// Detect USI protocol desync: a bestmove with no matching `go`, a duplicate bestmove for
+    /// the same `go`, a bestmove that arrives after its search was already timeout-salvaged, or
+    /// a bestmove that isn't a legal move in the position it was given. Without this flag, such
+    /// responses are silently trusted -- the real-world bug this guards against is a desynced or
+    /// half-dead engine process producing plausible-looking but wrong bestmoves for the rest of
+    /// an unattended run. Detected violations are counted in --manifest regardless of whether
+    /// --restart-on-protocol-error is also given.
+    #[arg(long)]
+    usi_strict: bool,
+    /// Relaunch the engine process after every N searches (`go` calls), regardless of whether
+    /// anything went wrong -- a periodic hedge against slow resource growth in long unattended
+    /// runs, independent of --usi-strict/--restart-on-protocol-error.
+    #[arg(long)]
+    restart_engine_every: Option<u32>,
+    /// Relaunch the engine after a search error that isn't proof the process itself is dead (a
+    /// timeout, an unparseable response, or -- with --usi-strict -- a detected protocol
+    /// violation). An I/O error (broken pipe, exited process) always triggers a relaunch
+    /// regardless of this flag, since there's nothing left to reuse. Without this flag, a
+    /// position that errors for a non-I/O reason is left unlabeled and the same (possibly still
+    /// confused) engine process is reused for the next position.
+    #[arg(long)]
+    restart_on_protocol_error: bool,
+    /// On any search error -- a timeout, an I/O failure, or (with --usi-strict) a detected
+    /// protocol violation -- write the raw USI exchange since the last clean `go` to a file
+    /// under this directory (`{nanos}_worker{id}_{kind}.log`), for post-mortem debugging of an
+    /// unattended run. Independent of --usi-strict: works the same without it, just without the
+    /// extra violation kinds strict mode can detect.
+    #[arg(long)]
+    transcript_on_error: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy)]
@@ -493,7 +567,12 @@ struct MakeGateOpeningsArgs {
     #[arg(short, long)]
     input: PathBuf,
     /// Output plain-text file, one SFEN per line -- ready for an external match-runner's own
-    /// opening-book flag (e.g. Sekirei's `--positions FILE`)
+    /// opening-book flag (e.g. Sekirei's `--positions FILE`). Line order is deterministic
+    /// input-encounter order (not seed-shuffled), stable across repeated runs for a fixed
+    /// `--input`/`--seed`/filter/`--count` combination -- `--seed` only breaks ties over which
+    /// records win a `--count` quota, it doesn't reorder the output. Changing `--count` changes
+    /// which records survive the quota, so a line's position in the file is not a stable
+    /// cross-run join key on its own.
     #[arg(short, long)]
     out: PathBuf,
     /// Target suite size (quota)
@@ -963,7 +1042,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Extract(args) => cmd_extract(args),
-        Commands::Label(args) => cmd_label(args),
+        Commands::Label(args) => cmd_label(*args),
         Commands::Stability(args) => cmd_stability(args),
         Commands::Split(args) => cmd_split(args),
         Commands::Sample(args) => cmd_sample(args),
@@ -1458,12 +1537,18 @@ fn merge_observations_into(
     incoming: Vec<Observation>,
     policy: MergeObservationPolicy,
 ) -> usize {
+    // search_limit_kind/requested_nodes are included so a node-limited observation is never
+    // considered a collision with a differently-node-limited one just because both happen to
+    // report requested_depth: None -- without this, every node-limited observation from one
+    // engine would collapse onto the same key regardless of its actual requested_nodes.
     let key = |o: &Observation| {
         (
             o.engine.clone(),
             o.engine_version.clone(),
             o.depth,
             o.requested_depth,
+            o.search_limit_kind,
+            o.requested_nodes,
         )
     };
     let mut collisions = 0usize;
@@ -1789,9 +1874,12 @@ fn hash_parts_u64(parts: &[&[u8]]) -> u64 {
     u64::from_le_bytes(hash_parts(parts).as_bytes()[..8].try_into().unwrap())
 }
 
-/// Hash of the resolved USI engine options, sorted so option order doesn't change the label
-/// cache key below.
-fn engine_options_hash(options: &[(String, String)]) -> u64 {
+/// Sorts (and borrows) engine option pairs -- shared by `engine_options_hash` (u64, label-cache
+/// key) and `engine_options_hash_hex` (full hex digest, cross-repo Observation/RunManifest use)
+/// so the two never drift on what counts as "the same options" (sort order, and whether the
+/// CLI-synthesized MultiPV entry is included -- it is, since it's already in `engine_options` by
+/// the time either function is called).
+fn sorted_engine_option_bytes(options: &[(String, String)]) -> Vec<&[u8]> {
     let mut sorted: Vec<&(String, String)> = options.iter().collect();
     sorted.sort();
     let mut parts: Vec<&[u8]> = Vec::with_capacity(sorted.len() * 2);
@@ -1799,7 +1887,92 @@ fn engine_options_hash(options: &[(String, String)]) -> u64 {
         parts.push(k.as_bytes());
         parts.push(v.as_bytes());
     }
-    hash_parts_u64(&parts)
+    parts
+}
+
+/// Hash of the resolved USI engine options, sorted so option order doesn't change the label
+/// cache key below.
+fn engine_options_hash(options: &[(String, String)]) -> u64 {
+    hash_parts_u64(&sorted_engine_option_bytes(options))
+}
+
+/// Full (untruncated) blake3 hex digest of the same input `engine_options_hash` hashes.
+/// `engine_options_hash` (u64) stays truncated for the on-disk cache key/`CacheEntry`, which
+/// never leaves this process; this hex form is for `Observation.engine_options_hash`/
+/// `RunManifest`, which do leave it (shogiesa -> quietset -> lineprior -> veridict) -- a
+/// truncated u64 exceeds 2^53 almost always and a JS/TS consumer's `JSON.parse` would silently
+/// mangle it as an IEEE-754 double.
+fn engine_options_hash_hex(options: &[(String, String)]) -> String {
+    hash_parts(&sorted_engine_option_bytes(options))
+        .to_hex()
+        .to_string()
+}
+
+/// SHA-256 hex digest of bytes already in memory. SHA-256, not blake3, matching every field in
+/// the shared cross-repo "experiment envelope" (dataset_sha256/binary_sha256/weight_sha256/
+/// output_sha256) -- unlike every other hash in this file, these are meant to be independently
+/// verifiable with plain `shasum -a 256` by sibling repos, so they use the algorithm the name says.
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// SHA-256 hex digest of a file's raw, unmodified bytes -- deliberately NOT `hash_file`'s
+/// line-by-line blake3 stream (which re-inserts a `\n` per line regardless of the file's actual
+/// trailing-newline/CRLF bytes): that normalization is fine for `hash_file`'s internal join-key
+/// role, but wrong here, where the whole point is that a sibling repo can verify the value with
+/// `shasum -a 256 file` against the exact bytes on disk.
+fn hash_file_sha256(path: &Path) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut file = File::open(path).with_context(|| format!("cannot open {path:?}"))?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher).with_context(|| format!("cannot hash {path:?}"))?;
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
+}
+
+/// SHA-256 of `--weight-file`'s bytes, for `weight_sha256` -- errors clearly if given a
+/// directory, since the envelope field is defined over one file's bytes.
+fn compute_weight_sha256(path: &Path) -> Result<String> {
+    if path.is_dir() {
+        anyhow::bail!("weight_sha256 requires a single file, got a directory: {path:?}");
+    }
+    hash_file_sha256(path)
+}
+
+/// SHA-256 of the engine binary's raw bytes, for `RunManifest.binary_sha256`. Deliberately a
+/// separate `fs::read` from `compute_engine_fingerprint`'s own Content-mode read (a different,
+/// blake3-truncated value for an unrelated purpose -- the label cache key) rather than threading
+/// bytes out of that function: engine binaries are small and this runs once per `label`
+/// invocation, not per position, so the extra read is negligible next to actual engine search
+/// cost. Same graceful warn-and-None fallback as `compute_engine_fingerprint` for an unreadable
+/// (e.g. bare PATH-resolved) path.
+fn compute_binary_sha256(engine_path: &Path) -> Option<String> {
+    match fs::read(engine_path) {
+        Ok(bytes) => Some(sha256_hex(&bytes)),
+        Err(e) => {
+            tracing::warn!(
+                engine = %engine_path.display(),
+                "cannot read engine binary for binary_sha256 ({e})"
+            );
+            None
+        }
+    }
+}
+
+/// Case-insensitive lookup of one USI engine option's value among `--engine-option` pairs,
+/// parsed as `u32` -- for `RunManifest.engine_threads`/`engine_hash_mb`. `Threads`/`Hash` aren't
+/// dedicated CLI flags in this codebase; they're conventionally passed through the generic
+/// `--engine-option Threads=N --engine-option Hash=M` mechanism like any other USI option.
+fn engine_option_u32(options: &[(String, String)], key: &str) -> Option<u32> {
+    options
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(key))
+        .and_then(|(_, v)| v.parse().ok())
 }
 
 /// Versions the on-disk cache-file *envelope* shape, distinct from `SCHEMA_VERSION` (which
@@ -1833,6 +2006,17 @@ struct CacheEntry {
     engine_fingerprint_mode: EngineFingerprintMode,
     engine_options_hash: u64,
     requested_depth: u32,
+    /// Additive since the fixed-node-search round, not a rename of `requested_depth` (which
+    /// stays `0` for a node-limited entry, same as before this field existed) -- a rename would
+    /// make every pre-existing v2 cache entry fail `CacheEntry`'s parse and get misreported as
+    /// corrupted by `cache verify` rather than merely predating this field.
+    #[serde(default)]
+    search_limit_kind: SearchLimitKind,
+    /// The depth (as u64) or node count this entry's search was limited to, mirroring whichever
+    /// of `requested_depth`/`search_limit_kind` applies. `0` for pre-existing entries (defaults
+    /// to `Depth`/`0`, exactly what they always were).
+    #[serde(default)]
+    search_limit_value: u64,
     multipv: u32,
     observation: Observation,
 }
@@ -1889,7 +2073,7 @@ fn label_cache_path(
     sfen: &str,
     engine_name: &str,
     engine_version: Option<&str>,
-    requested_depth: u32,
+    limit: SearchLimit,
 ) -> PathBuf {
     // Why an explicit discriminant byte for `engine_version`, not a sentinel string: `None` must
     // never collide with `Some("")` (or any other literal an engine could plausibly report).
@@ -1898,7 +2082,12 @@ fn label_cache_path(
         None => (&[0], &[]),
     };
     let engine_options_hash_bytes = cache.engine_options_hash.to_le_bytes();
-    let requested_depth_bytes = requested_depth.to_le_bytes();
+    // A kind discriminant byte, not just the numeric value -- without it, `--depths 8` and
+    // `--nodes 8` would hash to the same cache key despite meaning completely different searches.
+    let (limit_kind_tag, limit_value_bytes): (&[u8], [u8; 8]) = match limit {
+        SearchLimit::Depth(d) => (&[0], (d as u64).to_le_bytes()),
+        SearchLimit::Nodes(n) => (&[1], n.to_le_bytes()),
+    };
     let multipv_bytes = cache.multipv.to_le_bytes();
     let schema_version_bytes = SCHEMA_VERSION.to_le_bytes();
     // Same Option-discriminant pattern as `engine_version` above: under
@@ -1917,7 +2106,8 @@ fn label_cache_path(
         version_tag,
         version_bytes,
         &engine_options_hash_bytes,
-        &requested_depth_bytes,
+        limit_kind_tag,
+        &limit_value_bytes,
         &multipv_bytes,
         &schema_version_bytes,
         fingerprint_tag,
@@ -1954,23 +2144,179 @@ fn write_cache_entry_atomically(path: &Path, json: &str) -> std::io::Result<()> 
     }
 }
 
+/// `--usi-strict`/`--restart-engine-every`/`--restart-on-protocol-error`/`--transcript-on-error`,
+/// bundled since they're all per-run-constant USI-lifecycle config a worker needs on every call --
+/// same bundling rationale as `LabelContext`, which this is embedded into.
+#[derive(Clone, Default)]
+struct UsiStrictConfig {
+    strict: bool,
+    restart_on_protocol_error: bool,
+    restart_engine_every: Option<u32>,
+    transcript_dir: Option<PathBuf>,
+}
+
+/// Per-run values every worker needs but that never change across positions -- bundled so
+/// `analyze_record`'s signature doesn't grow one parameter per envelope field.
+#[derive(Clone)]
+struct LabelContext {
+    weight_sha256: Option<String>,
+    engine_options_hash_hex: String,
+    // Bundled here (rather than as separate analyze_record parameters) partly for the same
+    // per-run-constant reasoning as the two fields above, and partly to keep analyze_record's
+    // own parameter count under clippy's too_many_arguments threshold.
+    timeout_ms: u64,
+    existing_policy: ExistingPolicy,
+    strict_cfg: UsiStrictConfig,
+}
+
+/// Per-worker mutable state that survives across jobs on the same thread (unlike `LabelContext`,
+/// which is per-run-constant) -- `worker_id` for transcript filenames/logging, and a counter
+/// `--restart-engine-every` compares against. Reset to 0 whenever the worker actually relaunches
+/// its engine (including the very first launch).
+struct WorkerState {
+    worker_id: usize,
+    searches_since_restart: u32,
+}
+
+/// Shared atomics every worker increments as it processes jobs -- bundled so `analyze_record`'s
+/// parameter count doesn't grow one atomic per counter.
+struct RunCounters {
+    timeout_salvaged: AtomicUsize,
+    protocol_violations: AtomicUsize,
+    engine_restarts: AtomicUsize,
+}
+
+/// Short tag identifying which `UsiError` variant fired, used only for transcript filenames and
+/// isn't meant to duplicate `UsiError`'s own `Display` (which is a full sentence).
+fn error_kind_label(e: &UsiError) -> &'static str {
+    match e {
+        UsiError::Io(_) => "io",
+        UsiError::Timeout => "timeout",
+        UsiError::InvalidResponse => "invalid_response",
+        UsiError::NoBestmove => "no_bestmove",
+        UsiError::BestmoveWithoutGo => "bestmove_without_go",
+        UsiError::DuplicateBestmove => "duplicate_bestmove",
+        UsiError::DelayedBestmoveAfterTimeout => "delayed_bestmove_after_timeout",
+        UsiError::IllegalBestmove { .. } => "illegal_bestmove",
+    }
+}
+
+/// Dumps `engine`'s captured transcript (raw USI lines since the last clean exchange) to
+/// `{nanos}_worker{worker_id}_{kind}.log` under `dir` -- best-effort, since a transcript is a
+/// debugging aid, not something a failed write should itself escalate into a run failure.
+fn dump_transcript(dir: &Path, engine: &UsiEngine, worker_id: usize, e: &UsiError) {
+    // Nanoseconds, not milliseconds: a burst of same-kind violations on one worker (exactly the
+    // case a post-mortem most cares about) can otherwise collide on the same filename within a
+    // millisecond and silently overwrite each other.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let kind = error_kind_label(e);
+    let _ = fs::create_dir_all(dir);
+    let _ = fs::write(
+        dir.join(format!("{nanos}_worker{worker_id}_{kind}.log")),
+        engine.transcript().join("\n"),
+    );
+}
+
+/// Handles one search error (either a real `UsiError` from `engine.analyse()`, or a synthesized
+/// `UsiError::IllegalBestmove` for an otherwise-`Ok` result whose bestmove failed
+/// `is_legal_bestmove_lite`) -- logs it, counts it as a protocol violation (excluding `Io`/
+/// `Timeout`/`InvalidResponse`/`NoBestmove`, which predate --usi-strict and aren't protocol
+/// violations in that sense), dumps a transcript if `--transcript-on-error` is set, and reports
+/// whether the caller must discard the current engine and relaunch: unconditional for `Io` (the
+/// pipe itself is broken, nothing to reuse), otherwise only under `--restart-on-protocol-error`
+/// (a `Timeout` alone can just mean `--timeout-ms` is too tight, not proof of a dead engine).
+fn handle_analyse_error(
+    e: &UsiError,
+    limit: SearchLimit,
+    engine: &UsiEngine,
+    strict_cfg: &UsiStrictConfig,
+    worker_id: usize,
+    counters: &RunCounters,
+) -> bool {
+    tracing::warn!(worker_id, ?limit, "analysis error: {e}");
+    let dead = matches!(e, UsiError::Io(_));
+    let is_protocol_violation = matches!(
+        e,
+        UsiError::BestmoveWithoutGo
+            | UsiError::DuplicateBestmove
+            | UsiError::DelayedBestmoveAfterTimeout
+            | UsiError::IllegalBestmove { .. }
+    );
+    if is_protocol_violation {
+        counters.protocol_violations.fetch_add(1, Ordering::Relaxed);
+    }
+    if let Some(dir) = &strict_cfg.transcript_dir {
+        dump_transcript(dir, engine, worker_id, e);
+    }
+    dead || strict_cfg.restart_on_protocol_error
+}
+
+/// Whether `o` (from `engine_name`) already covers a fresh request for `limit`, i.e. `label
+/// --skip-existing` can skip re-running it. Depth mode: achieved depth >= requested (unchanged
+/// existing behavior). Nodes mode: achieved `nodes` (the engine's own reported total, since
+/// nodes -- like depth -- is "how much work was done") >= requested. Requires matching
+/// `search_limit_kind` in both directions: a depth-limited observation never "covers" a
+/// node-limited request or vice versa, even if the raw numbers happen to compare favorably --
+/// they aren't comparable notions of search thoroughness across modes.
+fn observation_covers_limit(o: &Observation, engine_name: &str, limit: SearchLimit) -> bool {
+    if o.engine != engine_name {
+        return false;
+    }
+    match limit {
+        SearchLimit::Depth(d) => o.search_limit_kind == SearchLimitKind::Depth && o.depth >= d,
+        SearchLimit::Nodes(n) => {
+            o.search_limit_kind == SearchLimitKind::Nodes
+                && o.nodes.is_some_and(|actual| actual >= n)
+        }
+    }
+}
+
+/// Whether `o` (an existing observation) and `new` (freshly produced) are "the same request" for
+/// dedup/replace purposes. Depth mode: unchanged existing logic (achieved-depth equality +
+/// requested_depth match-or-legacy-absent, so "requested 12, reached 8" and "requested 8, reached
+/// 8" stay distinct). Nodes mode: exact `requested_nodes` match, not achieved-nodes equality -- an
+/// engine's actual node count for a fixed budget can jitter run-to-run in a way achieved depth
+/// typically doesn't, so matching on achieved nodes would systematically under-dedupe (never
+/// matching) rather than over-dedupe.
+fn same_search_request(o: &Observation, new: &Observation) -> bool {
+    o.engine == new.engine
+        && o.search_limit_kind == new.search_limit_kind
+        && match new.search_limit_kind {
+            SearchLimitKind::Depth => {
+                o.depth == new.depth
+                    && (o.requested_depth.is_none() || o.requested_depth == new.requested_depth)
+            }
+            SearchLimitKind::Nodes => o.requested_nodes == new.requested_nodes,
+        }
+}
+
+/// Runs every `limit` in `limits` against `rec` (cache-first, then a live `engine.analyse()`
+/// call), same as before --usi-strict existed, plus: counting a `--usi-strict` illegal-bestmove
+/// finding as a search failure instead of trusting it, and reporting via the `bool` return
+/// whether the caller must discard `engine` and relaunch (see `handle_analyse_error`). Once that
+/// becomes true, remaining limits for this record are skipped -- there's no reason to keep
+/// feeding a soon-to-be-replaced engine process more work.
 fn analyze_record(
     rec: &mut PositionRecord,
     engine: &mut UsiEngine,
-    depths: &[u32],
-    timeout_ms: u64,
-    existing_policy: ExistingPolicy,
+    limits: &[SearchLimit],
     cache: Option<&LabelCache>,
-    timeout_salvaged_count: &AtomicUsize,
-) {
-    for &depth in depths {
-        // The engine may stop before reaching `depth` (e.g. a forced mate) — check coverage
-        // against what was actually achieved, not the requested depth, before spending a call.
-        if matches!(existing_policy, ExistingPolicy::Skip)
+    counters: &RunCounters,
+    ctx: &LabelContext,
+    worker: &mut WorkerState,
+) -> bool {
+    let mut restart_needed = false;
+    for &limit in limits {
+        // The engine may stop before reaching `limit` (e.g. a forced mate) — check coverage
+        // against what was actually achieved, not the requested limit, before spending a call.
+        if matches!(ctx.existing_policy, ExistingPolicy::Skip)
             && rec
                 .observations
                 .iter()
-                .any(|o| o.engine == engine.engine_name && o.depth >= depth)
+                .any(|o| observation_covers_limit(o, &engine.engine_name, limit))
         {
             continue;
         }
@@ -1981,7 +2327,7 @@ fn analyze_record(
                 &rec.sfen,
                 &engine.engine_name,
                 engine.engine_version.as_deref(),
-                depth,
+                limit,
             )
         });
         let cached: Option<Observation> = cache_path.as_ref().and_then(|path| {
@@ -1999,86 +2345,143 @@ fn analyze_record(
 
         let observation = match cached {
             Some(obs) => Some(obs),
-            None => match engine.analyse(&rec.sfen, depth, timeout_ms) {
-                Ok(result) => {
-                    if result.timed_out {
-                        timeout_salvaged_count.fetch_add(1, Ordering::Relaxed);
-                    }
-                    let obs = Observation {
-                        engine: engine.engine_name.clone(),
-                        engine_version: engine.engine_version.clone(),
-                        depth: result.depth,
-                        requested_depth: Some(depth),
-                        score: result.score,
-                        // `label` never converts the engine's raw side-to-move-relative cp, so
-                        // every observation it produces is explicitly `SideToMove`, not just
-                        // implicitly so.
-                        score_perspective: ScorePerspective::SideToMove,
-                        score_bound: result.score_bound,
-                        bestmove: result.bestmove,
-                        bestmove_kind: result.bestmove_kind,
-                        nodes: result.nodes,
-                        time_ms: result.time_ms,
-                        pv: result.pv,
-                        policy_margin_cp: result.policy_margin_cp,
-                        candidates: result.candidates,
-                        was_timeout_salvaged: result.timed_out,
-                    };
-                    if let Some(path) = &cache_path {
-                        if let Some(parent) = path.parent() {
-                            let _ = fs::create_dir_all(parent);
+            None => {
+                worker.searches_since_restart += 1;
+                match engine.analyse(&rec.sfen, limit, ctx.timeout_ms) {
+                    // `bestmove_kind.is_none()` excludes resign/win/none -- those are special
+                    // USI tokens, not board moves, and would otherwise always false-positive as
+                    // illegal (they never match any entry in `all_legal_moves_partial`).
+                    Ok(result)
+                        if ctx.strict_cfg.strict
+                            && result.bestmove_kind.is_none()
+                            && !is_legal_bestmove_lite(&rec.sfen, &result.bestmove)
+                                .unwrap_or(true) =>
+                    {
+                        let err = UsiError::IllegalBestmove {
+                            sfen: rec.sfen.clone(),
+                            mv: result.bestmove.clone(),
+                        };
+                        if handle_analyse_error(
+                            &err,
+                            limit,
+                            engine,
+                            &ctx.strict_cfg,
+                            worker.worker_id,
+                            counters,
+                        ) {
+                            restart_needed = true;
                         }
-                        // Cache writes always produce v2 (CacheEntry) -- only the read path needs
-                        // to understand v1, for cache dirs populated before this round.
-                        if let Some(c) = cache {
-                            let entry = CacheEntry {
-                                cache_schema_version: CACHE_SCHEMA_VERSION,
-                                created_at: std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .map(|d| d.as_secs())
-                                    .unwrap_or(0),
-                                schema_version: SCHEMA_VERSION,
-                                engine_name: obs.engine.clone(),
-                                engine_version: obs.engine_version.clone(),
-                                engine_fingerprint: c.engine_fingerprint,
-                                engine_fingerprint_mode: c.engine_fingerprint_mode,
-                                engine_options_hash: c.engine_options_hash,
-                                requested_depth: depth,
-                                multipv: c.multipv,
-                                observation: obs.clone(),
-                            };
-                            if let Ok(json) = serde_json::to_string(&entry) {
-                                let _ = write_cache_entry_atomically(path, &json);
+                        None
+                    }
+                    Ok(result) => {
+                        if result.timed_out {
+                            counters.timeout_salvaged.fetch_add(1, Ordering::Relaxed);
+                        }
+                        let obs = Observation {
+                            engine: engine.engine_name.clone(),
+                            engine_version: engine.engine_version.clone(),
+                            depth: result.depth,
+                            requested_depth: match limit {
+                                SearchLimit::Depth(d) => Some(d),
+                                SearchLimit::Nodes(_) => None,
+                            },
+                            requested_nodes: match limit {
+                                SearchLimit::Depth(_) => None,
+                                SearchLimit::Nodes(n) => Some(n),
+                            },
+                            search_limit_kind: limit.kind(),
+                            score: result.score,
+                            // `label` never converts the engine's raw side-to-move-relative cp, so
+                            // every observation it produces is explicitly `SideToMove`, not just
+                            // implicitly so.
+                            score_perspective: ScorePerspective::SideToMove,
+                            score_bound: result.score_bound,
+                            bestmove: result.bestmove,
+                            bestmove_kind: result.bestmove_kind,
+                            nodes: result.nodes,
+                            time_ms: result.time_ms,
+                            seldepth: result.seldepth,
+                            nps: result.nps,
+                            hashfull: result.hashfull,
+                            pv: result.pv,
+                            policy_margin_cp: result.policy_margin_cp,
+                            candidates: result.candidates,
+                            engine_options_hash: Some(ctx.engine_options_hash_hex.clone()),
+                            weight_sha256: ctx.weight_sha256.clone(),
+                            was_timeout_salvaged: result.timed_out,
+                        };
+                        if let Some(path) = &cache_path {
+                            if let Some(parent) = path.parent() {
+                                let _ = fs::create_dir_all(parent);
+                            }
+                            // Cache writes always produce v2 (CacheEntry) -- only the read path needs
+                            // to understand v1, for cache dirs populated before this round.
+                            if let Some(c) = cache {
+                                let (cache_requested_depth, search_limit_value) = match limit {
+                                    SearchLimit::Depth(d) => (d, d as u64),
+                                    SearchLimit::Nodes(n) => (0, n),
+                                };
+                                let entry = CacheEntry {
+                                    cache_schema_version: CACHE_SCHEMA_VERSION,
+                                    created_at: std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|d| d.as_secs())
+                                        .unwrap_or(0),
+                                    schema_version: SCHEMA_VERSION,
+                                    engine_name: obs.engine.clone(),
+                                    engine_version: obs.engine_version.clone(),
+                                    engine_fingerprint: c.engine_fingerprint,
+                                    engine_fingerprint_mode: c.engine_fingerprint_mode,
+                                    engine_options_hash: c.engine_options_hash,
+                                    requested_depth: cache_requested_depth,
+                                    search_limit_kind: limit.kind(),
+                                    search_limit_value,
+                                    multipv: c.multipv,
+                                    observation: obs.clone(),
+                                };
+                                if let Ok(json) = serde_json::to_string(&entry) {
+                                    let _ = write_cache_entry_atomically(path, &json);
+                                }
                             }
                         }
+                        Some(obs)
                     }
-                    Some(obs)
+                    Err(e) => {
+                        if handle_analyse_error(
+                            &e,
+                            limit,
+                            engine,
+                            &ctx.strict_cfg,
+                            worker.worker_id,
+                            counters,
+                        ) {
+                            restart_needed = true;
+                        }
+                        None
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!(depth, "analysis error: {e}");
-                    None
-                }
-            },
+            }
         };
 
         if let Some(obs) = observation {
-            // Dedupe on the achieved depth, not the requested one, for the same reason —
-            // if Skip couldn't skip (under-reach) and re-achieves the same depth, this
-            // replaces the stale entry instead of duplicating it. Also require
-            // requested_depth to match (or be absent, for pre-field legacy entries): without
-            // this, "requested 12, reached 8" and "requested 8, reached 8" would collide and
-            // silently erase the distinction requested_depth exists to preserve.
-            if !matches!(existing_policy, ExistingPolicy::Append) {
-                rec.observations.retain(|o| {
-                    !(o.engine == obs.engine
-                        && o.depth == obs.depth
-                        && (o.requested_depth.is_none()
-                            || o.requested_depth == obs.requested_depth))
-                });
+            if !matches!(ctx.existing_policy, ExistingPolicy::Append) {
+                rec.observations.retain(|o| !same_search_request(o, &obs));
             }
             rec.observations.push(obs);
         }
+
+        if restart_needed {
+            break;
+        }
     }
+
+    if let Some(every) = ctx.strict_cfg.restart_engine_every
+        && worker.searches_since_restart >= every
+    {
+        restart_needed = true;
+    }
+
+    restart_needed
 }
 
 /// One position in flight through the label pipeline, tagged with its input line order so the
@@ -2111,14 +2514,35 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
     // measuring their actual effect on throughput -- this run's wall-clock start, used for
     // `records_per_sec` below.
     let run_start = std::time::Instant::now();
-    let depths: Vec<u32> = args
-        .depths
-        .split(',')
-        .filter_map(|s| s.trim().parse().ok())
-        .collect();
-    if depths.is_empty() {
-        anyhow::bail!("--depths must contain at least one valid integer, e.g. '4,6,8'");
-    }
+    // clap's required_unless_present/conflicts_with on --depths/--nodes guarantees exactly one
+    // of these is Some.
+    let limits: Vec<SearchLimit> = if let Some(depths) = &args.depths {
+        let depths: Vec<u32> = depths
+            .split(',')
+            .filter_map(|s| s.trim().parse().ok())
+            .collect();
+        if depths.is_empty() {
+            anyhow::bail!("--depths must contain at least one valid integer, e.g. '4,6,8'");
+        }
+        depths.into_iter().map(SearchLimit::Depth).collect()
+    } else {
+        let nodes: Vec<u64> = args
+            .nodes
+            .as_ref()
+            .expect("clap guarantees --depths or --nodes")
+            .split(',')
+            .filter_map(|s| s.trim().parse().ok())
+            .collect();
+        if nodes.is_empty() {
+            anyhow::bail!("--nodes must contain at least one valid integer, e.g. '50000,200000'");
+        }
+        nodes.into_iter().map(SearchLimit::Nodes).collect()
+    };
+    let weight_sha256 = args
+        .weight_file
+        .as_ref()
+        .map(|path| compute_weight_sha256(path))
+        .transpose()?;
     if args.resume_from.as_ref() == Some(&args.out) {
         anyhow::bail!(
             "--resume-from must not be the same path as --out (that would just replay --out's \
@@ -2163,6 +2587,19 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
         ExistingPolicy::Skip
     } else {
         ExistingPolicy::Append
+    };
+    let strict_cfg = UsiStrictConfig {
+        strict: args.usi_strict,
+        restart_on_protocol_error: args.restart_on_protocol_error,
+        restart_engine_every: args.restart_engine_every,
+        transcript_dir: args.transcript_on_error.clone(),
+    };
+    let label_ctx = LabelContext {
+        weight_sha256: weight_sha256.clone(),
+        engine_options_hash_hex: engine_options_hash_hex(&engine_options),
+        timeout_ms,
+        existing_policy,
+        strict_cfg,
     };
     let engine_fingerprint_mode = EngineFingerprintMode::parse(&args.engine_fingerprint_mode);
     let cache: Option<Arc<LabelCache>> = match &args.cache_dir {
@@ -2220,7 +2657,11 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
     let (result_tx, result_rx) = mpsc::channel::<Job>();
 
     let engine_launch_failures = Arc::new(AtomicUsize::new(0));
-    let timeout_salvaged_count = Arc::new(AtomicUsize::new(0));
+    let counters = Arc::new(RunCounters {
+        timeout_salvaged: AtomicUsize::new(0),
+        protocol_violations: AtomicUsize::new(0),
+        engine_restarts: AtomicUsize::new(0),
+    });
     let done = Arc::new(AtomicUsize::new(0));
 
     // Reader: streams the input line-by-line so the whole dataset is never resident in memory --
@@ -2305,19 +2746,24 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
     // its first job and reused across every job it picks up after that -- spawning a fresh
     // engine per position would hide true search cost behind repeated process-startup overhead.
     let worker_handles: Vec<_> = (0..jobs)
-        .map(|_| {
+        .map(|worker_id| {
             let job_rx = Arc::clone(&job_rx);
             let result_tx = result_tx.clone();
             let engine_path = engine_path.clone();
             let engine_name = engine_name.clone();
             let engine_options = engine_options.clone();
             let engine_launch_failures = Arc::clone(&engine_launch_failures);
-            let timeout_salvaged_count = Arc::clone(&timeout_salvaged_count);
+            let counters = Arc::clone(&counters);
             let done = Arc::clone(&done);
-            let depths = depths.clone();
+            let limits = limits.clone();
+            let label_ctx = label_ctx.clone();
             let cache = cache.clone();
             std::thread::spawn(move || {
                 let mut engine: Option<UsiEngine> = None;
+                let mut worker = WorkerState {
+                    worker_id,
+                    searches_since_restart: 0,
+                };
                 loop {
                     let job = {
                         let rx = job_rx.lock().expect("job queue mutex poisoned");
@@ -2334,18 +2780,28 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
                             &engine_options,
                         )
                     {
-                        engine = Some(e);
+                        engine = Some(
+                            e.with_strict(label_ctx.strict_cfg.strict)
+                                .with_transcript_capture(
+                                    label_ctx.strict_cfg.transcript_dir.is_some(),
+                                ),
+                        );
+                        worker.searches_since_restart = 0;
                     }
                     if let Some(eng) = engine.as_mut() {
-                        analyze_record(
+                        let restart_needed = analyze_record(
                             &mut record,
                             eng,
-                            &depths,
-                            timeout_ms,
-                            existing_policy,
+                            &limits,
                             cache.as_deref(),
-                            &timeout_salvaged_count,
+                            &counters,
+                            &label_ctx,
+                            &mut worker,
                         );
+                        if restart_needed {
+                            engine = None;
+                            counters.engine_restarts.fetch_add(1, Ordering::Relaxed);
+                        }
                     } else {
                         engine_launch_failures.fetch_add(1, Ordering::Relaxed);
                         tracing::warn!(sfen = %record.sfen, "engine unavailable, position left unlabeled");
@@ -2436,7 +2892,9 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
             .map_err(|_| anyhow::anyhow!("label worker thread panicked"))?;
     }
     let engine_launch_failures = engine_launch_failures.load(Ordering::Relaxed);
-    let timeout_salvaged_count = timeout_salvaged_count.load(Ordering::Relaxed);
+    let timeout_salvaged_count = counters.timeout_salvaged.load(Ordering::Relaxed);
+    let protocol_violations_count = counters.protocol_violations.load(Ordering::Relaxed);
+    let engine_restarts_count = counters.engine_restarts.load(Ordering::Relaxed);
     let cache_counts = cache.as_ref().map(|c| {
         (
             c.hits.load(Ordering::Relaxed),
@@ -2468,12 +2926,29 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
         manifest.records_kept = written;
         manifest.records_dropped = skipped;
         manifest.engine_name = Some(engine_display_name);
-        manifest.depths = Some(depths);
+        let depth_values: Vec<u32> = limits
+            .iter()
+            .filter_map(|l| match l {
+                SearchLimit::Depth(d) => Some(*d),
+                SearchLimit::Nodes(_) => None,
+            })
+            .collect();
+        let node_values: Vec<u64> = limits
+            .iter()
+            .filter_map(|l| match l {
+                SearchLimit::Nodes(n) => Some(*n),
+                SearchLimit::Depth(_) => None,
+            })
+            .collect();
+        manifest.depths = (!depth_values.is_empty()).then_some(depth_values);
+        manifest.nodes = (!node_values.is_empty()).then_some(node_values);
         manifest.multipv = (args.multipv > 1).then_some(args.multipv);
         manifest.engine_options = Some(args.engine_options.clone());
         manifest.jobs = Some(jobs);
         manifest.engine_launch_failures = Some(engine_launch_failures);
         manifest.timeout_salvaged_count = Some(timeout_salvaged_count);
+        manifest.protocol_violations_count = args.usi_strict.then_some(protocol_violations_count);
+        manifest.engine_restarts = Some(engine_restarts_count);
         manifest.records_per_sec = records_per_sec;
         manifest.average_engine_time_ms = average_engine_time_ms;
         manifest.preserve_order = Some(args.preserve_order);
@@ -2485,6 +2960,25 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
             manifest.cache_misses = Some(misses);
             manifest.engine_fingerprint_mode = Some(engine_fingerprint_mode.as_str());
         }
+        // Experiment envelope (schema/experiment_envelope.schema.json): dataset_sha256/
+        // binary_sha256/weight_sha256/engine_threads/engine_hash_mb are computed here;
+        // everything else is opaque orchestrator-supplied passthrough shogiesa doesn't interpret.
+        manifest.dataset_sha256 = Some(hash_file_sha256(&args.input)?);
+        manifest.binary_sha256 = compute_binary_sha256(&engine_path);
+        manifest.weight_sha256 = weight_sha256;
+        manifest.engine_threads = engine_option_u32(&engine_options, "Threads");
+        manifest.engine_hash_mb = engine_option_u32(&engine_options, "Hash");
+        manifest.experiment_id.clone_from(&args.experiment_id);
+        manifest.candidate_id.clone_from(&args.candidate_id);
+        manifest.baseline_id.clone_from(&args.baseline_id);
+        manifest.lineage_id.clone_from(&args.lineage_id);
+        manifest
+            .teacher_manifest_sha256
+            .clone_from(&args.teacher_manifest_sha256);
+        manifest.init_seed = args.init_seed;
+        manifest.split_seed = args.split_seed;
+        manifest.split_sha256.clone_from(&args.split_sha256);
+        manifest.validity.clone_from(&args.validity);
         write_manifest(args.manifest.as_ref().unwrap(), &manifest)?;
     }
     Ok(())
@@ -2948,6 +3442,89 @@ struct RunManifest {
     /// external pipeline run. shogiesa doesn't interpret or validate it.
     #[serde(skip_serializing_if = "Option::is_none")]
     experiment_id: Option<String>,
+    /// `label`-only, mutually exclusive with `depths` above: the `--nodes` list, when
+    /// node-limited.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    nodes: Option<Vec<u64>>,
+    // -- experiment envelope (shared JSON Schema across shogiesa/quietset/lineprior/veridict,
+    // see schema/experiment_envelope.schema.json). Most are opaque orchestrator-supplied
+    // passthrough values shogiesa neither validates nor interprets; dataset_sha256/
+    // binary_sha256/weight_sha256 are computed by shogiesa itself from files this run already
+    // opens. `experiment_id`/`schema_version` above round out the 14-field envelope. --
+    #[serde(skip_serializing_if = "Option::is_none")]
+    candidate_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    baseline_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lineage_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dataset_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    split_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    teacher_manifest_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    binary_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    weight_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    init_seed: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    split_seed: Option<u64>,
+    /// `shuffle`-only: the `--seed` this permutation used, surfaced at the manifest level too
+    /// (already present per-output-position via `OrderManifestLine.shuffle_seed`) -- for a
+    /// consumer that only reads `--manifest`, not `--order-manifest`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shuffle_seed: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    validity: Option<String>,
+    // -- `label`-only engine config, constant across a run. Not duplicated per-Observation the
+    // way engine_options_hash/weight_sha256 are: precedent is `multipv` above, also a
+    // fixed-for-the-run engine-config knob that has never been duplicated per record. --
+    #[serde(skip_serializing_if = "Option::is_none")]
+    engine_threads: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    engine_hash_mb: Option<u32>,
+    /// `label`-only: count of `--usi-strict` protocol violations detected this run (unsolicited/
+    /// duplicate/delayed bestmove, illegal bestmove). `None` (not `0`) when `--usi-strict` wasn't
+    /// given, so a manifest reader can distinguish "not checked" from "checked, found none."
+    #[serde(skip_serializing_if = "Option::is_none")]
+    protocol_violations_count: Option<usize>,
+    /// `label`-only: count of engine relaunches this run. Always populated when `--manifest` is
+    /// given (like `timeout_salvaged_count` above), not gated behind any of --usi-strict/
+    /// --restart-on-protocol-error/--restart-engine-every -- a dead engine process (`Io`) is
+    /// unconditionally relaunched regardless of flags, so this can be nonzero even with none of
+    /// them set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    engine_restarts: Option<usize>,
+    // -- `make-gate-openings`-only, following the struct's existing convention of per-command
+    // optional fields coexisting. --
+    /// Echoes `--seed`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selection_seed: Option<u64>,
+    /// Count surviving every filter (sfen validity, ply range, unplayable, dedup) *before*
+    /// `--count`'s quota trims it -- distinct from `records_kept`, which is post-quota. Read from
+    /// `group_aware_fill`'s own `quota_candidates`, not `filtered.len()` (which isn't available
+    /// here -- `filtered` is moved into the fill call).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    canonical_valid_count: Option<usize>,
+    /// SHA-256 of `--out`'s written bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_sha256: Option<String>,
+    /// Source-root (`shogiesa_stratify::group_key`) distribution over the final kept suite.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_distribution: Option<BTreeMap<String, usize>>,
+    /// Game-phase distribution over the final kept suite.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    phase_distribution: Option<BTreeMap<GamePhase, usize>>,
+    /// `total_material` distribution over the final kept suite. Unlike `source_distribution`/
+    /// `phase_distribution`, this can sum to less than `records_kept`: a record whose SFEN
+    /// `Board::from_sfen` rejects contributes nothing here (near-unreachable in practice, since
+    /// every kept record already passed `Sfen::parse`, which `from_sfen` itself also calls).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    material_distribution: Option<BTreeMap<u32, usize>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selection_algorithm_version: Option<&'static str>,
 }
 
 impl RunManifest {
@@ -2994,6 +3571,30 @@ impl RunManifest {
             distinct_roots_kept: None,
             order_hash: None,
             experiment_id: None,
+            nodes: None,
+            candidate_id: None,
+            baseline_id: None,
+            lineage_id: None,
+            dataset_sha256: None,
+            split_sha256: None,
+            teacher_manifest_sha256: None,
+            binary_sha256: None,
+            weight_sha256: None,
+            init_seed: None,
+            split_seed: None,
+            shuffle_seed: None,
+            validity: None,
+            engine_threads: None,
+            engine_hash_mb: None,
+            protocol_violations_count: None,
+            engine_restarts: None,
+            selection_seed: None,
+            canonical_valid_count: None,
+            output_sha256: None,
+            source_distribution: None,
+            phase_distribution: None,
+            material_distribution: None,
+            selection_algorithm_version: None,
         }
     }
 }
@@ -3333,6 +3934,7 @@ fn cmd_shuffle(args: ShuffleArgs) -> Result<()> {
         let id_refs: Vec<&[u8]> = sample_ids.iter().map(|s| s.as_bytes()).collect();
         manifest.order_hash = Some(hash_parts(&id_refs).to_hex().to_string());
         manifest.experiment_id.clone_from(&args.experiment_id);
+        manifest.shuffle_seed = Some(args.seed);
         write_manifest(manifest_path, &manifest)?;
     }
     Ok(())
@@ -3706,6 +4308,65 @@ fn cmd_stratify_apply(args: &StratifyArgs, quota_path: &Path, out: &Path) -> Res
     Ok(())
 }
 
+/// Bump only when `make-gate-openings`' own selection logic changes (the tie-break/ranking/
+/// dedup-key scheme `group_aware_fill` implements) -- not for unrelated edits to this command.
+const GATE_OPENING_SELECTION_ALGORITHM_VERSION: &str = "gate-openings-group-aware-fill-v1";
+
+/// Standard "simple" shogi piece-value table (integer points, not centipawns or an engine's own
+/// eval scale). No existing material/point-value concept exists anywhere else in this codebase
+/// (confirmed via grep) -- this is a fresh judgment call, not a verified external standard, with
+/// no in-repo precedent to match against. Promoted minor pieces (tokin/narikyo/narikei/narigin)
+/// take Gold's value, since they move exactly like Gold; promoted major pieces (horse/dragon)
+/// get their own higher values, since they keep their original long-range move on top of a
+/// king-step. `total_material`'s golden-value test is this table's own regression guard.
+fn piece_point_value(pt: PieceType) -> u32 {
+    match pt {
+        PieceType::Pawn => 1,
+        PieceType::Lance => 3,
+        PieceType::Knight => 3,
+        PieceType::Silver => 5,
+        PieceType::Gold => 6,
+        PieceType::Bishop => 8,
+        PieceType::Rook => 10,
+        PieceType::King => 0,
+        PieceType::ProPawn | PieceType::ProLance | PieceType::ProKnight | PieceType::ProSilver => 6,
+        PieceType::Horse => 10,
+        PieceType::Dragon => 12,
+    }
+}
+
+/// Sums `piece_point_value` over every piece on the board and in every hand, both sides combined
+/// -- a single scalar describing how much material is still on the board for this position,
+/// independent of whose side it favors. `None` (not `Some(0)`) when `sfen` doesn't parse, same
+/// convention as `has_legal_move_lite`: a shogiesa-accepted-but-otherwise-unparseable SFEN isn't
+/// conflated with a genuinely bare board.
+fn total_material(sfen: &str) -> Option<u32> {
+    // hand[color_idx][piece_idx]: R=0,B=1,G=2,S=3,N=4,L=5,P=6 (Board::hand's own documented
+    // convention, mirrored here since PieceType::hand_idx is private to shogiesa-core).
+    const HAND_ORDER: [PieceType; 7] = [
+        PieceType::Rook,
+        PieceType::Bishop,
+        PieceType::Gold,
+        PieceType::Silver,
+        PieceType::Knight,
+        PieceType::Lance,
+        PieceType::Pawn,
+    ];
+    let board = Board::from_sfen(sfen).ok()?;
+    let mut total = 0u32;
+    for row in &board.grid {
+        for (_, pt) in row.iter().flatten() {
+            total += piece_point_value(*pt);
+        }
+    }
+    for hand in &board.hand {
+        for (pt, &count) in HAND_ORDER.iter().zip(hand.iter()) {
+            total += piece_point_value(*pt) * u32::from(count);
+        }
+    }
+    Some(total)
+}
+
 /// The first 3 whitespace-separated SFEN fields (board, side, hand) -- deliberately drops the
 /// trailing move-count field, since a match-runner starts a *game* from this position and what
 /// happens next depends only on board/side/hand, not on how many moves it took to reach it. Two
@@ -3743,9 +4404,24 @@ fn has_legal_move_lite(sfen: &str) -> Result<bool, shogi_usi_parser::Error> {
     Ok(!shogi_legality_lite::all_legal_moves_partial(&pos).is_empty())
 }
 
+/// Whether `mv` (a USI move string, e.g. "7g7f" or "P*5e") is one of the legal moves in `sfen`'s
+/// position -- used by --usi-strict to catch an engine reporting a bestmove that isn't legal in
+/// the position it was actually given (a symptom of protocol desync: the engine answering for a
+/// stale/different position). `Err` means the external parser rejected a SFEN shogiesa's own
+/// `Sfen::parse` already accepted -- callers must not flag on that, same convention as
+/// `has_legal_move_lite`.
+fn is_legal_bestmove_lite(sfen: &str, mv: &str) -> Result<bool, shogi_usi_parser::Error> {
+    use shogi_core::ToUsi;
+    use shogi_usi_parser::FromUsi;
+    let pos = shogi_core::PartialPosition::from_usi(&format!("sfen {sfen}"))?;
+    Ok(shogi_legality_lite::all_legal_moves_partial(&pos)
+        .iter()
+        .any(|m| m.to_usi_owned() == mv))
+}
+
 #[cfg(test)]
 mod has_legal_move_lite_tests {
-    use super::has_legal_move_lite;
+    use super::{has_legal_move_lite, is_legal_bestmove_lite};
 
     #[test]
     fn startpos_has_legal_moves() {
@@ -3760,6 +4436,60 @@ mod has_legal_move_lite_tests {
         // move here -- White -- is checkmated).
         let mate = "lnsg1gsnl/5rkb1/ppppppp+Pp/9/9/9/PPPPPPP1P/1B5R1/LNSGKGSNL w P 8";
         assert!(!has_legal_move_lite(mate).unwrap());
+    }
+
+    // Blocking pre-step for --usi-strict's illegal-bestmove detection: proves
+    // `shogi_core::ToUsi::to_usi_owned()`'s rendering of a drop and of a promotion actually
+    // matches the USI move syntax real engines emit (and that shogiesa's own SFEN strings feed
+    // `shogi_usi_parser` correctly), before is_legal_bestmove_lite is wired into analyze_record.
+    // If either mismatched, every drop/promotion bestmove would false-positive as illegal.
+    #[test]
+    fn is_legal_bestmove_lite_accepts_drop_and_promotion() {
+        let startpos = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1";
+        assert!(is_legal_bestmove_lite(startpos, "7g7f").unwrap());
+        // King can only step one square; 5i to 5g is a two-rank jump, illegal for the piece type
+        // regardless of board state.
+        assert!(!is_legal_bestmove_lite(startpos, "5i5g").unwrap());
+
+        // Black pawn on 8c (one step from promotion zone), a captured pawn in hand, otherwise
+        // empty board -- legal moves include the drop on file5 (nifu only blocks file8, which
+        // already has a pawn) and the promoting/non-promoting advance of the 8c pawn to 8b.
+        let drop_and_promo = "8k/9/1P7/9/9/9/9/9/8K b P 1";
+        assert!(is_legal_bestmove_lite(drop_and_promo, "P*5e").unwrap());
+        assert!(is_legal_bestmove_lite(drop_and_promo, "8c8b+").unwrap());
+        assert!(is_legal_bestmove_lite(drop_and_promo, "8c8b").unwrap());
+        assert!(!is_legal_bestmove_lite(drop_and_promo, "5e5d").unwrap());
+    }
+}
+
+#[cfg(test)]
+mod total_material_tests {
+    use super::total_material;
+
+    // Regression guard for `piece_point_value`'s table: standard starting material, both sides,
+    // king excluded -- 2*(9*1 + 2*3 + 2*3 + 2*5 + 2*6 + 8 + 10) = 2*61 = 122.
+    #[test]
+    fn total_material_of_startpos_is_122() {
+        let startpos = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1";
+        assert_eq!(total_material(startpos), Some(122));
+    }
+
+    #[test]
+    fn total_material_counts_hand_pieces_too() {
+        // Bare kings plus one black pawn in hand -- material is exactly one pawn's worth.
+        let sfen = "8k/9/9/9/9/9/9/9/8K b P 1";
+        assert_eq!(total_material(sfen), Some(1));
+    }
+
+    #[test]
+    fn total_material_of_bare_kings_is_zero() {
+        let sfen = "8k/9/9/9/9/9/9/9/8K b - 1";
+        assert_eq!(total_material(sfen), Some(0));
+    }
+
+    #[test]
+    fn total_material_rejects_unparseable_sfen() {
+        assert_eq!(total_material("not a real sfen"), None);
     }
 }
 
@@ -3898,6 +4628,29 @@ fn cmd_make_gate_openings(args: MakeGateOpeningsArgs) -> Result<()> {
         // root").
         manifest.max_root_share_in_any_bucket = result.max_group_share_in_any_bucket;
         manifest.distinct_roots_kept = Some(result.distinct_groups_kept);
+
+        manifest.selection_seed = Some(seed);
+        // `quota_candidates`, not `filtered.len()` -- `filtered` was already moved into
+        // `group_aware_fill` above.
+        manifest.canonical_valid_count = Some(result.quota_candidates);
+        manifest.selection_algorithm_version = Some(GATE_OPENING_SELECTION_ALGORITHM_VERSION);
+        manifest.output_sha256 = Some(hash_file_sha256(&args.out)?);
+
+        let mut source_distribution: BTreeMap<String, usize> = BTreeMap::new();
+        let mut phase_distribution: BTreeMap<GamePhase, usize> = BTreeMap::new();
+        let mut material_distribution: BTreeMap<u32, usize> = BTreeMap::new();
+        for record in &kept {
+            *source_distribution
+                .entry(shogiesa_stratify::group_key(&record.source))
+                .or_default() += 1;
+            *phase_distribution.entry(record.tags.phase).or_default() += 1;
+            if let Some(material) = total_material(&record.sfen) {
+                *material_distribution.entry(material).or_default() += 1;
+            }
+        }
+        manifest.source_distribution = Some(source_distribution);
+        manifest.phase_distribution = Some(phase_distribution);
+        manifest.material_distribution = Some(material_distribution);
 
         write_manifest(manifest_path, &manifest)?;
     }
@@ -5882,6 +6635,7 @@ fn cmd_cache_stats(args: CacheStatsArgs) -> Result<()> {
     let mut fingerprint_counts: BTreeMap<String, usize> = BTreeMap::new();
     let mut requested_depth_counts: BTreeMap<u32, usize> = BTreeMap::new();
     let mut multipv_counts: BTreeMap<u32, usize> = BTreeMap::new();
+    let mut search_limit_kind_counts: BTreeMap<&'static str, usize> = BTreeMap::new();
 
     for path in &entries {
         if let Ok(meta) = fs::metadata(path) {
@@ -5913,6 +6667,11 @@ fn cmd_cache_stats(args: CacheStatsArgs) -> Result<()> {
                         .entry(entry.requested_depth)
                         .or_default() += 1;
                     *multipv_counts.entry(entry.multipv).or_default() += 1;
+                    let kind_key = match entry.search_limit_kind {
+                        SearchLimitKind::Depth => "depth",
+                        SearchLimitKind::Nodes => "nodes",
+                    };
+                    *search_limit_kind_counts.entry(kind_key).or_default() += 1;
                 }
             }
         }
@@ -5959,6 +6718,12 @@ fn cmd_cache_stats(args: CacheStatsArgs) -> Result<()> {
         println!("multipv distribution (v2 entries only):");
         for (m, count) in &multipv_counts {
             println!("  {m:<20} {count:>6}");
+        }
+    }
+    if !search_limit_kind_counts.is_empty() {
+        println!("search_limit_kind distribution (v2 entries only):");
+        for (k, count) in &search_limit_kind_counts {
+            println!("  {k:<20} {count:>6}");
         }
     }
     Ok(())
@@ -7188,7 +7953,13 @@ mod fingerprint_tests {
             hits: Arc::new(AtomicUsize::new(0)),
             misses: Arc::new(AtomicUsize::new(0)),
         };
-        let path = label_cache_path(&cache, "startpos", "engine", Some("1.0"), 8);
+        let path = label_cache_path(
+            &cache,
+            "startpos",
+            "engine",
+            Some("1.0"),
+            SearchLimit::Depth(8),
+        );
         let key = path.file_stem().unwrap().to_str().unwrap();
         assert_eq!(key.len(), 64);
         assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
@@ -7302,14 +8073,14 @@ mod label_cache_correctness_tests {
             "startpos",
             "engine",
             Some("1.0"),
-            8,
+            SearchLimit::Depth(8),
         );
         let path_b = label_cache_path(
             &cache_with_fingerprint(Some(222)),
             "startpos",
             "engine",
             Some("1.0"),
-            8,
+            SearchLimit::Depth(8),
         );
         assert_ne!(
             path_a, path_b,
@@ -7453,6 +8224,8 @@ mod merge_observations_tests {
             engine_version: None,
             depth,
             requested_depth,
+            requested_nodes: None,
+            search_limit_kind: SearchLimitKind::Depth,
             score: Score::Cp { value: 0 },
             score_perspective: ScorePerspective::default(),
             score_bound: shogiesa_core::ScoreBound::default(),
@@ -7460,10 +8233,24 @@ mod merge_observations_tests {
             bestmove_kind: None,
             nodes: None,
             time_ms: None,
+            seldepth: None,
+            nps: None,
+            hashfull: None,
             pv: None,
             policy_margin_cp: None,
             candidates: Vec::new(),
+            engine_options_hash: None,
+            weight_sha256: None,
             was_timeout_salvaged: false,
+        }
+    }
+
+    fn nodes_obs(engine: &str, depth: u32, requested_nodes: u64, bestmove: &str) -> Observation {
+        Observation {
+            requested_depth: None,
+            requested_nodes: Some(requested_nodes),
+            search_limit_kind: SearchLimitKind::Nodes,
+            ..obs(engine, depth, None, bestmove)
         }
     }
 
@@ -7564,5 +8351,20 @@ mod merge_observations_tests {
             assert_eq!(collisions, 0);
             assert_eq!(base.len(), 2, "both depths must survive under every policy");
         }
+    }
+
+    #[test]
+    fn nodes_mode_observations_with_different_requested_nodes_never_collide() {
+        // Regression test: every node-limited observation has requested_depth: None, so the old
+        // key (engine, engine_version, depth, requested_depth) collapsed any two node-limited
+        // observations from the same engine that happened to reach the same achieved depth --
+        // even with completely different requested_nodes -- silently dropping one under
+        // PreferPrimary/PreferSecondary. search_limit_kind/requested_nodes in the key fixes this.
+        let mut base = vec![nodes_obs("e1", 8, 50_000, "7g7f")];
+        let incoming = vec![nodes_obs("e1", 8, 200_000, "3c3d")]; // same achieved depth, different budget
+        let collisions =
+            merge_observations_into(&mut base, incoming, MergeObservationPolicy::PreferPrimary);
+        assert_eq!(collisions, 0, "different requested_nodes must not collide");
+        assert_eq!(base.len(), 2, "both node-limited observations must survive");
     }
 }

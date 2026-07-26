@@ -3,7 +3,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA_VERSION: u32 = 10;
+pub const SCHEMA_VERSION: u32 = 11;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -226,6 +226,19 @@ pub enum ScoreBound {
     Upperbound,
 }
 
+/// Which kind of limit `label` asked the engine to search under. `#[serde(default)]` without
+/// `skip_serializing_if`, same convention as `score_perspective` -- every future observation
+/// should self-describe explicitly rather than leave a reader to assume the default forever.
+/// Old JSONL (pre-v11, always depth-limited) still parses unchanged: absent -> `Depth`, exactly
+/// what that data always meant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchLimitKind {
+    #[default]
+    Depth,
+    Nodes,
+}
+
 /// One MultiPV candidate line from a `label --multipv N` (N≥2) pass.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CandidateMove {
@@ -248,6 +261,17 @@ pub struct Observation {
     /// apart from "requested 8, reached 8", which `min_depth_reached` alone cannot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requested_depth: Option<u32>,
+    /// The node count `label --nodes` asked the engine to search to -- `requested_depth`'s
+    /// counterpart when `search_limit_kind == Nodes`. `nodes` below (the engine's own reported
+    /// count) already serves as "actual nodes" in both modes, exactly parallel to how `depth`
+    /// already serves as "actual depth" opposite `requested_depth`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_nodes: Option<u64>,
+    /// Which kind of limit this observation was searched under. See `requested_depth`'s doc
+    /// comment for why this field, unlike this struct's other new-since-v9 fields, isn't gated
+    /// by `skip_serializing_if`.
+    #[serde(default)]
+    pub search_limit_kind: SearchLimitKind,
     pub score: Score,
     /// Which side `score`'s cp sign is relative to. `#[serde(default)]` without
     /// `skip_serializing_if`, unlike this struct's other optional fields -- every future
@@ -270,6 +294,17 @@ pub struct Observation {
     pub bestmove_kind: Option<BestMoveKind>,
     pub nodes: Option<u64>,
     pub time_ms: Option<u64>,
+    /// The engine's own `info seldepth` at the bestmove line -- how far a selective search
+    /// extended past `depth`. `None` when the engine didn't report it or this observation
+    /// predates the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seldepth: Option<u32>,
+    /// The engine's own `info nps` at the bestmove line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nps: Option<u64>,
+    /// The engine's own `info hashfull` (per-mille) at the bestmove line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hashfull: Option<u32>,
     pub pv: Option<Vec<String>>,
     /// `score_cp(bestmove) - score_cp(runner_up)` from a MultiPV≥2 label pass.
     /// `None` when MultiPV wasn't used, either score was a mate score, or the
@@ -280,6 +315,22 @@ pub struct Observation {
     /// MultiPV≥2 (empty otherwise, matching `policy_margin_cp`'s convention).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub candidates: Vec<CandidateMove>,
+    /// Full blake3 hex digest of the sorted `--engine-option` pairs this observation was
+    /// produced under (including the CLI-synthesized `MultiPV` entry, if any) -- distinct from
+    /// the internal truncated `u64` `label`'s on-disk cache key uses, which never leaves that
+    /// process. This hex form is for the JSONL artifact itself, which does leave it (shogiesa ->
+    /// quietset -> lineprior -> veridict); a truncated `u64` exceeds 2^53 almost always and a
+    /// JS/TS consumer's `JSON.parse` would silently mangle it as an IEEE-754 double.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_options_hash: Option<String>,
+    /// SHA-256 hex digest of the file passed to `label --weight-file`, if any -- identifies the
+    /// NNUE/eval weight file the engine was configured to use, distinct from `engine_options_hash`
+    /// (which only covers the *option string*, e.g. an `EvalFile` path -- a retrained net written
+    /// over the same path is invisible to it). SHA-256, not blake3, matching every other field in
+    /// the shared cross-repo "experiment envelope" -- see `RunManifest.weight_sha256` in
+    /// `shogiesa-cli` for the run-level counterpart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight_sha256: Option<String>,
     /// `true` when `--timeout-ms` elapsed before `bestmove` arrived and this observation is the
     /// degraded-but-real result salvaged from the last `info` line rather than a normal
     /// completion or the engine's own early stop (e.g. a forced mate). `false` on records
@@ -831,6 +882,8 @@ mod tests {
             engine_version: None,
             depth,
             requested_depth: None,
+            requested_nodes: None,
+            search_limit_kind: SearchLimitKind::Depth,
             score: Score::Cp { value: cp },
             score_perspective: ScorePerspective::SideToMove,
             score_bound: ScoreBound::Exact,
@@ -838,9 +891,14 @@ mod tests {
             bestmove_kind: None,
             nodes: None,
             time_ms: None,
+            seldepth: None,
+            nps: None,
+            hashfull: None,
             pv: None,
             policy_margin_cp: None,
             candidates: Vec::new(),
+            engine_options_hash: None,
+            weight_sha256: None,
             was_timeout_salvaged: false,
         }
     }
@@ -960,6 +1018,8 @@ mod tests {
             engine_version: None,
             depth,
             requested_depth: None,
+            requested_nodes: None,
+            search_limit_kind: SearchLimitKind::Depth,
             score: Score::Mate { moves },
             score_perspective: ScorePerspective::SideToMove,
             score_bound: ScoreBound::Exact,
@@ -967,9 +1027,14 @@ mod tests {
             bestmove_kind: None,
             nodes: None,
             time_ms: None,
+            seldepth: None,
+            nps: None,
+            hashfull: None,
             pv: None,
             policy_margin_cp: None,
             candidates: Vec::new(),
+            engine_options_hash: None,
+            weight_sha256: None,
             was_timeout_salvaged: false,
         }
     }
@@ -1545,6 +1610,31 @@ mod tests {
         });
         let observation: Observation = serde_json::from_value(json).unwrap();
         assert_eq!(observation.requested_depth, None);
+    }
+
+    #[test]
+    fn deserializes_legacy_observation_without_new_fields() {
+        // Pre-schema-v11 JSONL has none of the fixed-node/telemetry/envelope keys at all.
+        // #[serde(default)] must still load it, with search_limit_kind defaulting to Depth --
+        // exactly what every pre-v11 observation always was.
+        let json = serde_json::json!({
+            "engine": "myengine",
+            "engine_version": null,
+            "depth": 8,
+            "score": { "kind": "cp", "value": 43 },
+            "bestmove": "7g7f",
+            "nodes": null,
+            "time_ms": null,
+            "pv": null
+        });
+        let observation: Observation = serde_json::from_value(json).unwrap();
+        assert_eq!(observation.search_limit_kind, SearchLimitKind::Depth);
+        assert_eq!(observation.requested_nodes, None);
+        assert_eq!(observation.seldepth, None);
+        assert_eq!(observation.nps, None);
+        assert_eq!(observation.hashfull, None);
+        assert_eq!(observation.engine_options_hash, None);
+        assert_eq!(observation.weight_sha256, None);
     }
 
     #[test]

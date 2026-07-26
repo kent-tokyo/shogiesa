@@ -152,6 +152,8 @@ mod tests {
             engine_version: None,
             depth,
             requested_depth: None,
+            requested_nodes: None,
+            search_limit_kind: shogiesa_core::SearchLimitKind::default(),
             score: Score::Cp { value },
             score_perspective: ScorePerspective::SideToMove,
             score_bound: shogiesa_core::ScoreBound::default(),
@@ -159,9 +161,14 @@ mod tests {
             bestmove_kind: None,
             nodes: None,
             time_ms: None,
+            seldepth: None,
+            nps: None,
+            hashfull: None,
             pv: None,
             policy_margin_cp: None,
             candidates: Vec::new(),
+            engine_options_hash: None,
+            weight_sha256: None,
             was_timeout_salvaged: false,
         }
     }

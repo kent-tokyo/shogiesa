@@ -3,7 +3,7 @@
 //! ```text
 //! Header (10 bytes):
 //!   magic[8]  = b"SHOGIESA"
-//!   version   = u16 le  (= 10)
+//!   version   = u16 le  (= 11)
 //!
 //! Record (variable, repeated until EOF):
 //!   sfen              u16le + bytes
@@ -39,6 +39,9 @@
 //!     depth           u32le
 //!     req_depth_tag   u8 (0/1)
 //!     req_depth       u32le          [if req_depth_tag=1]
+//!     search_limit_kind u8 (0=depth 1=nodes)
+//!     req_nodes_tag   u8 (0/1)
+//!     req_nodes       u64le          [if req_nodes_tag=1]
 //!     score_kind      u8 (0=cp 1=mate)
 //!     score_val       i32le
 //!     score_perspective u8 (0=side_to_move 1=black)
@@ -49,6 +52,12 @@
 //!     nodes           u64le          [if nodes_tag=1]
 //!     time_tag        u8 (0/1)
 //!     time_ms         u64le          [if time_tag=1]
+//!     seldepth_tag    u8 (0/1)
+//!     seldepth        u32le          [if seldepth_tag=1]
+//!     nps_tag         u8 (0/1)
+//!     nps             u64le          [if nps_tag=1]
+//!     hashfull_tag    u8 (0/1)
+//!     hashfull        u32le          [if hashfull_tag=1]
 //!     pv_tag          u8 (0/1)
 //!     pv_count        u16le          [if pv_tag=1]
 //!     pv[i]           u8le  + bytes
@@ -64,18 +73,22 @@
 //!       pv_tag         u8 (0/1)
 //!       pv_count       u16le          [if pv_tag=1]
 //!       pv[i]          u8le  + bytes
+//!     eng_opts_hash_tag u8 (0/1)
+//!     eng_opts_hash     u8le  + bytes  [if eng_opts_hash_tag=1]
+//!     weight_sha256_tag u8 (0/1)
+//!     weight_sha256     u8le  + bytes  [if weight_sha256_tag=1]
 //! ```
 
 use std::io::{self, Read, Write};
 
 use shogiesa_core::{
     BestMoveKind, CandidateMove, GameOutcome, GamePhase, GameResultInfo, Observation,
-    PositionRecord, PositionTags, SCHEMA_VERSION, Score, ScoreBound, ScorePerspective, SideToMove,
-    SourceInfo, StabilityInfo,
+    PositionRecord, PositionTags, SCHEMA_VERSION, Score, ScoreBound, ScorePerspective,
+    SearchLimitKind, SideToMove, SourceInfo, StabilityInfo,
 };
 
 pub const MAGIC: &[u8; 8] = b"SHOGIESA";
-pub const FORMAT_VERSION: u16 = 10;
+pub const FORMAT_VERSION: u16 = 11;
 
 // ── write helpers ─────────────────────────────────────────────────────────────
 
@@ -287,6 +300,20 @@ pub fn encode_record(rec: &PositionRecord, w: &mut impl Write) -> io::Result<()>
                 wu32(w, v)?;
             }
         }
+        wu8(
+            w,
+            match obs.search_limit_kind {
+                SearchLimitKind::Depth => 0,
+                SearchLimitKind::Nodes => 1,
+            },
+        )?;
+        match obs.requested_nodes {
+            None => wu8(w, 0)?,
+            Some(v) => {
+                wu8(w, 1)?;
+                wu64(w, v)?;
+            }
+        }
         match obs.score {
             Score::Cp { value } => {
                 wu8(w, 0)?;
@@ -334,6 +361,27 @@ pub fn encode_record(rec: &PositionRecord, w: &mut impl Write) -> io::Result<()>
             Some(v) => {
                 wu8(w, 1)?;
                 wu64(w, v)?;
+            }
+        }
+        match obs.seldepth {
+            None => wu8(w, 0)?,
+            Some(v) => {
+                wu8(w, 1)?;
+                wu32(w, v)?;
+            }
+        }
+        match obs.nps {
+            None => wu8(w, 0)?,
+            Some(v) => {
+                wu8(w, 1)?;
+                wu64(w, v)?;
+            }
+        }
+        match obs.hashfull {
+            None => wu8(w, 0)?,
+            Some(v) => {
+                wu8(w, 1)?;
+                wu32(w, v)?;
             }
         }
         match &obs.pv {
@@ -387,6 +435,20 @@ pub fn encode_record(rec: &PositionRecord, w: &mut impl Write) -> io::Result<()>
             }
         }
         wu8(w, obs.was_timeout_salvaged as u8)?;
+        match &obs.engine_options_hash {
+            None => wu8(w, 0)?,
+            Some(v) => {
+                wu8(w, 1)?;
+                ws8(w, v)?;
+            }
+        }
+        match &obs.weight_sha256 {
+            None => wu8(w, 0)?,
+            Some(v) => {
+                wu8(w, 1)?;
+                ws8(w, v)?;
+            }
+        }
     }
 
     Ok(())
@@ -468,6 +530,12 @@ pub fn decode_record(r: &mut impl Read) -> io::Result<PositionRecord> {
         let engine_version = if ru8(r)? == 0 { None } else { Some(rs8(r)?) };
         let depth = ru32(r)?;
         let requested_depth = if ru8(r)? == 0 { None } else { Some(ru32(r)?) };
+        let search_limit_kind = match ru8(r)? {
+            0 => SearchLimitKind::Depth,
+            1 => SearchLimitKind::Nodes,
+            _ => return Err(bad("bad search limit kind")),
+        };
+        let requested_nodes = if ru8(r)? == 0 { None } else { Some(ru64(r)?) };
         let score = match ru8(r)? {
             0 => Score::Cp { value: ri32(r)? },
             1 => Score::Mate { moves: ri32(r)? },
@@ -494,6 +562,9 @@ pub fn decode_record(r: &mut impl Read) -> io::Result<PositionRecord> {
         };
         let nodes = if ru8(r)? == 0 { None } else { Some(ru64(r)?) };
         let time_ms = if ru8(r)? == 0 { None } else { Some(ru64(r)?) };
+        let seldepth = if ru8(r)? == 0 { None } else { Some(ru32(r)?) };
+        let nps = if ru8(r)? == 0 { None } else { Some(ru64(r)?) };
+        let hashfull = if ru8(r)? == 0 { None } else { Some(ru32(r)?) };
         let pv = if ru8(r)? == 0 {
             None
         } else {
@@ -540,11 +611,15 @@ pub fn decode_record(r: &mut impl Read) -> io::Result<PositionRecord> {
             });
         }
         let was_timeout_salvaged = ru8(r)? != 0;
+        let engine_options_hash = if ru8(r)? == 0 { None } else { Some(rs8(r)?) };
+        let weight_sha256 = if ru8(r)? == 0 { None } else { Some(rs8(r)?) };
         observations.push(Observation {
             engine,
             engine_version,
             depth,
             requested_depth,
+            requested_nodes,
+            search_limit_kind,
             score,
             score_perspective,
             score_bound: obs_score_bound,
@@ -552,9 +627,14 @@ pub fn decode_record(r: &mut impl Read) -> io::Result<PositionRecord> {
             bestmove_kind,
             nodes,
             time_ms,
+            seldepth,
+            nps,
+            hashfull,
             pv,
             policy_margin_cp,
             candidates,
+            engine_options_hash,
+            weight_sha256,
             was_timeout_salvaged,
         });
     }
@@ -621,6 +701,8 @@ mod tests {
                     engine_version: Some("1.0".to_string()),
                     depth: 8,
                     requested_depth: Some(12),
+                    requested_nodes: None,
+                    search_limit_kind: SearchLimitKind::Depth,
                     score: Score::Cp { value: 42 },
                     score_perspective: ScorePerspective::Black,
                     score_bound: ScoreBound::Lowerbound,
@@ -628,6 +710,9 @@ mod tests {
                     bestmove_kind: None,
                     nodes: Some(12345),
                     time_ms: Some(100),
+                    seldepth: Some(14),
+                    nps: Some(500_000),
+                    hashfull: Some(321),
                     pv: Some(vec!["7g7f".to_string(), "3c3d".to_string()]),
                     policy_margin_cp: Some(310),
                     candidates: vec![
@@ -653,6 +738,8 @@ mod tests {
                             pv: None,
                         },
                     ],
+                    engine_options_hash: Some("a1b2c3".to_string()),
+                    weight_sha256: Some("d4e5f6".to_string()),
                     was_timeout_salvaged: true,
                 },
                 Observation {
@@ -660,6 +747,8 @@ mod tests {
                     engine_version: None,
                     depth: 12,
                     requested_depth: None,
+                    requested_nodes: None,
+                    search_limit_kind: SearchLimitKind::Depth,
                     score: Score::Mate { moves: 3 },
                     score_perspective: ScorePerspective::SideToMove,
                     score_bound: ScoreBound::Exact,
@@ -667,9 +756,14 @@ mod tests {
                     bestmove_kind: Some(BestMoveKind::Resign),
                     nodes: None,
                     time_ms: None,
+                    seldepth: None,
+                    nps: None,
+                    hashfull: None,
                     pv: None,
                     policy_margin_cp: None,
                     candidates: Vec::new(),
+                    engine_options_hash: None,
+                    weight_sha256: None,
                     was_timeout_salvaged: false,
                 },
             ],
@@ -716,6 +810,22 @@ mod tests {
         assert_eq!(got.observations[0].bestmove_kind, None);
         assert_eq!(got.observations[0].engine_version, Some("1.0".to_string()));
         assert_eq!(got.observations[0].nodes, Some(12345));
+        assert_eq!(
+            got.observations[0].search_limit_kind,
+            SearchLimitKind::Depth
+        );
+        assert_eq!(got.observations[0].requested_nodes, None);
+        assert_eq!(got.observations[0].seldepth, Some(14));
+        assert_eq!(got.observations[0].nps, Some(500_000));
+        assert_eq!(got.observations[0].hashfull, Some(321));
+        assert_eq!(
+            got.observations[0].engine_options_hash,
+            Some("a1b2c3".to_string())
+        );
+        assert_eq!(
+            got.observations[0].weight_sha256,
+            Some("d4e5f6".to_string())
+        );
         assert_eq!(
             got.observations[0].pv,
             Some(vec!["7g7f".to_string(), "3c3d".to_string()])
@@ -832,6 +942,25 @@ mod tests {
         encode(std::slice::from_ref(&rec), &mut buf).unwrap();
         let got = &decode(&mut buf.as_slice()).unwrap()[0];
         assert!(got.game_result.is_none());
+    }
+
+    #[test]
+    fn roundtrip_nodes_limited_observation() {
+        // sample()'s fixture is depth-mode only -- this exercises the nodes-mode wire fields
+        // (search_limit_kind, requested_nodes) which round_trip's own fixture never sets.
+        let mut rec = sample();
+        rec.observations[0].search_limit_kind = SearchLimitKind::Nodes;
+        rec.observations[0].requested_depth = None;
+        rec.observations[0].requested_nodes = Some(200_000);
+        let mut buf = Vec::new();
+        encode(std::slice::from_ref(&rec), &mut buf).unwrap();
+        let got = &decode(&mut buf.as_slice()).unwrap()[0];
+        assert_eq!(
+            got.observations[0].search_limit_kind,
+            SearchLimitKind::Nodes
+        );
+        assert_eq!(got.observations[0].requested_depth, None);
+        assert_eq!(got.observations[0].requested_nodes, Some(200_000));
     }
 
     #[test]

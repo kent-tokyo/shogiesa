@@ -1,8 +1,10 @@
 use std::process::Command;
+use std::thread;
+use std::time::Duration;
 
 use assert_cmd::cargo::cargo_bin;
 use shogiesa_core::{Score, ScoreBound};
-use shogiesa_usi::{UsiEngine, UsiError};
+use shogiesa_usi::{SearchLimit, UsiEngine, UsiError};
 
 const STARTPOS: &str = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1";
 const TIMEOUT: u64 = 5000;
@@ -37,7 +39,9 @@ fn handshake_succeeds() {
 #[test]
 fn analyse_returns_cp_score() {
     let mut engine = fake_engine();
-    let result = engine.analyse(STARTPOS, 4, TIMEOUT).unwrap();
+    let result = engine
+        .analyse(STARTPOS, SearchLimit::Depth(4), TIMEOUT)
+        .unwrap();
     assert!(matches!(result.score, Score::Cp { value: 100 }));
     assert_eq!(result.bestmove, "7g7f");
     assert_eq!(result.depth, 4);
@@ -54,7 +58,9 @@ fn analyse_classifies_resign_bestmove() {
         &[("Bestmove".to_string(), "resign".to_string())],
     )
     .unwrap();
-    let result = engine.analyse(STARTPOS, 4, TIMEOUT).unwrap();
+    let result = engine
+        .analyse(STARTPOS, SearchLimit::Depth(4), TIMEOUT)
+        .unwrap();
     assert_eq!(result.bestmove, "resign");
     assert_eq!(
         result.bestmove_kind,
@@ -67,7 +73,9 @@ fn analyse_classifies_resign_bestmove() {
 fn analyse_returns_correct_depth() {
     let mut engine = fake_engine();
     for depth in [4u32, 6, 8] {
-        let result = engine.analyse(STARTPOS, depth, TIMEOUT).unwrap();
+        let result = engine
+            .analyse(STARTPOS, SearchLimit::Depth(depth), TIMEOUT)
+            .unwrap();
         assert_eq!(result.depth, depth);
     }
     engine.quit();
@@ -76,7 +84,9 @@ fn analyse_returns_correct_depth() {
 #[test]
 fn analyse_includes_pv() {
     let mut engine = fake_engine();
-    let result = engine.analyse(STARTPOS, 4, TIMEOUT).unwrap();
+    let result = engine
+        .analyse(STARTPOS, SearchLimit::Depth(4), TIMEOUT)
+        .unwrap();
     let pv = result.pv.unwrap();
     assert_eq!(pv[0], "7g7f");
     engine.quit();
@@ -89,7 +99,9 @@ fn analyse_reports_actual_depth_when_engine_stops_early() {
     let mut cmd = Command::new(fake_usi_engine_bin());
     cmd.args(["--early-stop-depth", "3"]);
     let mut engine = UsiEngine::launch_command(cmd, String::new(), TIMEOUT, &[]).unwrap();
-    let result = engine.analyse(STARTPOS, 8, TIMEOUT).unwrap();
+    let result = engine
+        .analyse(STARTPOS, SearchLimit::Depth(8), TIMEOUT)
+        .unwrap();
     assert_eq!(
         result.depth, 3,
         "should report the depth the engine actually reached, not the requested depth"
@@ -104,7 +116,9 @@ fn analyse_computes_policy_margin_from_multipv() {
     let mut cmd = Command::new(fake_usi_engine_bin());
     cmd.args(["--multipv-margin", "310"]);
     let mut engine = UsiEngine::launch_command(cmd, String::new(), TIMEOUT, &[]).unwrap();
-    let result = engine.analyse(STARTPOS, 4, TIMEOUT).unwrap();
+    let result = engine
+        .analyse(STARTPOS, SearchLimit::Depth(4), TIMEOUT)
+        .unwrap();
     assert_eq!(result.policy_margin_cp, Some(310));
     engine.quit();
 }
@@ -116,7 +130,9 @@ fn analyse_ignores_bound_tagged_runner_up() {
     let mut cmd = Command::new(fake_usi_engine_bin());
     cmd.arg("--multipv-bound");
     let mut engine = UsiEngine::launch_command(cmd, String::new(), TIMEOUT, &[]).unwrap();
-    let result = engine.analyse(STARTPOS, 4, TIMEOUT).unwrap();
+    let result = engine
+        .analyse(STARTPOS, SearchLimit::Depth(4), TIMEOUT)
+        .unwrap();
     assert_eq!(result.policy_margin_cp, None);
     engine.quit();
 }
@@ -129,7 +145,9 @@ fn analyse_ignores_bound_tagged_bestmove() {
     let mut cmd = Command::new(fake_usi_engine_bin());
     cmd.args(["--bestmove-bound", "--multipv-margin", "10"]);
     let mut engine = UsiEngine::launch_command(cmd, String::new(), TIMEOUT, &[]).unwrap();
-    let result = engine.analyse(STARTPOS, 4, TIMEOUT).unwrap();
+    let result = engine
+        .analyse(STARTPOS, SearchLimit::Depth(4), TIMEOUT)
+        .unwrap();
     assert_eq!(result.policy_margin_cp, None);
     // The bound tag on the bestmove's own line must surface on AnalysisResult.score_bound --
     // this is what a plain single-PV label (no MultiPV at all) would otherwise silently lose.
@@ -140,7 +158,9 @@ fn analyse_ignores_bound_tagged_bestmove() {
 #[test]
 fn analyse_without_multipv_has_no_margin() {
     let mut engine = fake_engine();
-    let result = engine.analyse(STARTPOS, 4, TIMEOUT).unwrap();
+    let result = engine
+        .analyse(STARTPOS, SearchLimit::Depth(4), TIMEOUT)
+        .unwrap();
     assert_eq!(result.policy_margin_cp, None);
     assert!(result.candidates.is_empty());
     engine.quit();
@@ -153,7 +173,9 @@ fn analyse_returns_all_multipv_candidates() {
     let mut cmd = Command::new(fake_usi_engine_bin());
     cmd.args(["--multipv-count", "4", "--multipv-margin", "10"]);
     let mut engine = UsiEngine::launch_command(cmd, String::new(), TIMEOUT, &[]).unwrap();
-    let result = engine.analyse(STARTPOS, 4, TIMEOUT).unwrap();
+    let result = engine
+        .analyse(STARTPOS, SearchLimit::Depth(4), TIMEOUT)
+        .unwrap();
     assert_eq!(result.candidates.len(), 4);
     for (i, candidate) in result.candidates.iter().enumerate() {
         let rank = (i + 1) as u32;
@@ -178,7 +200,7 @@ fn timeout_returns_error() {
     let mut cmd = Command::new(fake_usi_engine_bin());
     cmd.arg("--hang");
     let mut engine = UsiEngine::launch_command(cmd, String::new(), TIMEOUT, &[]).unwrap();
-    let result = engine.analyse(STARTPOS, 4, 300); // short timeout
+    let result = engine.analyse(STARTPOS, SearchLimit::Depth(4), 300); // short timeout
     assert!(matches!(result, Err(UsiError::Timeout)));
     // engine.quit() would hang too; just drop (child gets killed on Drop of Child)
 }
@@ -194,7 +216,9 @@ fn timeout_salvages_last_known_depth_when_no_bestmove_ever_arrives() {
     cmd.arg("--spam-info");
     let mut engine = UsiEngine::launch_command(cmd, String::new(), TIMEOUT, &[]).unwrap();
     let start = std::time::Instant::now();
-    let result = engine.analyse(STARTPOS, 4, 300).unwrap(); // short timeout
+    let result = engine
+        .analyse(STARTPOS, SearchLimit::Depth(4), 300)
+        .unwrap(); // short timeout
     assert!(result.timed_out);
     assert_eq!(result.depth, 1);
     assert!(matches!(result.score, Score::Cp { value: 0 }));
@@ -224,10 +248,86 @@ fn timeout_grace_period_recovers_a_real_bestmove() {
         ],
     )
     .unwrap();
-    let result = engine.analyse(STARTPOS, 4, 200).unwrap(); // outer timeout fires well before 350ms
+    let result = engine
+        .analyse(STARTPOS, SearchLimit::Depth(4), 200)
+        .unwrap(); // outer timeout fires well before 350ms
     assert!(result.timed_out);
     assert!(matches!(result.score, Score::Cp { value: 100 }));
     assert_eq!(result.bestmove, "7g7f");
     assert_eq!(result.depth, 4);
     engine.quit();
+}
+
+#[test]
+fn strict_detects_goless_bestmove() {
+    let mut cmd = Command::new(fake_usi_engine_bin());
+    cmd.arg("--goless-bestmove");
+    let mut engine = UsiEngine::launch_command(cmd, String::new(), TIMEOUT, &[])
+        .unwrap()
+        .with_strict(true);
+    // The fake engine writes its unsolicited bestmove immediately after usinewgame (i.e. right
+    // after launch()'s handshake) -- give it a moment to land before analyse()'s drain checks
+    // for it. Not fully deterministic (nothing is "owed" the way a post-timeout bestmove is, so
+    // there's no bounded-wait mechanism to make this race-free), but generous enough in practice.
+    thread::sleep(Duration::from_millis(100));
+    let result = engine.analyse(STARTPOS, SearchLimit::Depth(4), TIMEOUT);
+    assert!(matches!(result, Err(UsiError::BestmoveWithoutGo)));
+}
+
+#[test]
+fn strict_detects_duplicate_bestmove() {
+    let mut cmd = Command::new(fake_usi_engine_bin());
+    cmd.arg("--duplicate-bestmove");
+    let mut engine = UsiEngine::launch_command(cmd, String::new(), TIMEOUT, &[])
+        .unwrap()
+        .with_strict(true);
+    let first = engine.analyse(STARTPOS, SearchLimit::Depth(4), TIMEOUT);
+    assert!(
+        first.is_ok(),
+        "first call consumes the real bestmove normally"
+    );
+    let second = engine.analyse(STARTPOS, SearchLimit::Depth(4), TIMEOUT);
+    assert!(matches!(second, Err(UsiError::DuplicateBestmove)));
+}
+
+#[test]
+fn strict_off_leaves_duplicate_bestmove_undetected() {
+    let mut cmd = Command::new(fake_usi_engine_bin());
+    cmd.arg("--duplicate-bestmove");
+    let mut engine = UsiEngine::launch_command(cmd, String::new(), TIMEOUT, &[]).unwrap();
+    // strict mode never enabled -- today's silent-discard behavior, unchanged.
+    assert!(
+        engine
+            .analyse(STARTPOS, SearchLimit::Depth(4), TIMEOUT)
+            .is_ok()
+    );
+    assert!(
+        engine
+            .analyse(STARTPOS, SearchLimit::Depth(4), TIMEOUT)
+            .is_ok()
+    );
+    engine.quit();
+}
+
+#[test]
+fn strict_detects_delayed_bestmove_after_timeout() {
+    let mut engine = UsiEngine::launch(
+        &fake_usi_engine_bin(),
+        String::new(),
+        TIMEOUT,
+        &[
+            ("SlowMoveCount".to_string(), "1".to_string()),
+            ("SlowDelayMs".to_string(), "900".to_string()),
+        ],
+    )
+    .unwrap()
+    .with_strict(true);
+    // Outer timeout (200ms) + the internal STOP_GRACE_MS (500ms) = 700ms before the first call
+    // gives up with nothing to salvage (the fake engine hasn't written anything at all yet at
+    // that point). Its real response lands at 900ms -- past call 1's giveup, but comfortably
+    // inside call 2's own STOP_GRACE_MS-bounded wait for the now-owed late bestmove (700..1200ms).
+    let first = engine.analyse(STARTPOS, SearchLimit::Depth(4), 200);
+    assert!(matches!(first, Err(UsiError::Timeout)));
+    let second = engine.analyse(STARTPOS, SearchLimit::Depth(4), 200);
+    assert!(matches!(second, Err(UsiError::DelayedBestmoveAfterTimeout)));
 }

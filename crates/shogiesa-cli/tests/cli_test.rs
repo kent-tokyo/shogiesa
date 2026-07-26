@@ -1733,11 +1733,15 @@ fn label_restart_engine_every_cycles_without_losing_data() {
 fn label_dead_engine_unconditionally_restarts_and_recovers_next_position() {
     // Zero Phase 2 flags set -- proves the root-cause fix (a dead engine is now always
     // relaunched) independent of --usi-strict/--restart-on-protocol-error/--restart-engine-every.
-    // With --jobs 1, ExitAfterGo=2 means: position 1 labeled normally; position 2's `go` kills
-    // the child (recv sees Disconnected -> UsiError::Timeout, no restart yet -- a crashed child
-    // surfaces as Io only on the *next* call's write to the now-dead pipe, not immediately);
-    // position 3's `go` write hits that dead pipe -> Io -> unconditional restart; position 4 is
-    // labeled by the freshly relaunched process.
+    // With --jobs 1, ExitAfterGo=2 kills the child on its own 2nd `go`; the stdout-forwarding
+    // channel disconnecting maps straight to UsiError::Io (see recv_until's doc comment), so
+    // restart is immediate and deterministic, not a race against a later call's write() tripping
+    // EPIPE. Since ExitAfterGo=2 is a static --engine-option reapplied to every relaunch too,
+    // each freshly launched process repeats the same pattern: its own go 1 succeeds, its own go 2
+    // kills it and triggers another restart. With 5 positions that's an exact
+    // succeed/fail/succeed/fail/succeed alternation (1-indexed) -- positions 1, 3, 5 (process
+    // #1/#2/#3's own first `go` each) must all be labeled, proving the engine recovers
+    // *repeatedly*, not just once.
     let f = make_labeled_jsonl(&[
         position_with_path(
             "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
@@ -1757,6 +1761,11 @@ fn label_dead_engine_unconditionally_restarts_and_recovers_next_position() {
         position_with_path(
             "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
             "g4.csa",
+            serde_json::json!([]),
+        ),
+        position_with_path(
+            "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+            "g5.csa",
             serde_json::json!([]),
         ),
     ]);
@@ -1786,8 +1795,9 @@ fn label_dead_engine_unconditionally_restarts_and_recovers_next_position() {
     let manifest: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(manifest_path.path()).unwrap()).unwrap();
     assert!(
-        manifest["engine_restarts"].as_u64().unwrap() >= 1,
-        "a dead engine (Io) must be relaunched even with zero Phase 2 flags set, got {manifest:?}"
+        manifest["engine_restarts"].as_u64().unwrap() >= 2,
+        "a dead engine (Io) must be relaunched every time it dies, even with zero Phase 2 flags \
+         set, got {manifest:?}"
     );
 
     let written = std::fs::read_to_string(out.path()).unwrap();
@@ -1795,13 +1805,16 @@ fn label_dead_engine_unconditionally_restarts_and_recovers_next_position() {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
-    assert_eq!(records.len(), 4);
-    assert_eq!(
-        records[3]["observations"].as_array().unwrap().len(),
-        1,
-        "position 4 must be labeled by the freshly relaunched engine, got {:?}",
-        records[3]
-    );
+    assert_eq!(records.len(), 5);
+    for i in [0, 2, 4] {
+        assert_eq!(
+            records[i]["observations"].as_array().unwrap().len(),
+            1,
+            "position {} (a freshly (re)launched process's own first `go`) must be labeled, got {:?}",
+            i + 1,
+            records[i]
+        );
+    }
 }
 
 #[test]

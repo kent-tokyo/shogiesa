@@ -316,13 +316,30 @@ impl UsiEngine {
     /// Receive one line, timing out at `deadline` regardless of how many
     /// lines arrive before it — a per-call `recv_timeout` would let a chatty
     /// engine reset the clock on every line and never time out.
+    ///
+    /// Distinguishes a genuine wall-clock timeout (`RecvTimeoutError::Timeout` -- the engine is
+    /// still alive, just slow) from the stdout-forwarding channel disconnecting
+    /// (`RecvTimeoutError::Disconnected` -- that reader thread only ends once the child's
+    /// stdout hits EOF, which for a long-running USI engine that never explicitly closes stdout
+    /// while alive reliably means the process has exited). Conflating the two into one
+    /// `UsiError::Timeout` (as this used to do) is what let a dead engine's unconditional
+    /// restart in `label` silently fail to trigger: it depended on a *later* call's `write_line`
+    /// tripping an `EPIPE`/`Io` error, which is not reliable across platforms -- observed to
+    /// fire promptly on macOS, but the disconnect can persist through several subsequent calls
+    /// on Linux/Windows CI without any write ever erroring. Mapping the disconnect straight to
+    /// `Io` here instead makes death detection immediate and platform-independent.
     fn recv_until(&mut self, deadline: Instant) -> Result<String, UsiError> {
         let remaining = deadline.saturating_duration_since(Instant::now());
-        let line = self
-            .rx
-            .recv_timeout(remaining)
-            .map_err(|_| UsiError::Timeout)?
-            .map_err(UsiError::Io)?;
+        let line = match self.rx.recv_timeout(remaining) {
+            Ok(line) => line.map_err(UsiError::Io)?,
+            Err(mpsc::RecvTimeoutError::Timeout) => return Err(UsiError::Timeout),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(UsiError::Io(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "engine's stdout-forwarding channel disconnected (process likely exited)",
+                )));
+            }
+        };
         if self.capture_transcript {
             self.transcript.push(format!("< {line}"));
         }

@@ -2,4 +2,5 @@
 name = "fake-usi-engine"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
 publish = false

@@ -1,10 +1,30 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/kent-tokyo/shogiesa/blob/main/schema/experiment_envelope.schema.json",
-  "title": "Experiment envelope",
-  "description": "Shared provenance fields for the shogiesa -> quietset -> lineprior -> veridict pipeline (shogiesa generates teacher observations, quietset scores stability/reliability, lineprior predicts gate-evaluation priority, veridict makes the final judgment). This file is vendored IDENTICALLY into all four repos -- not a shared library, just the same JSON Schema copied into each one -- so a record's provenance survives moving between them. ASSUMPTION (unconfirmed as of this writing -- flag to a human before treating it as settled): shogiesa's copy was authored fresh for this round, not copied from an existing sibling-repo schema, since none of quietset/lineprior/veridict were visible from the session that wrote it. All fields are optional: shogiesa (and presumably each sibling) only populates the subset relevant to what it produces.",
+  "$id": "urn:kent-tokyo:schema:experiment-envelope:1",
+  "title": "Experiment envelope v1 (draft)",
+  "description": "Shared provenance object for the shogiesa -> quietset -> lineprior -> veridict pipeline (shogiesa generates teacher observations, quietset scores stability/reliability, lineprior predicts gate-evaluation priority, veridict makes the final judgment). DRAFT, canonical source = shogiesa (schema/experiment_envelope.schema.json) until a dedicated schema repo exists -- see docs/design/experiment_envelope.md for the sync mechanism, the full field compatibility matrix, and the migration plan from shogiesa's current (pre-v1, flat, unnested) manifest output. NOT YET VENDORED into quietset/lineprior/veridict as of this writing -- confirm no sibling repo already depends on the pre-v1 shape before copying. This schema describes the CONTENTS of an `experiment_envelope` object that a producer nests inside its own run manifest under that key (e.g. `{\"schema_version\": 11, ..., \"experiment_envelope\": {\"envelope_version\": 1, ...}}`) -- never at the manifest's own top level, so this object's `envelope_version` (the shared envelope's own version) can never collide with a producer's unrelated top-level `schema_version` (that producer's own internal data-schema version). All fields are optional except `envelope_version`: a producer only populates the subset relevant to what it itself produces or passes through.",
   "type": "object",
+  "required": ["envelope_version"],
   "properties": {
+    "envelope_version": {
+      "const": 1,
+      "description": "Version of this shared schema itself, NOT any one repo's own internal data-schema version (see `producer.schema_version` below for that). Bump only when this shared shape changes; a producer's own schema can version independently without touching this."
+    },
+    "producer": {
+      "type": "object",
+      "description": "Identifies which repo/stage populated this particular experiment_envelope object. Every producer in the pipeline sets its OWN identity here when it writes its OWN manifest -- this is not an accumulating history of every upstream stage (see docs/design/experiment_envelope.md's 'reconstructing the chain' section for why: chain reconstruction is done by an external tool joining separate manifests via the hash fields below, e.g. matching one stage's `output_dataset_sha256` against the next stage's `input_dataset_sha256`, not by nesting prior stages' envelopes inside this one).",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Which repo produced this envelope, e.g. \"shogiesa\"/\"quietset\"/\"lineprior\"/\"veridict\"."
+        },
+        "schema_version": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "That repo's OWN internal data-schema version (for shogiesa: SCHEMA_VERSION). Deliberately namespaced under `producer`, not a bare top-level `schema_version` on this object -- a bare name here would be ambiguous with a producer's own top-level manifest field of the same name once nested (see this schema's own top-level description)."
+        }
+      }
+    },
     "experiment_id": {
       "type": "string",
       "description": "Opaque identifier for the overall experiment run, supplied by the orchestrator. Not interpreted by any one repo."
@@ -21,10 +41,15 @@
       "type": "string",
       "description": "Opaque identifier grouping a chain of related experiments (e.g. successive iterations of the same candidate)."
     },
-    "dataset_sha256": {
+    "input_dataset_sha256": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$",
-      "description": "SHA-256 (lowercase hex, verifiable with `shasum -a 256`) of the raw bytes of the dataset file this stage consumed or produced."
+      "description": "SHA-256 (lowercase hex, verifiable with `shasum -a 256`) of the raw bytes of the dataset file this stage CONSUMED as input. Renamed from v0's ambiguous `dataset_sha256` (\"consumed or produced\" -- pick one, don't leave a reader to guess which). For shogiesa: hash of `label`'s `--input`. Each stage populates its own input_dataset_sha256/output_dataset_sha256 pair; a consumer verifies chain-of-custody by checking that one stage's output_dataset_sha256 matches the next stage's input_dataset_sha256, not by relying on a single shared field meaning different things at different stages."
+    },
+    "output_dataset_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 of the raw bytes of the dataset file this stage PRODUCED as output. New in v1 (v0 only had the ambiguous combined `dataset_sha256`). NOT YET populated by shogiesa's current implementation (as of commit 4ab5230) -- future work, see docs/design/experiment_envelope.md."
     },
     "split_sha256": {
       "type": "string",
@@ -34,17 +59,22 @@
     "teacher_manifest_sha256": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$",
-      "description": "SHA-256 identifying the upstream teacher-generation run manifest (i.e. a shogiesa `label --manifest` output) this stage's input was derived from, if any."
+      "description": "SHA-256 identifying the upstream teacher-generation run manifest (i.e. a shogiesa `label --manifest` output) this stage's input was derived from, if any. Opaque passthrough for shogiesa -- it cannot itself compute a hash of its own manifest before that manifest is fully written."
     },
-    "binary_sha256": {
+    "engine_binary_sha256": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$",
-      "description": "SHA-256 of the engine/model binary used to produce this stage's output."
+      "description": "SHA-256 of the shogi-playing engine binary this stage exercised (the thing being evaluated/labeled-with), e.g. the USI engine shogiesa's `label` spawned, or the candidate/baseline engine veridict ran a match against. Renamed from v0's `binary_sha256`, which was ambiguous between this and a producer's OWN tool binary -- see `tool_binary_sha256` below. Do not put a producer's own CLI binary hash here."
+    },
+    "tool_binary_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 of the producer's OWN tool/CLI binary that generated this manifest (e.g. quietset's own binary, if quietset never spawns a separate shogi engine at all and this is the only binary identity relevant to its stage). New in v1, split out of v0's single ambiguous `binary_sha256` specifically so a producer that only has a tool binary (no separate evaluated engine) and a producer that has both (shogiesa: its own `shogiesa` binary vs. the USI engine it spawns) can express that distinction instead of colliding on one field. NOT YET populated by shogiesa's current implementation -- future work."
     },
     "weight_sha256": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$",
-      "description": "SHA-256 of the NNUE/eval weight file the engine was configured to use, distinct from binary_sha256 when weights are loaded from a separate file rather than compiled into the binary."
+      "description": "SHA-256 of the NNUE/eval weight file the engine was configured to use, distinct from engine_binary_sha256 when weights are loaded from a separate file rather than compiled into the binary. Unchanged from v0."
     },
     "init_seed": {
       "type": "integer",
@@ -61,14 +91,9 @@
       "minimum": 0,
       "description": "Seed governing this dataset's shuffle/permutation order (shogiesa's `shuffle --seed`)."
     },
-    "schema_version": {
-      "type": "integer",
-      "minimum": 0,
-      "description": "The data schema version this record/manifest was produced under (shogiesa's SCHEMA_VERSION)."
-    },
     "validity": {
-      "type": "string",
-      "description": "Opaque validity tag for this stage's output (e.g. \"valid\"/\"invalid\"/\"pending\"). Type chosen as a plain string since no repo in this pipeline interprets it as a closed enum yet -- confirm against what quietset/lineprior/veridict actually emit before relying on specific values."
+      "description": "OPAQUE ADVISORY FIELD ONLY -- pending a cross-repo semantic review with quietset/lineprior/veridict, no gating/promotion/pass-fail decision anywhere may branch on this field's value. Kept as a plain string (unchanged from v0's type) since no repo in this pipeline has agreed on a closed vocabulary yet, and premature structure here would just be guessed. A future, semantically-reviewed version may restructure this as an object carrying its own producer/reason-codes (e.g. `{\"status\": ..., \"producer\": ..., \"reason_codes\": [...]}`, so a reader of `validity` can tell which repo asserted it and why) -- not implemented in v1 pending that review. veridict in particular is expected to be this field's primary intended producer (final-judgment stage), per the pipeline's stated roles; unconfirmed against veridict's actual code.",
+      "type": "string"
     }
   },
   "additionalProperties": true

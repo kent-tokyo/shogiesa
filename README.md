@@ -67,7 +67,9 @@ KIF `変化` (variation/branch) blocks are extracted too, each as its own set of
 `source.path` suffixed `#varN@ply` (e.g. `game.kif#var1@2`) so they never collide with the
 mainline's positions or with each other — `split --by-source` puts them in separate files.
 Variations always branch from the mainline; a variation nested inside another variation isn't
-supported. Each such record also carries `source.root_id` (shared with its mainline),
+supported. If another `変化` marker appears while a variation is active, shogiesa emits a warning
+and interprets it as a new mainline-rooted sibling; it does not claim to reconstruct a nested
+branch. Each such record also carries `source.root_id` (shared with its mainline),
 `source.variation_id` (e.g. `"var1"`), and `source.branch_from_ply` — see "JSONL Schema" below;
 `split --train/--valid/--test` uses `root_id` (falling back to the `path` suffix when absent) to
 keep a mainline and its variations from leaking across train/valid/test.
@@ -141,11 +143,13 @@ completed work, not just whatever was still mid-search. Only use `--preserve-ord
 specifically need output order to match input order (e.g. diffing against a prior run).
 
 `--skip-existing` skips a requested depth if this engine already has an observation reaching at
-least that depth — but it only sees what's already inside the *input* record it's currently
-reading, so feeding it the original (unlabeled) corpus does nothing, and feeding it a killed run's
+least that depth with the same MultiPV setting — but it only sees what's already inside the
+*input* record it's currently reading, so feeding it the original (unlabeled) corpus does nothing,
+and feeding it a killed run's
 own partial `--out` skips only the positions that file happens to contain, silently dropping
 whatever the kill never got to at all. `--replace-existing` overwrites an existing observation at
-the same depth instead of duplicating it, for intentionally re-labeling. `--skip-existing` and
+the same depth and MultiPV setting instead of duplicating it, for intentionally re-labeling.
+`--skip-existing` and
 `--replace-existing` are mutually exclusive, and both key off the depth the engine *actually
 reached*, not the one requested — an engine that stops early (e.g. a forced mate) can report a
 shallower depth than asked for, and these flags account for that rather than silently duplicating
@@ -639,6 +643,23 @@ shogiesa filter --input observations.jsonl --out train.jsonl --preset tuning.jso
 `--preset` supplies the entire config and conflicts with every individual gate flag (`--exclude-
 mate`, `--min-policy-margin-cp`, etc.) so precedence is never ambiguous — pick one or the other.
 
+For a fixed train/valid/test comparison of baseline, filtered, mined, and balanced datasets, use
+the reproducibility checklist in [`docs/design/dataset_recipe_template.md`](docs/design/dataset_recipe_template.md).
+It keeps shogiesa transformation artifacts separate from trainer-owned seeds, architecture,
+optimizer, and training budget.
+The training-result comparison protocol is documented in
+[`docs/design/training_effect_measurement.md`](docs/design/training_effect_measurement.md).
+The remaining performance, reproducibility, training-effect, and interoperability runs are
+listed in the [measurement matrix](docs/design/measurement_matrix.md); it is a run plan, not
+benchmark evidence.
+The interoperability evidence, API boundary, competitor evidence, and release checklist are in
+[`docs/interop_evidence.md`](docs/interop_evidence.md), [`docs/api_boundary.md`](docs/api_boundary.md),
+[`docs/competitor_evidence.md`](docs/competitor_evidence.md), and
+[`docs/release_checklist.md`](docs/release_checklist.md).
+The lightweight repository contract check is `bash scripts/check_repository_contract.sh`; the full
+release checks can be run together with `bash scripts/release_readiness.sh`.
+An environment-specific validation log is retained under `docs/release_validation_*.md`.
+
 ### `mine` — hard-position mining
 
 ```bash
@@ -760,8 +781,9 @@ shogiesa split \
 shogiesa sample --input positions.jsonl --count 10000 --seed 1 --out sample.jsonl
 ```
 
-`split --by-source` writes one file per source game plus a `manifest.json` (input path, schema
-version, per-file counts). Keeps at most `--max-open-writers` (default 256) output files open at
+`split --by-source` writes one file per source game plus a `manifest.json` (input path, schema,
+blake3 input hash, per-file counts, and per-file output hashes). Keeps at most
+`--max-open-writers` (default 256) output files open at
 once — a corpus with more distinct source games than that reuses the least-recently-written file
 handle, closing (and, if that source is seen again, reopening in append mode) whichever source
 wrote longest ago, so FD usage stays bounded regardless of source-game count.
@@ -771,8 +793,9 @@ same-game leakage across train/valid/test — this includes a KIF `変化` varia
 which are assigned alongside their mainline rather than independently, since they share a parent
 position), grouped by `source.root_id` when present (falling back to stripping the `path`'s
 `#varN@ply` suffix for JSONL/extractors that never set `root_id`, e.g. CSA), and it writes a
-`manifest.json` with the seed, requested fractions, and the *actual* per-split position/source
-counts (these naturally deviate from the requested fractions since games vary in length).
+`manifest.json` with the blake3 input/output hashes, seed, requested fractions, source-root
+counts, and sorted `source_root_ids` for direct leakage checks. The *actual* per-split
+position/source counts naturally deviate from the requested fractions since games vary in length.
 `sample` deterministically selects N positions, streaming the input and keeping a bounded
 top-`--count` heap (by `seeded_hash`) instead of materializing the whole dataset, the same
 technique `select --strategy uncertain/coverage` uses.
@@ -835,11 +858,21 @@ shogiesa unpack --input data.shgpk --out observations.jsonl
 ```
 
 Compact binary encoding of the JSONL schema for faster loading by trainers.
+JSONL remains the canonical inspection and diff format; pack is a derived distribution format.
+The pack header is `SHOGIESA` plus a little-endian format version, and `unpack` restores records
+to inspectable JSONL. See [`docs/design/schema_compatibility.md`](docs/design/schema_compatibility.md)
+for the supported schema/pack boundary and migration policy.
 
 ### Run manifests
 
-`filter`/`balance`/`stratify`/`sample`/`pack`/`label`/`shuffle`/`make-gate-openings` accept
-`--manifest PATH` to write a JSON provenance record alongside their normal output: shogiesa
+The JSONL and binary compatibility boundary is documented in
+[`docs/design/schema_compatibility.md`](docs/design/schema_compatibility.md). JSONL readers use
+defaults for additive fields from older schemas; the current binary pack reader accepts format 11
+only, so JSONL is the migration path for older pack data.
+
+`filter`/`balance`/`stratify`/`sample`/`pack`/`label`/`shuffle`/`make-gate-openings`/
+`calibrate`/`audit`/`tune` accept `--manifest PATH` to write a JSON provenance record alongside
+their normal output: shogiesa
 version, git sha (embedded at build time), schema/pack format version, the full command line, the
 input file's path and a content hash (`input_hash`, with `fingerprint_algorithm` naming the
 algorithm — `blake3`, chosen because its digest for a given input is stable across Rust toolchain
@@ -860,11 +893,18 @@ wasn't requested" (`null`) from "resume was requested but matched nothing" (`0`)
 paragraph in the `label` section above), (for `stratify`) `max_root_share_in_any_bucket`/
 `distinct_roots_kept`, (for `make-gate-openings`) `selection_seed`/`canonical_valid_count`/
 `output_sha256`/`source_distribution`/`phase_distribution`/`material_distribution`/
-`selection_algorithm_version` (see the `make-gate-openings` section above), and (when
-`--cache-dir` is used) cache hit/miss counts, `cache_hit_rate`, and `engine_fingerprint_mode`.
+`selection_algorithm_version` (see the `make-gate-openings` section above), and (for
+`calibrate`/`audit`/`tune`) `source_root_distribution`/`engine_distribution`/
+`weight_distribution` over the input records/observations. Missing observation weight hashes are
+recorded as `unknown`; no engine or weight provenance is inferred. (When `--cache-dir` is used,)
+cache hit/miss counts, `cache_hit_rate`, and `engine_fingerprint_mode`.
 There's no separate `worker_count` field — `jobs` already is that value. It's opt-in and
 additive — no effect on the command's normal output when omitted. `split` doesn't have
-`--manifest`: it already writes its own tailored `manifest.json` (see above).
+`--manifest`: it always writes its own tailored `manifest.json` (see above), because splitting
+creates multiple durable output files and needs one manifest to record per-split/per-source
+counts and the assignment seed. The generic run-manifest contract describes one command output
+and its input provenance, so adding a second optional manifest would duplicate or obscure the
+split topology.
 (For `shuffle`) `order_hash` and `experiment_id` — see the `shuffle` section above.
 
 **Experiment envelope** (`label` only, as of this writing — see the `label` section above for the
@@ -874,6 +914,34 @@ individual flags): `experiment_id`/`candidate_id`/`baseline_id`/`lineage_id`/`da
 4-repo pipeline. `shuffle_seed` is also populated on `shuffle --manifest`. This shape is a draft
 (see [`docs/design/experiment_envelope.md`](docs/design/experiment_envelope.md)) — not yet wired
 into every manifest-producing command, and not yet vendored into any sibling repo.
+
+### `conflict-report` — CP / game-outcome sign diagnostics
+
+```bash
+shogiesa conflict-report --input labeled.jsonl
+shogiesa conflict-report --input labeled.jsonl --min-abs-cp 100
+```
+
+This compares each engine/weight pair's deepest CP observation per position with a decisive
+`game_result`: positive Black-perspective CP is expected for a Black win and negative CP for a
+White win. Draws, unknown/missing outcomes, mate scores, and the optional CP deadband are
+excluded and reported separately. A conflict is a diagnostic disagreement, not proof that the
+teacher or game result is wrong.
+
+### `block-report` — contiguous block diagnostics
+
+```bash
+shogiesa block-report --input labeled.jsonl
+shogiesa block-report --input labeled.jsonl --block-size 32
+```
+
+Groups input records into fixed-size blocks within each `source.root_id` (or its legacy path
+fallback), flushing a partial block when the root changes. Each line reports deepest
+black-perspective CP mean and population variance, game-outcome counts, in-check ratio, mean
+black-minus-white material points, king-in-enemy-camp ratio, and non-king pieces in the enemy camp.
+The last two are lightweight board-state proxies, not legal-mobility or NNUE-feature measurements.
+Keep each source root contiguous when comparing blocks; an interleaved root starts a new sequence.
+Malformed JSON is skipped and counted.
 
 ### `report` — dataset statistics
 
@@ -932,7 +1000,9 @@ instead of `outcome` — surfaces *why* an outcome is `unknown`, e.g. a corpus d
 `kif_terminal_undetermined` points at unrecognized KIF terminal phrasing; see the JSONL schema
 section for the full reason-code list). Present buckets are also flagged `UNDER`/`OVER` relative to
 the mean bucket count (`--under-ratio`/`--over-ratio`, defaults 0.5/2.0, not applied to the wdl or
-result-source tallies). Diagnostic only — no `--out`/`--manifest`, same shape as `report`.
+result-source tallies). Diagnostic only — `distribution` itself has no `--out`/`--manifest`, same
+shape as `report`; `block-report` and the calibration diagnostics have their own manifest options
+where documented above.
 
 ### `validate` — data integrity
 

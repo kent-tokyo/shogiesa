@@ -47,6 +47,15 @@ fn source_kind_is_kif() {
 }
 
 #[test]
+fn malformed_kif_stops_that_block_after_preserving_prior_positions() {
+    let config = ExtractConfig::default();
+    let mut seen = HashSet::new();
+    let records = extract_from_path(&fixture("malformed.kif"), &config, &mut seen).unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].source.ply, 1);
+}
+
+#[test]
 fn ply_filter_works() {
     let config = ExtractConfig {
         min_ply: 2,

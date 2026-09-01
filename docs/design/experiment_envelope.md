@@ -1,23 +1,23 @@
 # Experiment envelope: canonical source, sync mechanism, and v0 -> v1 migration
 
-**Status as of this writing**: draft v1 proposal. `schema/experiment_envelope.schema.json` in this
-repo is the sole canonical source — **no schema repo exists yet**, and **no sibling repo
-(quietset/lineprior/veridict) has vendored this schema under any name yet** (confirmed by checking
-their default branches before writing this doc). Do not copy this schema into any sibling repo
-until this v1 proposal has been reviewed and accepted there — this doc and the schema file are the
-review artifact, not a fait accompli.
+**Status as of this writing**: draft v1 proposal, accepted as a shogiesa-local review artifact but
+not as a cross-repository canonical contract. `veridict` has a separately maintained
+`schemas/experiment-envelope.schema.json`, but it is not byte-compatible with this file and no
+cross-repository adoption decision has been recorded. `quietset` and `lineprior` checkouts were not
+available for this measurement. Do not copy either schema into another sibling repo until the
+field semantics and ownership are jointly accepted.
 
-This is deliberately docs + a schema-JSON draft only. No shogiesa Rust code changed as part of this
-document — `crates/shogiesa-cli/src/main.rs`'s `RunManifest` still emits the v0 (flat, unnested)
-shape described below, unchanged. See "Migration plan" for what a future code round needs to do.
+The runtime continues to emit the backward-compatible v0 flat shape. The new diagnostic manifests
+also record command-specific input/output hashes and distributions, but do not emit a nested v1
+`experiment_envelope` object yet. See "Migration plan" for the conditions for a future migration.
 
 ## Why this doc exists
 
 The experiment envelope (14 shared provenance fields: IDs, artifact hashes, seeds, a validity tag)
-was designed and shipped in shogiesa commit `4ab5230` as a first proposal, since none of
-quietset/lineprior/veridict had an existing schema to align with. Reviewing that shipped shape
-against actual cross-repo use surfaced three real ambiguities that are cheap to fix now (nothing
-has vendored it yet) and expensive to fix later (once 3+ repos depend on the field names/shape):
+was designed and shipped in shogiesa commit `4ab5230` as a first proposal, since no compatible
+cross-repo schema had been identified at that point. Reviewing that shipped shape against actual
+cross-repo use surfaced three real ambiguities that are cheap to fix before more consumers depend
+on the field names/shape:
 
 1. `schema_version` reused as if it were the shared envelope's own version, when it was actually
    describing shogiesa's own internal data-schema version — colliding with each repo's own
@@ -29,12 +29,37 @@ has vendored it yet) and expensive to fix later (once 3+ repos depend on the fie
    binary" — a real collision risk for a repo (e.g. quietset) that has a tool binary but may never
    spawn a separate shogi engine at all.
 
+## Adoption decision
+
+For this roadmap round, shogiesa adopts the following boundary:
+
+- `RunManifest` remains shogiesa-owned and versioned by its existing top-level `schema_version`.
+- The nested v1 envelope remains a proposal owned by this repository until at least one sibling
+  consumer agrees to the field semantics and vendoring procedure.
+- IDs, seeds, `validity`, and upstream manifest references remain opaque passthrough values;
+  shogiesa must not use them as quality or promotion gates.
+- `input_dataset_sha256`, `output_dataset_sha256`, `engine_binary_sha256`, and
+  `tool_binary_sha256` are not silently introduced under new names. A migration must preserve the
+  existing flat fields for a transition period and add explicit compatibility tests first.
+- Provenance chains are joined externally through hashes; a manifest does not embed or mutate
+  another stage's envelope.
+
+### Measured sibling compatibility
+
+The available `../veridict` checkout uses `schemas/experiment-envelope.schema.json` and embeds its
+14 fields directly in a flat `manifest.toml`. Its schema differs from this proposal in material
+ways: it has no required `envelope_version` or `producer` object, uses `dataset_sha256` and
+`binary_sha256` rather than the proposal's input/output and engine/tool split, permits explicit
+`null` values, and rejects unknown fields. This is evidence of a real alternative contract, not
+evidence that either shape is universally canonical. `../quietset` and `../lineprior` were absent
+and remain unmeasured.
+
 ## Canonical source and versioning
 
-- **Canonical source, for now**: `shogiesa/schema/experiment_envelope.schema.json` (this repo,
-  `main` branch). Not a dedicated schema repo — standing up one now would be process overhead with
-  no second maintainer yet. Revisit if/when a second repo needs write access to the schema itself,
-  not before.
+- **Proposed source, for now**: `shogiesa/schema/experiment_envelope.schema.json` (this repo,
+  `main` branch). It is not a cross-repo canonical source while the veridict variant remains
+  materially different. A dedicated schema repo is deferred until a second repo needs write access
+  to an agreed schema.
 - **`$id`**: `urn:kent-tokyo:schema:experiment-envelope:1` — a stable, repo-independent identifier
   (a URN, not a GitHub blob URL). The prior v0 shape's `$id` pointed at a `github.com/.../blob/main/...`
   URL, which (a) changes meaning as `main` moves and (b) hard-codes "shogiesa" into an identifier
@@ -90,13 +115,12 @@ pinned-hash verification:
 ## Compatibility matrix
 
 Roles below marked **(shogiesa, confirmed)** are verified against this repo's actual code as of
-commit `4ab5230`. Every other repo's row is **(presumed, unconfirmed)** — inferred only from the
-pipeline's stated roles (shogiesa generates teacher observations; quietset scores stability/
-reliability; lineprior predicts gate-evaluation priority; veridict makes the final judgment), since
-none of those three repos were visible from the session that wrote this doc. Confirm directly
-against each repo's own code before relying on any presumed row.
+commit `4ab5230`. The `veridict` column is retained as historical proposal context and is
+superseded wherever the measured sibling compatibility section above found a difference. The
+`quietset` and `lineprior` rows remain presumed and unconfirmed because those checkouts were not
+available. Do not rely on presumed rows as compatibility evidence.
 
-| Field | shogiesa (confirmed) | quietset / lineprior / veridict (presumed) |
+| Field | shogiesa (confirmed) | quietset / lineprior (presumed); veridict (historical presumption) |
 |---|---|---|
 | `envelope_version` | not yet populated (v0 code); future: `1` | same, once vendored |
 | `producer.name` / `producer.schema_version` | not yet populated (v0 code has bare `schema_version` only); future: `"shogiesa"` / `SCHEMA_VERSION` | each stage sets its own identity when it writes its own manifest — not an accumulating chain (see below) |
@@ -111,7 +135,7 @@ against each repo's own code before relying on any presumed row.
 | `init_seed` | opaque passthrough only | presumably produced by whichever stage inits training weights |
 | `split_seed` | opaque passthrough only | presumably produced by whichever stage performs the split |
 | `shuffle_seed` | **produced**: `shuffle --seed` | not applicable unless a sibling repo also reorders data |
-| `validity` | opaque passthrough only, `label --validity` | presumed primary producer: veridict (final-judgment stage) — **must not be used for gating anywhere until a cross-repo semantic review**, see below |
+| `validity` | opaque passthrough only, `label --validity` | presumed primary producer: veridict (final-judgment stage) — **superseded by the measured veridict contract described above; must not be used for gating in shogiesa**, see below |
 
 **Reconstructing the chain**: each producer's manifest carries exactly one `experiment_envelope`
 object describing *that stage's own* production event — not a nested history of every upstream

@@ -19,6 +19,15 @@ fn extract_sample_csa_count() {
 }
 
 #[test]
+fn malformed_csa_preserves_valid_prefix_and_does_not_panic() {
+    let config = ExtractConfig::default();
+    let mut seen = HashSet::new();
+    let records = extract_from_path(&fixture("malformed.csa"), &config, &mut seen).unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].source.ply, 1);
+}
+
+#[test]
 fn extract_initial_sfen_is_correct() {
     let csa = "V2.2\nPI\n+\n+7776FU\n%TORYO\n";
     let config = ExtractConfig {

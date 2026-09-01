@@ -108,6 +108,81 @@ fn report_shows_stats() {
 }
 
 #[test]
+fn conflict_report_excludes_unknown_draw_and_mate_and_counts_cp_sign_conflicts() {
+    let mut black_win_ok = position("middlegame", serde_json::json!([obs("7g7f", 300, 4)]));
+    black_win_ok["game_result"] = serde_json::json!({
+        "outcome": "black_wins", "result_source": "test"
+    });
+    let mut black_win_conflict = position("middlegame", serde_json::json!([obs("7g7f", -300, 4)]));
+    black_win_conflict["game_result"] = serde_json::json!({
+        "outcome": "black_wins", "result_source": "test"
+    });
+    let mut white_win_ok = position("middlegame", serde_json::json!([obs("7g7f", -300, 4)]));
+    white_win_ok["game_result"] = serde_json::json!({
+        "outcome": "white_wins", "result_source": "test"
+    });
+    let mut draw = position("middlegame", serde_json::json!([obs("7g7f", 300, 4)]));
+    draw["game_result"] = serde_json::json!({ "outcome": "draw", "result_source": "test" });
+    let mut mate = position(
+        "middlegame",
+        serde_json::json!([serde_json::json!({
+            "engine": "7g7f",
+            "engine_version": null,
+            "depth": 4,
+            "score": {"kind": "mate", "moves": 1},
+            "bestmove": "7g7f",
+            "nodes": null,
+            "time_ms": null,
+            "pv": null
+        })]),
+    );
+    mate["game_result"] = serde_json::json!({
+        "outcome": "black_wins", "result_source": "test"
+    });
+    let input = make_labeled_jsonl(&[black_win_ok, black_win_conflict, white_win_ok, draw, mate]);
+
+    shogiesa()
+        .args(["conflict-report", "--input", input.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("decisive records  : 3"))
+        .stdout(predicate::str::contains("evaluated pairs   : 3"))
+        .stdout(predicate::str::contains("conflicts         : 1  (33.3%)"))
+        .stdout(predicate::str::contains("non-decisive result: 1"))
+        .stdout(predicate::str::contains("excluded no CP/mate: 1"));
+}
+
+#[test]
+fn block_report_keeps_roots_separate_and_reports_cp_summary() {
+    let mut first = position("middlegame", serde_json::json!([obs("7g7f", 100, 4)]));
+    first["source"]["path"] = serde_json::json!("game-a.csa");
+    first["game_result"] = serde_json::json!({"outcome": "black_wins", "result_source": "test"});
+    let mut second = position("middlegame", serde_json::json!([obs("2g2f", 300, 6)]));
+    second["source"]["path"] = serde_json::json!("game-a.csa");
+    second["source"]["ply"] = serde_json::json!(2);
+    second["tags"]["in_check"] = serde_json::json!(true);
+    let mut third = position("endgame", serde_json::json!([obs("8h2b", -200, 8)]));
+    third["source"]["path"] = serde_json::json!("game-b.csa");
+    let input = make_labeled_jsonl(&[first, second, third]);
+
+    shogiesa()
+        .args([
+            "block-report",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--block-size",
+            "2",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("blocks            : 2"))
+        .stdout(predicate::str::contains("game-a.csa#block1 records=2"))
+        .stdout(predicate::str::contains("cp_mean=200.0"))
+        .stdout(predicate::str::contains("cp_variance=10000.0"))
+        .stdout(predicate::str::contains("game-b.csa#block2 records=1"));
+}
+
+#[test]
 fn report_shows_labeled_diagnostics() {
     let pos = NamedTempFile::new().unwrap();
     let obs = NamedTempFile::new().unwrap();
@@ -764,6 +839,99 @@ fn label_skip_existing_avoids_duplicate() {
     );
     let depths: Vec<u64> = obs.iter().map(|o| o["depth"].as_u64().unwrap()).collect();
     assert_eq!(depths, vec![4, 6]);
+}
+
+#[test]
+fn label_existing_policy_distinguishes_multipv_setting() {
+    let pos = NamedTempFile::new().unwrap();
+    let single = NamedTempFile::new().unwrap();
+    let multipv = NamedTempFile::new().unwrap();
+    let replaced = NamedTempFile::new().unwrap();
+
+    shogiesa()
+        .args([
+            "extract",
+            "--input",
+            fixture("sample.csa").to_str().unwrap(),
+            "--out",
+            pos.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            pos.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--out",
+            single.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    // A single-PV observation must not satisfy a MultiPV=2 request at the same depth.
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            single.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--multipv",
+            "2",
+            "--skip-existing",
+            "--out",
+            multipv.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let value: serde_json::Value = serde_json::from_str(
+        std::fs::read_to_string(multipv.path())
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    let observations = value["observations"].as_array().unwrap();
+    assert_eq!(observations.len(), 2);
+    assert_eq!(observations[0]["candidates"].as_array().unwrap().len(), 0);
+    assert_eq!(observations[1]["candidates"].as_array().unwrap().len(), 2);
+
+    // Re-labeling single-PV must not replace the existing MultiPV observation: the setting is
+    // part of the request identity just as the search limit is.
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            multipv.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--replace-existing",
+            "--out",
+            replaced.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let value: serde_json::Value = serde_json::from_str(
+        std::fs::read_to_string(replaced.path())
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(value["observations"].as_array().unwrap().len(), 2);
 }
 
 #[test]
@@ -5664,6 +5832,36 @@ fn split_train_valid_test_no_leakage() {
         .map(|s| manifest["splits"][s]["positions"].as_u64().unwrap())
         .sum();
     assert_eq!(split_total, 6);
+    assert_eq!(manifest["fingerprint_algorithm"], "blake3");
+    assert_eq!(manifest["input_hash"].as_str().unwrap().len(), 64);
+    let root_sets: Vec<HashSet<String>> = ["train", "valid", "test"]
+        .iter()
+        .map(|name| {
+            manifest["splits"][name]["source_root_ids"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|root| root.as_str().unwrap().to_string())
+                .collect()
+        })
+        .collect();
+    for i in 0..root_sets.len() {
+        for j in (i + 1)..root_sets.len() {
+            assert!(
+                root_sets[i].is_disjoint(&root_sets[j]),
+                "source roots leaked between split manifest entries"
+            );
+        }
+    }
+    for name in ["train", "valid", "test"] {
+        assert_eq!(
+            manifest["splits"][name]["output_hash"]
+                .as_str()
+                .unwrap()
+                .len(),
+            64
+        );
+    }
 }
 
 #[test]

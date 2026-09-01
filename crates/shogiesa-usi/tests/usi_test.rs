@@ -1,6 +1,4 @@
 use std::process::Command;
-use std::thread;
-use std::time::Duration;
 
 use assert_cmd::cargo::cargo_bin;
 use shogiesa_core::{Score, ScoreBound};
@@ -265,11 +263,9 @@ fn strict_detects_goless_bestmove() {
     let mut engine = UsiEngine::launch_command(cmd, String::new(), TIMEOUT, &[])
         .unwrap()
         .with_strict(true);
-    // The fake engine writes its unsolicited bestmove immediately after usinewgame (i.e. right
-    // after launch()'s handshake) -- give it a moment to land before analyse()'s drain checks
-    // for it. Not fully deterministic (nothing is "owed" the way a post-timeout bestmove is, so
-    // there's no bounded-wait mechanism to make this race-free), but generous enough in practice.
-    thread::sleep(Duration::from_millis(100));
+    // The fake engine writes its unsolicited bestmove immediately after usinewgame. analyse()
+    // drains the forwarding channel before sending `go`, so this is event-driven and does not
+    // depend on a fixed sleep winning a scheduler race on a loaded CI runner.
     let result = engine.analyse(STARTPOS, SearchLimit::Depth(4), TIMEOUT);
     assert!(matches!(result, Err(UsiError::BestmoveWithoutGo)));
 }

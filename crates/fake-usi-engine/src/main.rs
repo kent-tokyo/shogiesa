@@ -20,8 +20,8 @@
 ///                          simulating an engine process that crashes mid-search
 ///   --duplicate-bestmove : after answering a "go" normally, immediately write a second,
 ///                          unsolicited "bestmove" line for the same go
-///   --goless-bestmove    : immediately after "usinewgame" (before any "go" is ever received),
-///                          write an unsolicited "bestmove" line
+///   --goless-bestmove    : during the handshake (before any "go" is ever received), write an
+///                          unsolicited "bestmove" line
 ///   --invalid-bestmove-line : on "go", write "bestmove " with no move token instead of a real
 ///                          bestmove
 ///
@@ -103,15 +103,16 @@ fn main() {
                 out.flush().unwrap();
             }
             "isready" => {
+                if goless_bestmove {
+                    // Emit before readyok so the client observes this unsolicited response as
+                    // part of the deterministic handshake, not via a scheduler-sensitive race
+                    // after launch() returns.
+                    writeln!(out, "bestmove {bestmove}").unwrap();
+                }
                 writeln!(out, "readyok").unwrap();
                 out.flush().unwrap();
             }
-            "usinewgame" => {
-                if goless_bestmove {
-                    writeln!(out, "bestmove {bestmove}").unwrap();
-                    out.flush().unwrap();
-                }
-            }
+            "usinewgame" => {}
             s if s.starts_with("setoption name MultiPV value ") => {
                 let n: u32 = s
                     .rsplit(' ')

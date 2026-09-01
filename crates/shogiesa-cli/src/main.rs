@@ -78,6 +78,10 @@ enum Commands {
     /// reporting the coverage/reliability trade-off (Pareto frontier) instead of measuring each
     /// separately -- a strict superset of `calibrate`/`audit` combined
     Tune(TuneArgs),
+    /// Report disagreements between decisive game outcomes and teacher CP sign
+    ConflictReport(ConflictReportArgs),
+    /// Report fixed-size contiguous source-root blocks for diagnostic analysis
+    BlockReport(BlockReportArgs),
     /// Report statistics about a positions dataset
     Report(ReportArgs),
     /// Report phase/side/eval-bucket/ply/source-root distribution, explicitly flagging bucket
@@ -200,6 +204,26 @@ struct ReportArgs {
     /// Input JSONL file
     #[arg(short, long)]
     input: PathBuf,
+}
+
+#[derive(clap::Args)]
+struct ConflictReportArgs {
+    /// Input JSONL file
+    #[arg(short, long)]
+    input: PathBuf,
+    /// Ignore CP values whose absolute value is at or below this deadband
+    #[arg(long, default_value = "0")]
+    min_abs_cp: i32,
+}
+
+#[derive(clap::Args)]
+struct BlockReportArgs {
+    /// Input JSONL file
+    #[arg(short, long)]
+    input: PathBuf,
+    /// Positions per block; a source-root change also flushes the current partial block
+    #[arg(long, default_value = "32")]
+    block_size: usize,
 }
 
 #[derive(clap::Args)]
@@ -828,6 +852,9 @@ struct CalibrateArgs {
     /// Output CSV: one row per (swept parameter, swept value)
     #[arg(short, long)]
     out: PathBuf,
+    /// Write input/output hashes, command arguments, schema, and counts to this manifest
+    #[arg(long)]
+    manifest: Option<PathBuf>,
     /// Comma-separated values to sweep for the equivalent of `filter --min-policy-margin-cp`
     /// (e.g. "0,40,80,120,160")
     #[arg(long, conflicts_with = "min_policy_margin_cp")]
@@ -898,6 +925,9 @@ struct AuditArgs {
     /// Output JSONL: one line per (record, engine, student_depth) pair with both depths present
     #[arg(short, long)]
     out: PathBuf,
+    /// Write input/output hashes, command arguments, schema, and counts to this manifest
+    #[arg(long)]
+    manifest: Option<PathBuf>,
 }
 
 #[derive(clap::Args)]
@@ -968,6 +998,9 @@ struct TuneArgs {
     /// Output CSV: one row per (policy_margin, score_swing) grid configuration
     #[arg(short, long)]
     out: PathBuf,
+    /// Write input/output hashes, command arguments, schema, and counts to this manifest
+    #[arg(long)]
+    manifest: Option<PathBuf>,
     /// Optional Markdown report with a Pareto-frontier analysis and 3 recommended candidates
     /// (broad/balanced/strict) -- shogiesa doesn't pick a single "correct" threshold, since
     /// whether a training run wants quantity or reliability varies run to run.
@@ -1056,6 +1089,8 @@ fn main() -> Result<()> {
         Commands::Calibrate(args) => cmd_calibrate(args),
         Commands::Audit(args) => cmd_audit(args),
         Commands::Tune(args) => cmd_tune(args),
+        Commands::ConflictReport(args) => cmd_conflict_report(args),
+        Commands::BlockReport(args) => cmd_block_report(args),
         Commands::Report(args) => cmd_report(args),
         Commands::Distribution(args) => cmd_distribution(args),
         Commands::Validate(args) => cmd_validate(args),
@@ -2165,6 +2200,7 @@ struct LabelContext {
     // per-run-constant reasoning as the two fields above, and partly to keep analyze_record's
     // own parameter count under clippy's too_many_arguments threshold.
     timeout_ms: u64,
+    multipv: u32,
     existing_policy: ExistingPolicy,
     strict_cfg: UsiStrictConfig,
 }
@@ -2261,8 +2297,33 @@ fn handle_analyse_error(
 /// `search_limit_kind` in both directions: a depth-limited observation never "covers" a
 /// node-limited request or vice versa, even if the raw numbers happen to compare favorably --
 /// they aren't comparable notions of search thoroughness across modes.
-fn observation_covers_limit(o: &Observation, engine_name: &str, limit: SearchLimit) -> bool {
+fn observation_multipv(o: &Observation) -> u32 {
+    o.candidates
+        .iter()
+        .map(|candidate| candidate.multipv)
+        .max()
+        .unwrap_or(1)
+}
+
+/// Whether an observation was produced with the requested MultiPV setting. Older JSONL has no
+/// explicit request field, so the candidate ranks are the durable evidence: no candidates means
+/// ordinary single-PV labeling, while the highest reported rank identifies the requested MultiPV
+/// setting. Exact matching is intentional -- a MultiPV=2 result should not silently satisfy a
+/// later MultiPV=3 request (or cause a re-label to be treated as the same slot as single-PV).
+fn observation_matches_multipv(o: &Observation, multipv: u32) -> bool {
+    observation_multipv(o) == multipv.max(1)
+}
+
+fn observation_covers_limit(
+    o: &Observation,
+    engine_name: &str,
+    limit: SearchLimit,
+    multipv: u32,
+) -> bool {
     if o.engine != engine_name {
+        return false;
+    }
+    if !observation_matches_multipv(o, multipv) {
         return false;
     }
     match limit {
@@ -2283,6 +2344,7 @@ fn observation_covers_limit(o: &Observation, engine_name: &str, limit: SearchLim
 /// matching) rather than over-dedupe.
 fn same_search_request(o: &Observation, new: &Observation) -> bool {
     o.engine == new.engine
+        && observation_multipv(o) == observation_multipv(new)
         && o.search_limit_kind == new.search_limit_kind
         && match new.search_limit_kind {
             SearchLimitKind::Depth => {
@@ -2316,7 +2378,7 @@ fn analyze_record(
             && rec
                 .observations
                 .iter()
-                .any(|o| observation_covers_limit(o, &engine.engine_name, limit))
+                .any(|o| observation_covers_limit(o, &engine.engine_name, limit, ctx.multipv))
         {
             continue;
         }
@@ -2598,6 +2660,7 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
         weight_sha256: weight_sha256.clone(),
         engine_options_hash_hex: engine_options_hash_hex(&engine_options),
         timeout_ms,
+        multipv: args.multipv.max(1),
         existing_policy,
         strict_cfg,
     };
@@ -3170,13 +3233,21 @@ fn cmd_split(args: SplitArgs) -> Result<()> {
     }
     pool.flush_all()?;
 
+    let output_hashes: BTreeMap<String, String> = file_counts
+        .keys()
+        .map(|file_name| Ok((file_name.clone(), hash_file(&out_dir.join(file_name))?)))
+        .collect::<Result<_>>()?;
+
     let manifest = serde_json::json!({
         "shogiesa_version": env!("CARGO_PKG_VERSION"),
         "schema_version": SCHEMA_VERSION,
-        "input": args.input,
+        "fingerprint_algorithm": "blake3",
+        "input": args.input.display().to_string(),
+        "input_hash": hash_file(&args.input)?,
         "by_source": args.by_source,
         "total_positions": total,
         "files": file_counts,
+        "output_hashes": output_hashes,
     });
     let manifest_path = out_dir.join("manifest.json");
     fs::write(&manifest_path, serde_json::to_string_pretty(&manifest)?)
@@ -3258,6 +3329,7 @@ fn cmd_split_train_valid_test(args: SplitArgs) -> Result<()> {
 
     let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
     let mut sources: HashMap<&'static str, HashSet<String>> = HashMap::new();
+    let mut roots: HashMap<&'static str, HashSet<String>> = HashMap::new();
     let mut total = 0usize;
 
     for (i, line) in reader.lines().enumerate() {
@@ -3287,7 +3359,9 @@ fn cmd_split_train_valid_test(args: SplitArgs) -> Result<()> {
         serde_json::to_writer(&mut *writer, &rec)?;
         writer.write_all(b"\n")?;
         *counts.entry(name).or_default() += 1;
+        let root_key = split_root_key(&rec.source).to_string();
         sources.entry(name).or_default().insert(rec.source.path);
+        roots.entry(name).or_default().insert(root_key);
         total += 1;
     }
 
@@ -3295,24 +3369,37 @@ fn cmd_split_train_valid_test(args: SplitArgs) -> Result<()> {
     valid_writer.flush()?;
     test_writer.flush()?;
 
-    let split_manifest = |name: &str, path: &PathBuf| {
+    let split_manifest = |name: &str, path: &PathBuf, output_hash: &str| {
+        let mut source_root_ids: Vec<String> = roots
+            .get(name)
+            .map(|set| set.iter().cloned().collect())
+            .unwrap_or_default();
+        source_root_ids.sort();
         serde_json::json!({
             "path": path,
+            "output_hash": output_hash,
             "positions": counts.get(name).copied().unwrap_or(0),
             "sources": sources.get(name).map(HashSet::len).unwrap_or(0),
+            "source_roots": roots.get(name).map(HashSet::len).unwrap_or(0),
+            "source_root_ids": source_root_ids,
         })
     };
+    let train_hash = hash_file(train_path)?;
+    let valid_hash = hash_file(valid_path)?;
+    let test_hash = hash_file(test_path)?;
     let manifest = serde_json::json!({
         "shogiesa_version": env!("CARGO_PKG_VERSION"),
         "schema_version": SCHEMA_VERSION,
-        "input": args.input,
+        "fingerprint_algorithm": "blake3",
+        "input": args.input.display().to_string(),
+        "input_hash": hash_file(&args.input)?,
         "seed": args.seed,
         "requested": { "valid_frac": args.valid_frac, "test_frac": args.test_frac },
         "total_positions": total,
         "splits": {
-            "train": split_manifest("train", train_path),
-            "valid": split_manifest("valid", valid_path),
-            "test": split_manifest("test", test_path),
+            "train": split_manifest("train", train_path, &train_hash),
+            "valid": split_manifest("valid", valid_path, &valid_hash),
+            "test": split_manifest("test", test_path, &test_hash),
         },
     });
     let manifest_path = train_path
@@ -3511,6 +3598,14 @@ struct RunManifest {
     /// SHA-256 of `--out`'s written bytes.
     #[serde(skip_serializing_if = "Option::is_none")]
     output_sha256: Option<String>,
+    /// Source-root distribution over records read by diagnostic commands.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_root_distribution: Option<BTreeMap<String, usize>>,
+    /// Engine and weight provenance distributions over observations read by diagnostic commands.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    engine_distribution: Option<BTreeMap<String, usize>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    weight_distribution: Option<BTreeMap<String, usize>>,
     /// Source-root (`shogiesa_stratify::group_key`) distribution over the final kept suite.
     #[serde(skip_serializing_if = "Option::is_none")]
     source_distribution: Option<BTreeMap<String, usize>>,
@@ -3591,11 +3686,36 @@ impl RunManifest {
             selection_seed: None,
             canonical_valid_count: None,
             output_sha256: None,
+            source_root_distribution: None,
+            engine_distribution: None,
+            weight_distribution: None,
             source_distribution: None,
             phase_distribution: None,
             material_distribution: None,
             selection_algorithm_version: None,
         }
+    }
+}
+
+fn record_manifest_provenance(
+    record: &PositionRecord,
+    source_roots: &mut BTreeMap<String, usize>,
+    engines: &mut BTreeMap<String, usize>,
+    weights: &mut BTreeMap<String, usize>,
+) {
+    *source_roots
+        .entry(split_root_key(&record.source).to_string())
+        .or_default() += 1;
+    for observation in &record.observations {
+        *engines.entry(observation.engine.clone()).or_default() += 1;
+        *weights
+            .entry(
+                observation
+                    .weight_sha256
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
+            )
+            .or_default() += 1;
     }
 }
 
@@ -5654,6 +5774,9 @@ fn cmd_calibrate(args: CalibrateArgs) -> Result<()> {
 
     let mut total = 0usize;
     let mut diagnostics = DatasetDiagnostics::default();
+    let mut source_roots = BTreeMap::new();
+    let mut engines = BTreeMap::new();
+    let mut weights = BTreeMap::new();
 
     for (i, line) in reader.lines().enumerate() {
         let line = line?;
@@ -5668,6 +5791,7 @@ fn cmd_calibrate(args: CalibrateArgs) -> Result<()> {
             }
         };
         total += 1;
+        record_manifest_provenance(&rec, &mut source_roots, &mut engines, &mut weights);
 
         // Each swept value gets its own evaluate_quality call, overriding only the one field this
         // sweep varies -- everything else (including the OTHER dimension, if held via --min-x/
@@ -5713,6 +5837,19 @@ fn cmd_calibrate(args: CalibrateArgs) -> Result<()> {
         )?;
     }
     writer.flush()?;
+
+    if let Some(manifest_path) = &args.manifest {
+        let mut manifest = RunManifest::new("calibrate", &args.input);
+        manifest.input_hash = hash_file(&args.input)?;
+        manifest.records_read = total;
+        manifest.records_kept = total;
+        manifest.labeled_records = diagnostics.labeled;
+        manifest.output_sha256 = Some(hash_file(&args.out)?);
+        manifest.source_root_distribution = Some(source_roots);
+        manifest.engine_distribution = Some(engines);
+        manifest.weight_distribution = Some(weights);
+        write_manifest(manifest_path, &manifest)?;
+    }
 
     eprintln!(
         "done: {total} read, {} labeled → {:?}",
@@ -5933,6 +6070,9 @@ fn cmd_audit(args: AuditArgs) -> Result<()> {
     let mut total_records = 0usize;
     let mut overall = AuditStats::default();
     let mut per_depth: BTreeMap<u32, AuditStats> = BTreeMap::new();
+    let mut source_roots = BTreeMap::new();
+    let mut engines = BTreeMap::new();
+    let mut weights = BTreeMap::new();
 
     for (i, line) in reader.lines().enumerate() {
         let line = line?;
@@ -5947,6 +6087,7 @@ fn cmd_audit(args: AuditArgs) -> Result<()> {
             }
         };
         total_records += 1;
+        record_manifest_provenance(&rec, &mut source_roots, &mut engines, &mut weights);
 
         for (student_depth, bestmove_match, score_error_cp, teacher, student) in
             compute_audit_pairs(&rec, args.teacher_depth, &student_depths)
@@ -5984,6 +6125,18 @@ fn cmd_audit(args: AuditArgs) -> Result<()> {
     }
 
     writer.flush()?;
+    if let Some(manifest_path) = &args.manifest {
+        let mut manifest = RunManifest::new("audit", &args.input);
+        manifest.input_hash = hash_file(&args.input)?;
+        manifest.records_read = total_records;
+        manifest.records_kept = overall.pairs;
+        manifest.labeled_records = total_records;
+        manifest.output_sha256 = Some(hash_file(&args.out)?);
+        manifest.source_root_distribution = Some(source_roots);
+        manifest.engine_distribution = Some(engines);
+        manifest.weight_distribution = Some(weights);
+        write_manifest(manifest_path, &manifest)?;
+    }
     eprintln!(
         "done: {total_records} records read, {} pairs compared → {:?}",
         overall.pairs, args.out
@@ -6515,6 +6668,9 @@ fn cmd_tune(args: TuneArgs) -> Result<()> {
     );
     let mut total = 0usize;
     let mut diagnostics = DatasetDiagnostics::default();
+    let mut source_roots = BTreeMap::new();
+    let mut engines = BTreeMap::new();
+    let mut weights = BTreeMap::new();
 
     for (i, line) in reader.lines().enumerate() {
         let line = line?;
@@ -6529,6 +6685,7 @@ fn cmd_tune(args: TuneArgs) -> Result<()> {
             }
         };
         total += 1;
+        record_manifest_provenance(&rec, &mut source_roots, &mut engines, &mut weights);
         diagnostics.record(&rec);
 
         // Computed ONCE per record, independent of any grid cell's thresholds -- the comparison
@@ -6590,6 +6747,19 @@ fn cmd_tune(args: TuneArgs) -> Result<()> {
     if let Some(preset_path) = &args.preset_out {
         write_tune_preset(preset_path, &args, &base_config, &grid)?;
         eprintln!("preset → {preset_path:?}");
+    }
+
+    if let Some(manifest_path) = &args.manifest {
+        let mut manifest = RunManifest::new("tune", &args.input);
+        manifest.input_hash = hash_file(&args.input)?;
+        manifest.records_read = total;
+        manifest.records_kept = total;
+        manifest.labeled_records = diagnostics.labeled;
+        manifest.output_sha256 = Some(hash_file(&args.out)?);
+        manifest.source_root_distribution = Some(source_roots);
+        manifest.engine_distribution = Some(engines);
+        manifest.weight_distribution = Some(weights);
+        write_manifest(manifest_path, &manifest)?;
     }
 
     Ok(())
@@ -7329,6 +7499,344 @@ fn print_eval_cross_tab(title: &str, table: &BTreeMap<i32, BTreeMap<String, usiz
         }
         println!();
     }
+}
+
+#[derive(Default)]
+struct ConflictGroupStats {
+    evaluated: usize,
+    conflicts: usize,
+}
+
+/// Compare each record's decisive game result with the deepest CP observation from each
+/// engine/weight pair. Draws and unknown results are deliberately excluded: neither supplies a
+/// binary WDL target, and counting them as conflicts would turn missing evidence into a quality
+/// failure. A zero/deadband CP is also excluded because it is not evidence of either sign.
+fn cmd_conflict_report(args: ConflictReportArgs) -> Result<()> {
+    if args.min_abs_cp < 0 {
+        anyhow::bail!("--min-abs-cp must be non-negative");
+    }
+
+    let reader = BufReader::new(
+        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
+    );
+    let mut records_read = 0usize;
+    let mut parse_errors = 0usize;
+    let mut no_game_result = 0usize;
+    let mut non_decisive_result = 0usize;
+    let mut decisive_records = 0usize;
+    let mut no_cp_or_mate = 0usize;
+    let mut deadband = 0usize;
+    let mut evaluated = 0usize;
+    let mut conflicts = 0usize;
+    let mut groups: BTreeMap<String, ConflictGroupStats> = BTreeMap::new();
+
+    for (line_number, line) in reader.lines().enumerate() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        records_read += 1;
+        let rec: PositionRecord = match serde_json::from_str(&line) {
+            Ok(record) => record,
+            Err(error) => {
+                parse_errors += 1;
+                tracing::warn!(line = line_number + 1, "JSON parse error: {error}");
+                continue;
+            }
+        };
+
+        let Some(game_result) = rec.game_result.as_ref() else {
+            no_game_result += 1;
+            continue;
+        };
+        if !matches!(
+            game_result.outcome,
+            GameOutcome::BlackWins | GameOutcome::WhiteWins
+        ) {
+            non_decisive_result += 1;
+            continue;
+        }
+        decisive_records += 1;
+
+        let mut deepest_by_engine: BTreeMap<&str, &Observation> = BTreeMap::new();
+        for observation in &rec.observations {
+            deepest_by_engine
+                .entry(observation.engine.as_str())
+                .and_modify(|current| {
+                    if observation.depth > current.depth {
+                        *current = observation;
+                    }
+                })
+                .or_insert(observation);
+        }
+        if deepest_by_engine.is_empty() {
+            no_cp_or_mate += 1;
+            continue;
+        }
+
+        let mut record_evaluated = false;
+        for observation in deepest_by_engine.into_values() {
+            let Some(cp) = (match observation.score {
+                Score::Cp { value } => Some(cp_from_black_perspective(
+                    value,
+                    observation.score_perspective,
+                    rec.tags.side_to_move,
+                )),
+                Score::Mate { .. } => None,
+            }) else {
+                no_cp_or_mate += 1;
+                continue;
+            };
+            if cp.saturating_abs() <= args.min_abs_cp {
+                deadband += 1;
+                continue;
+            }
+
+            let conflict = match game_result.outcome {
+                GameOutcome::BlackWins => cp < 0,
+                GameOutcome::WhiteWins => cp > 0,
+                GameOutcome::Draw | GameOutcome::Unknown => false,
+            };
+            let weight = observation.weight_sha256.as_deref().unwrap_or("none");
+            let group_key = format!("{} / weight={weight}", observation.engine);
+            let stats = groups.entry(group_key).or_default();
+            stats.evaluated += 1;
+            stats.conflicts += conflict as usize;
+            evaluated += 1;
+            conflicts += conflict as usize;
+            record_evaluated = true;
+        }
+        if !record_evaluated && rec.observations.is_empty() {
+            no_cp_or_mate += 1;
+        }
+    }
+
+    println!("=== shogiesa conflict-report ===");
+    println!("input             : {:?}", args.input);
+    println!("records read      : {records_read}");
+    println!("parse errors      : {parse_errors}");
+    println!("no game_result    : {no_game_result}");
+    println!("non-decisive result: {non_decisive_result}");
+    println!("decisive records  : {decisive_records}");
+    println!("evaluated pairs   : {evaluated}");
+    println!(
+        "conflicts         : {conflicts}  ({:.1}%)",
+        conflicts as f64 / evaluated.max(1) as f64 * 100.0
+    );
+    println!("excluded no CP/mate: {no_cp_or_mate}");
+    println!(
+        "excluded deadband : {deadband}  (|cp| <= {})",
+        args.min_abs_cp
+    );
+    println!();
+    println!("by engine / weight:");
+    for (group, stats) in groups {
+        println!(
+            "  {group:<40} evaluated={:>6} conflicts={:>6} ({:.1}%)",
+            stats.evaluated,
+            stats.conflicts,
+            stats.conflicts as f64 / stats.evaluated.max(1) as f64 * 100.0
+        );
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct BlockReportStats {
+    root: String,
+    block_index: usize,
+    records: usize,
+    cp_count: usize,
+    cp_sum: f64,
+    cp_sum_sq: f64,
+    outcomes: BTreeMap<&'static str, usize>,
+    in_check: usize,
+    material_count: usize,
+    material_sum: f64,
+    king_camp_count: usize,
+    activity_count: usize,
+    activity_sum: f64,
+}
+
+impl BlockReportStats {
+    fn new(root: String, block_index: usize) -> Self {
+        Self {
+            root,
+            block_index,
+            ..Self::default()
+        }
+    }
+
+    fn add(&mut self, record: &PositionRecord) {
+        self.records += 1;
+        if let Some(cp) = eval_black(record) {
+            let cp = f64::from(cp);
+            self.cp_count += 1;
+            self.cp_sum += cp;
+            self.cp_sum_sq += cp * cp;
+        }
+        let outcome = record
+            .game_result
+            .as_ref()
+            .map(|result| match result.outcome {
+                GameOutcome::BlackWins => "black_wins",
+                GameOutcome::WhiteWins => "white_wins",
+                GameOutcome::Draw => "draw",
+                GameOutcome::Unknown => "unknown",
+            })
+            .unwrap_or("no_game_result");
+        *self.outcomes.entry(outcome).or_default() += 1;
+        self.in_check += usize::from(record.tags.in_check);
+
+        if let Some((material, king_in_camp, active)) = board_block_features(&record.sfen) {
+            self.material_count += 1;
+            self.material_sum += f64::from(material);
+            self.king_camp_count += usize::from(king_in_camp);
+            self.activity_count += 1;
+            self.activity_sum += f64::from(active);
+        }
+    }
+
+    fn print(&self) {
+        let cp_mean = self.cp_sum / self.cp_count.max(1) as f64;
+        let cp_variance =
+            (self.cp_sum_sq / self.cp_count.max(1) as f64 - cp_mean * cp_mean).max(0.0);
+        let material_mean = self.material_sum / self.material_count.max(1) as f64;
+        let camp_ratio = self.king_camp_count as f64 / self.material_count.max(1) as f64;
+        let activity_mean = self.activity_sum / self.activity_count.max(1) as f64;
+        println!(
+            "  {}#block{} records={} cp_count={} cp_mean={:.1} cp_variance={:.1} \
+             in_check={:.1}% material_balance_black={:.2} king_in_enemy_camp={:.1}% \
+             pieces_in_enemy_camp={:.2} black_wins={} white_wins={} draw={} unknown={} no_game_result={}",
+            self.root,
+            self.block_index,
+            self.records,
+            self.cp_count,
+            cp_mean,
+            cp_variance,
+            self.in_check as f64 / self.records.max(1) as f64 * 100.0,
+            material_mean,
+            camp_ratio * 100.0,
+            activity_mean,
+            self.outcomes.get("black_wins").copied().unwrap_or(0),
+            self.outcomes.get("white_wins").copied().unwrap_or(0),
+            self.outcomes.get("draw").copied().unwrap_or(0),
+            self.outcomes.get("unknown").copied().unwrap_or(0),
+            self.outcomes.get("no_game_result").copied().unwrap_or(0),
+        );
+    }
+}
+
+/// Returns black-minus-white material, whether either king is in the opponent's camp, and a
+/// deliberately small activity proxy: non-king pieces currently in the opponent's camp. These
+/// are diagnostics, not engine features or claims about legal mobility.
+fn board_block_features(sfen: &str) -> Option<(i32, bool, u32)> {
+    const HAND_ORDER: [PieceType; 7] = [
+        PieceType::Rook,
+        PieceType::Bishop,
+        PieceType::Gold,
+        PieceType::Silver,
+        PieceType::Knight,
+        PieceType::Lance,
+        PieceType::Pawn,
+    ];
+    let board = Board::from_sfen(sfen).ok()?;
+    let mut material = 0i32;
+    let mut king_in_enemy_camp = false;
+    let mut active = 0u32;
+    for (rank_index, row) in board.grid.iter().enumerate() {
+        let rank = rank_index + 1;
+        for (_, (side, piece)) in row.iter().flatten() {
+            let value = piece_point_value(*piece) as i32;
+            material += if *side == SideToMove::Black {
+                value
+            } else {
+                -value
+            };
+            let enemy_camp = match side {
+                SideToMove::Black => rank <= 3,
+                SideToMove::White => rank >= 7,
+            };
+            if enemy_camp {
+                if *piece == PieceType::King {
+                    king_in_enemy_camp = true;
+                } else {
+                    active += 1;
+                }
+            }
+        }
+    }
+    for (side_index, hand) in board.hand.iter().enumerate() {
+        for (piece, &count) in HAND_ORDER.iter().zip(hand.iter()) {
+            let value = piece_point_value(*piece) as i32 * i32::from(count);
+            material += if side_index == 0 { value } else { -value };
+        }
+    }
+    Some((material, king_in_enemy_camp, active))
+}
+
+fn cmd_block_report(args: BlockReportArgs) -> Result<()> {
+    if args.block_size == 0 {
+        anyhow::bail!("--block-size must be > 0");
+    }
+    let reader = BufReader::new(
+        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
+    );
+    let mut records_read = 0usize;
+    let mut parse_errors = 0usize;
+    let mut blocks = 0usize;
+    let mut current: Option<BlockReportStats> = None;
+
+    println!("=== shogiesa block-report ===");
+    println!("input             : {:?}", args.input);
+    println!("block size        : {}", args.block_size);
+    println!("variance          : population variance over deepest black-perspective CP");
+    println!("material balance  : integer points, black minus white; activity is enemy-camp proxy");
+    println!("blocks:");
+
+    for (line_number, line) in reader.lines().enumerate() {
+        let line = line.with_context(|| format!("cannot read {:?}", args.input))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        records_read += 1;
+        let record: PositionRecord = match serde_json::from_str(&line) {
+            Ok(record) => record,
+            Err(error) => {
+                parse_errors += 1;
+                tracing::warn!(line = line_number + 1, "JSON parse error: {error}");
+                continue;
+            }
+        };
+        let root = split_root_key(&record.source).to_string();
+        let root_changed = current.as_ref().is_some_and(|block| block.root != root);
+        if root_changed
+            || current
+                .as_ref()
+                .is_some_and(|block| block.records >= args.block_size)
+        {
+            if let Some(block) = current.take() {
+                block.print();
+                blocks += 1;
+            }
+        }
+        if current.is_none() {
+            current = Some(BlockReportStats::new(root, blocks + 1));
+        }
+        current
+            .as_mut()
+            .expect("block initialized above")
+            .add(&record);
+    }
+    if let Some(block) = current {
+        block.print();
+        blocks += 1;
+    }
+
+    println!("records read      : {records_read}");
+    println!("parse errors      : {parse_errors}");
+    println!("blocks            : {blocks}");
+    Ok(())
 }
 
 // bucket_floor (formerly ply_bucket_floor), mean_of, classify_bucket now live in

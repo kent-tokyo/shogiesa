@@ -224,6 +224,7 @@ pub struct UsiEngine {
     /// last `info` line without a real `bestmove` ever arriving -- one is still owed. Checked at
     /// the top of the next `analyse()` call.
     awaiting_late_bestmove: bool,
+    pending_handshake_bestmoves: Vec<String>,
     /// `--transcript-on-error`: capture raw USI lines (both directions) for the current exchange.
     capture_transcript: bool,
     transcript: Vec<String>,
@@ -275,6 +276,7 @@ impl UsiEngine {
             strict: false,
             go_ever_sent: false,
             awaiting_late_bestmove: false,
+            pending_handshake_bestmoves: Vec::new(),
             capture_transcript: false,
             transcript: Vec::new(),
         };
@@ -358,6 +360,8 @@ impl UsiEngine {
                     Some(line.strip_prefix("id version ").unwrap_or("").to_string());
             } else if line == "usiok" {
                 break;
+            } else if line.starts_with("bestmove ") {
+                self.pending_handshake_bestmoves.push(line);
             }
         }
         for (k, v) in options {
@@ -369,6 +373,8 @@ impl UsiEngine {
             let line = self.recv_until(deadline)?;
             if line == "readyok" {
                 break;
+            } else if line.starts_with("bestmove ") {
+                self.pending_handshake_bestmoves.push(line);
             }
         }
         self.write_line("usinewgame")?;
@@ -494,6 +500,11 @@ impl UsiEngine {
         limit: SearchLimit,
         timeout_ms: u64,
     ) -> Result<AnalysisResult, UsiError> {
+        if self.strict && !self.pending_handshake_bestmoves.is_empty() {
+            self.pending_handshake_bestmoves.clear();
+            return Err(UsiError::BestmoveWithoutGo);
+        }
+
         // Strict mode: if the previous call's timeout was salvaged by synthesizing from the last
         // `info` line, a real `bestmove` for that `go` may still be in flight. A non-blocking
         // poll below would race it and risk letting it land during THIS call's read loop instead

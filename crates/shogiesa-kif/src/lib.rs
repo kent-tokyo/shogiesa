@@ -309,6 +309,13 @@ pub fn extract_from_str(
         // Variation/branch marker: jump back to the mainline checkpoint at ply N-1 and start
         // extracting the branch's moves under a distinct source path.
         if line.starts_with("変化") {
+            if current_path != source_path && accepting {
+                warn!(
+                    path = source_path,
+                    line,
+                    "another 変化 marker appeared inside an active variation; treating it as a new mainline-rooted sibling (nested variations are unsupported)"
+                );
+            }
             let branch = parse_henka_ply(line).and_then(|n| {
                 if n == 0 {
                     return None;
@@ -657,6 +664,13 @@ pub fn extract_moves_from_str(
         let is_mainline = current_path == source_path;
 
         if line.starts_with("変化") {
+            if !is_mainline && accepting {
+                warn!(
+                    path = source_path,
+                    line,
+                    "another 変化 marker appeared inside an active variation; treating it as a new mainline-rooted sibling (nested variations are unsupported)"
+                );
+            }
             let branch = parse_henka_ply(line).and_then(|n| {
                 if n == 0 {
                     return None;
@@ -816,6 +830,18 @@ pub fn extract_moves_from_str(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cp932_kif_bytes_decode_before_extraction() {
+        let kif = "手合割：平手\n手数----指手\n   1 ７六歩(77)   (0:01/0)\n";
+        let (bytes, _, _) = encoding_rs::SHIFT_JIS.encode(kif);
+        let decoded = decode_kif_bytes(&bytes);
+        assert!(decoded.contains("手合割：平手"));
+        let mut seen = HashSet::new();
+        let records =
+            extract_from_str(&decoded, "cp932.kif", &ExtractConfig::default(), &mut seen).unwrap();
+        assert_eq!(records.len(), 1);
+    }
 
     #[test]
     fn piece_names_cover_all_types() {

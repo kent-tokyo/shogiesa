@@ -217,6 +217,8 @@ NNUE の学習結果を改善すること、処理速度・メモリ上限、Sek
 - `[x]` pack を直接編集する一次形式と誤解させず、JSONLへ戻して検査できる。README と
   `docs/design/schema_compatibility.md` に境界を明記し、schema v1〜v11 と current pack の
   round-trip fixture/test を保持する。
+- `[x]` pack fixture の round-trip/manifest test を local measurement smoke に組み込み、
+  interop evidence から参照する。
 
 ## Phase 4 — Sekirei での効果検証
 

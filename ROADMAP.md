@@ -229,6 +229,8 @@ NNUE の学習結果を改善すること、処理速度・メモリ上限、Sek
   header 解釈回帰を追加する。
 - `[x]` pack header 後の record-level truncation fixture/test を追加し、途中レコードを EOF として
   成功扱いしない境界を固定する。
+- `[x]` pack corruption fixture ごとの CLI エラー文言（magic、version、header/record truncation）を
+  回帰チェックし、失敗理由の可観測性を固定する。
 
 ## Phase 4 — Sekirei での効果検証
 

@@ -7117,13 +7117,19 @@ fn write_hex_fixture(name: &str) -> NamedTempFile {
 
 #[test]
 fn unpack_corrupt_pack_fixtures_fails_without_output_claim() {
-    for name in [
-        "pack_bad_magic.hex",
-        "pack_truncated_header.hex",
-        "pack_unsupported_version.hex",
-        "pack_trailing_bytes.hex",
-        "pack_wrong_endian_version.hex",
-        "pack_truncated_record.hex",
+    for (name, expected_error) in [
+        ("pack_bad_magic.hex", "bad magic"),
+        ("pack_truncated_header.hex", "failed to fill whole buffer"),
+        (
+            "pack_unsupported_version.hex",
+            "unsupported pack version 65535",
+        ),
+        ("pack_trailing_bytes.hex", "truncated pack record"),
+        (
+            "pack_wrong_endian_version.hex",
+            "unsupported pack version 2816",
+        ),
+        ("pack_truncated_record.hex", "truncated pack record"),
     ] {
         let corrupt = write_hex_fixture(name);
         let out = NamedTempFile::new().unwrap();
@@ -7136,7 +7142,8 @@ fn unpack_corrupt_pack_fixtures_fails_without_output_claim() {
                 out.path().to_str().unwrap(),
             ])
             .assert()
-            .failure();
+            .failure()
+            .stderr(predicate::str::contains(expected_error));
         assert!(
             std::fs::metadata(out.path()).unwrap().len() == 0,
             "corrupt fixture {name} must not produce records"

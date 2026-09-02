@@ -7043,6 +7043,62 @@ fn pack_manifest_records_counts() {
 }
 
 #[test]
+fn pack_fixture_round_trip_and_manifest_hashes_are_stable() {
+    let packed = NamedTempFile::new().unwrap();
+    let unpacked = NamedTempFile::new().unwrap();
+    let manifest_path = NamedTempFile::new().unwrap();
+
+    shogiesa()
+        .args([
+            "pack",
+            "--input",
+            fixture("pack_input.jsonl").to_str().unwrap(),
+            "--out",
+            packed.path().to_str().unwrap(),
+            "--manifest",
+            manifest_path.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    shogiesa()
+        .args([
+            "unpack",
+            "--input",
+            packed.path().to_str().unwrap(),
+            "--out",
+            unpacked.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest_path.path()).unwrap()).unwrap();
+    assert_eq!(manifest["command"], "pack");
+    assert_eq!(manifest["schema_version"], shogiesa_core::SCHEMA_VERSION);
+    assert_eq!(
+        manifest["pack_format_version"],
+        shogiesa_pack::FORMAT_VERSION
+    );
+    assert_eq!(manifest["records_read"], 2);
+    assert_eq!(manifest["records_kept"], 2);
+    assert_eq!(manifest["records_dropped"], 0);
+    assert_eq!(manifest["input_hash"].as_str().unwrap().len(), 64);
+    assert_eq!(manifest["output_sha256"].as_str().unwrap().len(), 64);
+
+    let records: Vec<serde_json::Value> = std::fs::read_to_string(unpacked.path())
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(records.len(), 2);
+    assert!(records.iter().all(|record| {
+        record["schema_version"] == serde_json::json!(shogiesa_core::SCHEMA_VERSION)
+    }));
+    assert_eq!(records[0]["source"]["path"], "pack-fixture.csa");
+    assert_eq!(records[1]["source"]["ply"], 2);
+}
+
+#[test]
 fn same_input_file_produces_same_manifest_input_hash_across_commands() {
     // filter/pack hash incrementally while streaming; sample/balance hash via a separate
     // whole-file pass; label accumulates its hash inside its own reader thread instead of

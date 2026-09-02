@@ -28,6 +28,7 @@ required_files=(
   tests/fixtures/no-terminal.kif
   tests/fixtures/variation.kif
   tests/fixtures/broken.jsonl
+  tests/fixtures/pack_input.jsonl
 )
 
 missing=0
@@ -64,6 +65,7 @@ check_marker tests/fixtures/malformed.kif 'これは指し手ではない' 'malf
 check_marker tests/fixtures/no-terminal.kif '^   1 ７六歩' 'KIF without terminal result'
 check_marker tests/fixtures/variation.kif '^変化：2手' 'KIF variation marker'
 check_marker tests/fixtures/broken.jsonl '^not json$' 'broken JSONL line'
+check_marker tests/fixtures/pack_input.jsonl '"schema_version":11' 'pack input schema'
 
 if rg -q 'SCHEMA_VERSION = 11|FORMAT_VERSION: u16 = 11' crates/shogiesa-core/src/lib.rs crates/shogiesa-pack/src/lib.rs; then
   printf 'PASS schema/pack version markers\n'

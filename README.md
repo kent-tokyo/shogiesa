@@ -863,6 +863,9 @@ JSONL remains the canonical inspection and diff format; pack is a derived distri
 The pack header is `SHOGIESA` plus a little-endian format version, and `unpack` restores records
 to inspectable JSONL. See [`docs/design/schema_compatibility.md`](docs/design/schema_compatibility.md)
 for the supported schema/pack boundary and migration policy.
+With `pack --manifest`, the manifest records the JSONL input hash, current schema/pack versions,
+record counts, and `output_sha256` for the exact binary artifact; it does not make pack the primary
+editing format.
 
 ### Run manifests
 

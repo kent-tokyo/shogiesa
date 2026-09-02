@@ -5337,6 +5337,7 @@ fn cmd_pack(args: PackArgs) -> Result<()> {
     eprintln!("done: {total} packed, {skipped} skipped → {:?}", args.out);
     if let (Some(mut m), Some(manifest_path)) = (manifest, &args.manifest) {
         m.input_hash = input_hasher.finalize().to_hex().to_string();
+        m.output_sha256 = Some(hash_file_sha256(&args.out)?);
         m.records_read = total + skipped;
         m.records_kept = total;
         m.records_dropped = skipped;

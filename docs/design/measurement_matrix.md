@@ -3,6 +3,12 @@
 This is an execution plan, not benchmark evidence. A row becomes `[x]` in `ROADMAP.md` only
 after its listed artifact contains the measured result and the environment is recorded.
 
+For changes that do not require external engines, start with
+`bash scripts/run_local_measurement_smoke.sh`. It validates the repository contract, formatting,
+and three deterministic fixture-backed regression points (streaming report output, conflict
+exclusions, and split reproducibility). A PASS here is local regression evidence only; it does not
+complete any scale, cross-platform, training, or external-interoperability row below.
+
 | area | fixed input/control | record | completion artifact |
 |---|---|---|---|
 | USI flakiness | fixture, command, runner OS/load, no retry | runs, failures, flaky rate, child-process residue | repeated-run log |

@@ -19,6 +19,7 @@ required_files=(
   docs/api_boundary.md
   docs/release_checklist.md
   scripts/release_readiness.sh
+  scripts/run_local_measurement_smoke.sh
   tests/fixtures/sample.csa
   tests/fixtures/sample.kif
   tests/fixtures/variation.kif

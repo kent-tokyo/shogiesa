@@ -652,6 +652,7 @@ The training-result comparison protocol is documented in
 The remaining performance, reproducibility, training-effect, and interoperability runs are
 listed in the [measurement matrix](docs/design/measurement_matrix.md); it is a run plan, not
 benchmark evidence.
+For local fixture-backed regression checks, run `bash scripts/run_local_measurement_smoke.sh`.
 The interoperability evidence, API boundary, competitor evidence, and release checklist are in
 [`docs/interop_evidence.md`](docs/interop_evidence.md), [`docs/api_boundary.md`](docs/api_boundary.md),
 [`docs/competitor_evidence.md`](docs/competitor_evidence.md), and

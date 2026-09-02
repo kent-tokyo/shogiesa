@@ -81,6 +81,61 @@ fn extract_ply_filter_flag() {
     assert_eq!(lines.len(), 2);
 }
 
+#[test]
+fn extract_fixture_error_cases_preserve_valid_data_and_variation_provenance() {
+    for (name, expected_positions) in [
+        ("malformed.csa", 1usize),
+        ("malformed.kif", 1usize),
+        ("no-terminal.kif", 1usize),
+    ] {
+        let out = NamedTempFile::new().unwrap();
+        shogiesa()
+            .args([
+                "extract",
+                "--input",
+                fixture(name).to_str().unwrap(),
+                "--out",
+                out.path().to_str().unwrap(),
+            ])
+            .assert()
+            .success();
+
+        let lines = std::fs::read_to_string(out.path()).unwrap();
+        let records: Vec<serde_json::Value> = lines
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(records.len(), expected_positions, "fixture {name}");
+        assert_eq!(records[0]["source"]["ply"], 1, "fixture {name}");
+    }
+
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "extract",
+            "--input",
+            fixture("variation.kif").to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let records: Vec<serde_json::Value> = std::fs::read_to_string(out.path())
+        .unwrap()
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(records.len(), 4);
+    assert!(records.iter().any(|record| {
+        record["source"]["variation_id"] == serde_json::Value::String("var1".into())
+            && record["source"]["path"]
+                .as_str()
+                .is_some_and(|path| path.contains("#var1@2"))
+    }));
+}
+
 // --- report ---
 
 #[test]

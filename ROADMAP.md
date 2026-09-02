@@ -114,6 +114,8 @@ NNUE の学習結果を改善すること、処理速度・メモリ上限、Sek
 - `[x]` malformed CSA/KIF、CP932、variation、終端なし、壊れた JSONL を fixture 化する。
 - `[x]` contract check が異常系 fixture の必須存在と代表 marker を検査し、fixture の差し替えや
  空ファイル化を検出する。
+- `[x]` CLI の fixture-backed extract test が malformed/unterminated input の有効 prefix と
+  KIF variation provenance を end-to-end で検証する。
 - `[x]` 通常モードは診断付き skip、`validate --strict` は非ゼロ終了、pack round-trip の期待値が固定される。
   malformed fixture、strict validation テスト、schema v1〜v11 の pack round-trip テストで固定する。
 

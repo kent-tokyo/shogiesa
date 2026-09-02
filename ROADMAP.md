@@ -112,6 +112,8 @@ NNUE の学習結果を改善すること、処理速度・メモリ上限、Sek
 - `[x]` `split` 独自 manifest の理由と nested KIF `変化` の非対応を明記する。
 - `[x]` schema v1–v11/pack の互換性表を作る。
 - `[x]` malformed CSA/KIF、CP932、variation、終端なし、壊れた JSONL を fixture 化する。
+- `[x]` contract check が異常系 fixture の必須存在と代表 marker を検査し、fixture の差し替えや
+ 空ファイル化を検出する。
 - `[x]` 通常モードは診断付き skip、`validate --strict` は非ゼロ終了、pack round-trip の期待値が固定される。
   malformed fixture、strict validation テスト、schema v1〜v11 の pack round-trip テストで固定する。
 

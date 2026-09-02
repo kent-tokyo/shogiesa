@@ -23,6 +23,9 @@ required_files=(
   scripts/run_local_measurement_smoke.sh
   tests/fixtures/sample.csa
   tests/fixtures/sample.kif
+  tests/fixtures/malformed.csa
+  tests/fixtures/malformed.kif
+  tests/fixtures/no-terminal.kif
   tests/fixtures/variation.kif
   tests/fixtures/broken.jsonl
 )
@@ -43,6 +46,24 @@ else
   printf 'FAIL quick-start commands missing\n'
   missing=1
 fi
+
+check_marker() {
+  local path="$1"
+  local pattern="$2"
+  local label="$3"
+  if rg -q -- "$pattern" "$path"; then
+    printf 'PASS fixture marker %s\n' "$label"
+  else
+    printf 'FAIL fixture marker %s\n' "$label"
+    missing=1
+  fi
+}
+
+check_marker tests/fixtures/malformed.csa '^\+BAD$' 'malformed CSA token'
+check_marker tests/fixtures/malformed.kif 'これは指し手ではない' 'malformed KIF move'
+check_marker tests/fixtures/no-terminal.kif '^   1 ７六歩' 'KIF without terminal result'
+check_marker tests/fixtures/variation.kif '^変化：2手' 'KIF variation marker'
+check_marker tests/fixtures/broken.jsonl '^not json$' 'broken JSONL line'
 
 if rg -q 'SCHEMA_VERSION = 11|FORMAT_VERSION: u16 = 11' crates/shogiesa-core/src/lib.rs crates/shogiesa-pack/src/lib.rs; then
   printf 'PASS schema/pack version markers\n'

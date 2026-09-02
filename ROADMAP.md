@@ -227,6 +227,8 @@ NNUE の学習結果を改善すること、処理速度・メモリ上限、Sek
   truncated record を区別する。
 - `[x]` pack version の little-endian 境界を wrong-endian fixture/test で固定し、外部依存なしの
   header 解釈回帰を追加する。
+- `[x]` pack header 後の record-level truncation fixture/test を追加し、途中レコードを EOF として
+  成功扱いしない境界を固定する。
 
 ## Phase 4 — Sekirei での効果検証
 

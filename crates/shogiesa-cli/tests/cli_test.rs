@@ -7123,6 +7123,7 @@ fn unpack_corrupt_pack_fixtures_fails_without_output_claim() {
         "pack_unsupported_version.hex",
         "pack_trailing_bytes.hex",
         "pack_wrong_endian_version.hex",
+        "pack_truncated_record.hex",
     ] {
         let corrupt = write_hex_fixture(name);
         let out = NamedTempFile::new().unwrap();

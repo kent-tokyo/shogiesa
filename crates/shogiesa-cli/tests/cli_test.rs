@@ -7121,6 +7121,7 @@ fn unpack_corrupt_pack_fixtures_fails_without_output_claim() {
         "pack_bad_magic.hex",
         "pack_truncated_header.hex",
         "pack_unsupported_version.hex",
+        "pack_trailing_bytes.hex",
     ] {
         let corrupt = write_hex_fixture(name);
         let out = NamedTempFile::new().unwrap();

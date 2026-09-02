@@ -223,6 +223,8 @@ NNUE の学習結果を改善すること、処理速度・メモリ上限、Sek
   manifest-count test を追加する。
 - `[x]` unsupported future pack version の corruption fixture と明示拒否テストを追加し、
   current format 11 以外を成功扱いしない境界を固定する。
+- `[x]` pack の trailing bytes を corruption として拒否する fixture/test を追加し、空 EOF と
+  truncated record を区別する。
 
 ## Phase 4 — Sekirei での効果検証
 

@@ -5358,13 +5358,21 @@ fn cmd_unpack(args: UnpackArgs) -> Result<()> {
 
     let mut total = 0usize;
     loop {
+        // An empty input buffer is the only clean end-of-file condition. If bytes remain and
+        // decode_record reports UnexpectedEof, the pack is truncated rather than merely empty;
+        // do not silently accept a corrupt tail.
+        if reader.fill_buf()?.is_empty() {
+            break;
+        }
         match pack::decode_record(&mut reader) {
             Ok(rec) => {
                 serde_json::to_writer(&mut writer, &rec)?;
                 writer.write_all(b"\n")?;
                 total += 1;
             }
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                anyhow::bail!("truncated pack record: {e}")
+            }
             Err(e) => return Err(e.into()),
         }
     }
@@ -7747,7 +7755,7 @@ fn board_block_features(sfen: &str) -> Option<(i32, bool, u32)> {
     let mut active = 0u32;
     for (rank_index, row) in board.grid.iter().enumerate() {
         let rank = rank_index + 1;
-        for (_, (side, piece)) in row.iter().flatten() {
+        for (side, piece) in row.iter().flatten() {
             let value = piece_point_value(*piece) as i32;
             material += if *side == SideToMove::Black {
                 value

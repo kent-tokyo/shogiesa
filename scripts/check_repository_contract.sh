@@ -34,6 +34,7 @@ required_files=(
   tests/fixtures/pack_truncated_header.hex
   tests/fixtures/pack_unsupported_version.hex
   tests/fixtures/pack_trailing_bytes.hex
+  tests/fixtures/pack_wrong_endian_version.hex
 )
 
 missing=0
@@ -76,6 +77,7 @@ check_marker tests/fixtures/pack_bad_magic.hex '^00000000000000000b00$' 'pack ba
 check_marker tests/fixtures/pack_truncated_header.hex '^53484f4749455341$' 'pack truncated header bytes'
 check_marker tests/fixtures/pack_unsupported_version.hex '^53484f4749455341ffff$' 'pack unsupported version bytes'
 check_marker tests/fixtures/pack_trailing_bytes.hex '^53484f47494553410b00ff$' 'pack trailing bytes'
+check_marker tests/fixtures/pack_wrong_endian_version.hex '^53484f4749455341000b$' 'pack wrong-endian version bytes'
 
 if rg -q 'SCHEMA_VERSION = 11|FORMAT_VERSION: u16 = 11' crates/shogiesa-core/src/lib.rs crates/shogiesa-pack/src/lib.rs; then
   printf 'PASS schema/pack version markers\n'

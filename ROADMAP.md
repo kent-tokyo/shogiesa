@@ -225,6 +225,8 @@ NNUE の学習結果を改善すること、処理速度・メモリ上限、Sek
   current format 11 以外を成功扱いしない境界を固定する。
 - `[x]` pack の trailing bytes を corruption として拒否する fixture/test を追加し、空 EOF と
   truncated record を区別する。
+- `[x]` pack version の little-endian 境界を wrong-endian fixture/test で固定し、外部依存なしの
+  header 解釈回帰を追加する。
 
 ## Phase 4 — Sekirei での効果検証
 

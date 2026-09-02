@@ -219,6 +219,8 @@ NNUE の学習結果を改善すること、処理速度・メモリ上限、Sek
   round-trip fixture/test を保持する。
 - `[x]` pack fixture の round-trip/manifest test を local measurement smoke に組み込み、
   interop evidence から参照する。
+- `[x]` malformed JSONL、pack bad magic、truncated header の corruption fixture と CLI failure/
+  manifest-count test を追加する。
 
 ## Phase 4 — Sekirei での効果検証
 

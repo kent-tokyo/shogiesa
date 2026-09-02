@@ -7098,6 +7098,70 @@ fn pack_fixture_round_trip_and_manifest_hashes_are_stable() {
     assert_eq!(records[1]["source"]["ply"], 2);
 }
 
+fn write_hex_fixture(name: &str) -> NamedTempFile {
+    let bytes: Vec<u8> = std::fs::read_to_string(fixture(name))
+        .unwrap()
+        .split_whitespace()
+        .flat_map(|chunk| {
+            chunk
+                .as_bytes()
+                .chunks_exact(2)
+                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        })
+        .collect();
+    let mut out = NamedTempFile::new().unwrap();
+    out.write_all(&bytes).unwrap();
+    out.flush().unwrap();
+    out
+}
+
+#[test]
+fn unpack_corrupt_pack_fixtures_fails_without_output_claim() {
+    for name in ["pack_bad_magic.hex", "pack_truncated_header.hex"] {
+        let corrupt = write_hex_fixture(name);
+        let out = NamedTempFile::new().unwrap();
+        shogiesa()
+            .args([
+                "unpack",
+                "--input",
+                corrupt.path().to_str().unwrap(),
+                "--out",
+                out.path().to_str().unwrap(),
+            ])
+            .assert()
+            .failure();
+        assert!(
+            std::fs::metadata(out.path()).unwrap().len() == 0,
+            "corrupt fixture {name} must not produce records"
+        );
+    }
+}
+
+#[test]
+fn pack_mixed_fixture_reports_skipped_line_in_manifest() {
+    let packed = NamedTempFile::new().unwrap();
+    let manifest_path = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "pack",
+            "--input",
+            fixture("malformed_mixed.jsonl").to_str().unwrap(),
+            "--out",
+            packed.path().to_str().unwrap(),
+            "--manifest",
+            manifest_path.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest_path.path()).unwrap()).unwrap();
+    assert_eq!(manifest["records_read"], 2);
+    assert_eq!(manifest["records_kept"], 1);
+    assert_eq!(manifest["records_dropped"], 1);
+    assert_eq!(manifest["output_sha256"].as_str().unwrap().len(), 64);
+}
+
 #[test]
 fn same_input_file_produces_same_manifest_input_hash_across_commands() {
     // filter/pack hash incrementally while streaming; sample/balance hash via a separate

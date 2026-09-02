@@ -7117,7 +7117,11 @@ fn write_hex_fixture(name: &str) -> NamedTempFile {
 
 #[test]
 fn unpack_corrupt_pack_fixtures_fails_without_output_claim() {
-    for name in ["pack_bad_magic.hex", "pack_truncated_header.hex"] {
+    for name in [
+        "pack_bad_magic.hex",
+        "pack_truncated_header.hex",
+        "pack_unsupported_version.hex",
+    ] {
         let corrupt = write_hex_fixture(name);
         let out = NamedTempFile::new().unwrap();
         shogiesa()

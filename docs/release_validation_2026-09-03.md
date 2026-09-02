@@ -8,6 +8,7 @@ It is evidence for this environment only and is not a claim of full release read
 | repository contract check | PASS | all required docs, schema, fixtures, and checked BUILD items found |
 | `cargo fmt --all -- --check` | PASS | completed successfully |
 | `git diff --check` | PASS | completed successfully; macOS `xcrun_db` warnings were non-fatal |
+| corruption fixture inventory | PASS | malformed JSONL, bad magic, and truncated header markers are present and checked |
 | fixture-backed local measurement smoke | BLOCKED | `cargo test --offline` could not start because `float-cmp v0.10.0` was not cached |
 
 The smoke script intentionally uses `--offline`: it must not turn a missing dependency or network

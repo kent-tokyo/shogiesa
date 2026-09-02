@@ -617,6 +617,33 @@ fn validate_broken_json_shows_warn_but_exits_0() {
         .stdout(predicate::str::contains("WARN"));
 }
 
+#[test]
+fn validate_broken_fixture_has_stable_normal_and_strict_outcomes() {
+    shogiesa()
+        .args([
+            "validate",
+            "--input",
+            fixture("broken.jsonl").to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("total lines    : 1"))
+        .stdout(predicate::str::contains("valid JSON     : 0"))
+        .stdout(predicate::str::contains("broken lines   : 1"))
+        .stdout(predicate::str::contains("WARN: 1 broken lines"));
+
+    shogiesa()
+        .args([
+            "validate",
+            "--strict",
+            "--input",
+            fixture("broken.jsonl").to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("WARN: 1 broken lines"));
+}
+
 // --- validate --strict ---
 
 #[test]

@@ -116,6 +116,8 @@ NNUE の学習結果を改善すること、処理速度・メモリ上限、Sek
  空ファイル化を検出する。
 - `[x]` CLI の fixture-backed extract test が malformed/unterminated input の有効 prefix と
   KIF variation provenance を end-to-end で検証する。
+- `[x]` CLI の `validate` が共有 broken JSONL fixture を通常モードでは警告付き成功、strict
+  モードでは非ゼロ終了として扱うことを固定する。
 - `[x]` 通常モードは診断付き skip、`validate --strict` は非ゼロ終了、pack round-trip の期待値が固定される。
   malformed fixture、strict validation テスト、schema v1〜v11 の pack round-trip テストで固定する。
 

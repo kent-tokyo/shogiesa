@@ -200,6 +200,8 @@ NNUE の学習結果を改善すること、処理速度・メモリ上限、Sek
   分解した measurement matrix を追加する。
 - `[x]` 外部 engine を使わない fixture-backed local measurement smoke script を追加する。
   dependency cache が不足する場合は未検証として停止理由を表示し、測定ゲートを成功扱いにしない。
+- `[x]` local smoke の PASS/BLOCKED 結果を日付付き validation log に保存し、release checklist
+  から最新結果を参照できるようにする。
 - `[MEASURE]` 100万/1000万局面で `--jobs`、search limit、cache、出力順の wall time/RSS/output size、FD数、disk headroom を記録する。
 - `[GATE]` corpus、commit、engine/weight hash、options、seed、hardware を結果に添付し、目標値を運用手順に明記する。
 

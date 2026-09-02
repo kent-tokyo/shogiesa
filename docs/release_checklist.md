@@ -7,9 +7,10 @@ The lightweight repository contract check is `bash scripts/check_repository_cont
 before the full wrapper. The repeatable local check wrapper is `bash scripts/release_readiness.sh`.
 It reports every check and returns non-zero if any check fails, including dependency/network failures in `cargo test` or
 `cargo clippy`.
-The 2026-09-01 run is recorded in
-[`docs/release_validation_2026-09-01.md`](release_validation_2026-09-01.md); test and clippy
-remain blocked before compilation by crates.io DNS failure.
+The latest local run is recorded in
+[`docs/release_validation_2026-09-03.md`](release_validation_2026-09-03.md); fixture tests remain
+blocked when `float-cmp` is absent from the offline dependency cache. The earlier full-wrapper
+result remains in [`docs/release_validation_2026-09-01.md`](release_validation_2026-09-01.md).
 
 ## Code and tests
 

@@ -962,6 +962,8 @@ canonical 64-character hexadecimal output hashes before accepting a run.
 The normalized manifest contract is regression-tested against
 `tests/fixtures/recipe_run_manifest.golden`; machine-specific paths and hashes are intentionally
 kept out of that golden.
+If an interrupted checkpoint contains only a prefix of the stage list, `--resume` reuses that
+verified prefix and reruns the remaining stages in dependency order.
 
 ### `conflict-report` — CP / game-outcome sign diagnostics
 

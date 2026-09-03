@@ -27,6 +27,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
   before checking output contents.
 - Added a normalized run-manifest golden fixture that fixes the durable schema without baking in
   machine-specific paths or content hashes.
+- Added a partial-checkpoint regression proving `--resume` reuses only the durable prefix and
+  reruns the remaining dependent stages.
 
 ## [0.9.1] — 2026-09-03
 

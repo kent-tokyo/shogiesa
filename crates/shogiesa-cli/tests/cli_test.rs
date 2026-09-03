@@ -448,6 +448,26 @@ fn recipe_run_verify_and_reuse_stage_outputs() {
         .stdout(predicate::str::contains("compare — reused"))
         .stdout(predicate::str::contains("unpack — reused"));
 
+    let mut partial: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    partial["status"] = serde_json::json!("running");
+    partial["stages"] = serde_json::json!([partial["stages"][0].clone()]);
+    std::fs::write(&manifest_path, serde_json::to_vec_pretty(&partial).unwrap()).unwrap();
+    shogiesa()
+        .args([
+            "recipe",
+            "run",
+            "--recipe",
+            recipe.to_str().unwrap(),
+            "--run-dir",
+            run_dir.to_str().unwrap(),
+            "--resume",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("compare — reused"))
+        .stdout(predicate::str::contains("pack — succeeded"));
+
     let mut output = std::fs::OpenOptions::new()
         .append(true)
         .open(dir.path().join("roundtrip.jsonl"))

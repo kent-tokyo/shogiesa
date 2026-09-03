@@ -32,6 +32,9 @@ required_files=(
   tests/fixtures/malformed_mixed.jsonl
   tests/fixtures/conflict_report_input.jsonl
   tests/fixtures/conflict_report.golden
+  tests/fixtures/block_report_input.jsonl
+  tests/fixtures/block_report_size1.golden
+  tests/fixtures/block_report_size2.golden
   tests/fixtures/pack_bad_magic.hex
   tests/fixtures/pack_truncated_header.hex
   tests/fixtures/pack_unsupported_version.hex
@@ -78,6 +81,9 @@ check_marker tests/fixtures/pack_input.jsonl '"schema_version":11' 'pack input s
 check_marker tests/fixtures/malformed_mixed.jsonl '^not json$' 'mixed JSONL malformed suffix'
 check_marker tests/fixtures/conflict_report_input.jsonl '"variation_id":"var1"' 'conflict report variation input'
 check_marker tests/fixtures/conflict_report.golden '^conflicts         : 1  \(33\.3%\)$' 'conflict report golden summary'
+check_marker tests/fixtures/block_report_input.jsonl '"root_id":"game-b.kif"' 'block report variation root input'
+check_marker tests/fixtures/block_report_size2.golden '^blocks            : 2$' 'block report size 2 golden'
+check_marker tests/fixtures/block_report_size1.golden '^blocks            : 4$' 'block report size 1 golden'
 check_marker tests/fixtures/pack_bad_magic.hex '^00000000000000000b00$' 'pack bad magic bytes'
 check_marker tests/fixtures/pack_truncated_header.hex '^53484f4749455341$' 'pack truncated header bytes'
 check_marker tests/fixtures/pack_unsupported_version.hex '^53484f4749455341ffff$' 'pack unsupported version bytes'

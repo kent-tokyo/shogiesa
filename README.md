@@ -951,6 +951,8 @@ black-perspective CP mean and population variance, game-outcome counts, in-check
 black-minus-white material points, king-in-enemy-camp ratio, and non-king pieces in the enemy camp.
 The last two are lightweight board-state proxies, not legal-mobility or NNUE-feature measurements.
 Keep each source root contiguous when comparing blocks; an interleaved root starts a new sequence.
+The fixture-backed CLI regression compares complete stdout for block sizes 1 and 2 using
+`tests/fixtures/block_report_input.jsonl` and the matching `.golden` files.
 Malformed JSON is skipped and counted.
 
 ### `report` — dataset statistics

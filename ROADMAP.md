@@ -155,6 +155,8 @@ NNUE の学習結果を改善すること、処理速度・メモリ上限、Sek
 - `[x]` 32局面などを集計する `block-report` を実装する。outcome、CP平均/分散、王手率、駒得/駒損、入玉、軽量な駒活性を対象にする。
 - `[x]` block size、game boundary、variation boundary による統計差を比較する。
   fixture で block size 2/1 の件数差と、同じ `root_id` を持つ KIF variation の連続性を固定する。
+- `[x]` block-report の block size 1/2 出力を `tests/fixtures/block_report_size1.golden` /
+  `block_report_size2.golden` として外部 fixture 化し、full stdout の統計値を固定する。
 - `[x]` source root をまたいで混ざらず、NNUE の実 feature index ではない代替指標だと明記する。
   block boundary のテストと README の proxy 明記で固定する。
 

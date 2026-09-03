@@ -230,57 +230,40 @@ fn conflict_report_includes_mainline_and_variation_records_in_same_fixture_matri
 
 #[test]
 fn block_report_keeps_roots_separate_and_reports_cp_summary() {
-    let mut first = position("middlegame", serde_json::json!([obs("7g7f", 100, 4)]));
-    first["source"]["path"] = serde_json::json!("game-a.csa");
-    first["game_result"] = serde_json::json!({"outcome": "black_wins", "result_source": "test"});
-    let mut second = position("middlegame", serde_json::json!([obs("2g2f", 300, 6)]));
-    second["source"]["path"] = serde_json::json!("game-a.csa");
-    second["source"]["ply"] = serde_json::json!(2);
-    second["tags"]["in_check"] = serde_json::json!(true);
-    let mut third = position("endgame", serde_json::json!([obs("8h2b", -200, 8)]));
-    third["source"] = serde_json::json!({
-        "kind": "kif",
-        "path": "game-b.kif#var1@2",
-        "ply": 3,
-        "root_id": "game-b.kif",
-        "variation_id": "var1",
-        "branch_from_ply": 2
-    });
-    let mut fourth = third.clone();
-    fourth["source"]["path"] = serde_json::json!("game-b.kif#var2@3");
-    fourth["source"]["ply"] = serde_json::json!(4);
-    fourth["source"]["variation_id"] = serde_json::json!("var2");
-    let input = make_labeled_jsonl(&[first, second, third, fourth]);
-
-    shogiesa()
-        .args([
-            "block-report",
-            "--input",
-            input.path().to_str().unwrap(),
-            "--block-size",
-            "2",
-        ])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("blocks            : 2"))
-        .stdout(predicate::str::contains("game-a.csa#block1 records=2"))
-        .stdout(predicate::str::contains("cp_mean=200.0"))
-        .stdout(predicate::str::contains("cp_variance=10000.0"))
-        .stdout(predicate::str::contains("game-b.kif#block2 records=2"));
-
-    shogiesa()
-        .args([
-            "block-report",
-            "--input",
-            input.path().to_str().unwrap(),
-            "--block-size",
-            "1",
-        ])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("blocks            : 4"))
-        .stdout(predicate::str::contains("game-b.kif#block3 records=1"))
-        .stdout(predicate::str::contains("game-b.kif#block4 records=1"));
+    for (block_size, golden_name) in [
+        ("2", "block_report_size2.golden"),
+        ("1", "block_report_size1.golden"),
+    ] {
+        let output = shogiesa()
+            .args([
+                "block-report",
+                "--input",
+                fixture("block_report_input.jsonl").to_str().unwrap(),
+                "--block-size",
+                block_size,
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let normalized = stdout
+            .lines()
+            .map(|line| {
+                if line.starts_with("input             : ") {
+                    "input             : <fixture>"
+                } else {
+                    line
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        assert_eq!(
+            normalized,
+            std::fs::read_to_string(fixture(golden_name)).unwrap(),
+            "block size {block_size}"
+        );
+    }
 }
 
 #[test]

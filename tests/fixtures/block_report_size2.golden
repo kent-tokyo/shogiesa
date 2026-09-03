@@ -1,0 +1,11 @@
+=== shogiesa block-report ===
+input             : <fixture>
+block size        : 2
+variance          : population variance over deepest black-perspective CP
+material balance  : integer points, black minus white; activity is enemy-camp proxy
+blocks:
+  game-a.csa#block1 records=2 cp_count=2 cp_mean=200.0 cp_variance=10000.0 in_check=50.0% material_balance_black=0.00 king_in_enemy_camp=0.0% pieces_in_enemy_camp=0.00 black_wins=1 white_wins=0 draw=0 unknown=0 no_game_result=1
+  game-b.kif#block2 records=2 cp_count=2 cp_mean=-200.0 cp_variance=0.0 in_check=0.0% material_balance_black=0.00 king_in_enemy_camp=0.0% pieces_in_enemy_camp=0.00 black_wins=0 white_wins=0 draw=0 unknown=0 no_game_result=2
+records read      : 4
+parse errors      : 0
+blocks            : 2

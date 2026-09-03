@@ -231,6 +231,8 @@ NNUE の学習結果を改善すること、処理速度・メモリ上限、Sek
   成功扱いしない境界を固定する。
 - `[x]` pack corruption fixture ごとの CLI エラー文言（magic、version、header/record truncation）を
   回帰チェックし、失敗理由の可観測性を固定する。
+- `[x]` shogiesa-pack の library 単体テストでエラー種別・文言と clean EOF を固定し、batch
+  `decode` が途中レコードを成功扱いしない strict boundary を実装する。
 
 ## Phase 4 — Sekirei での効果検証
 

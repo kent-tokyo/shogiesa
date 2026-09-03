@@ -661,14 +661,16 @@ pub fn encode(records: &[PositionRecord], w: &mut impl Write) -> io::Result<()> 
 
 /// Read header then decode all records until EOF (batch convenience).
 pub fn decode(r: &mut impl Read) -> io::Result<Vec<PositionRecord>> {
-    read_header(r)?;
+    // This convenience API is intentionally strict: buffering the input lets us distinguish a
+    // clean EOF between records from an incomplete record. Streaming callers should use
+    // `read_header` and `decode_record` directly and apply the same boundary check.
+    let mut bytes = Vec::new();
+    r.read_to_end(&mut bytes)?;
+    let mut cursor = io::Cursor::new(bytes);
+    read_header(&mut cursor)?;
     let mut out = Vec::new();
-    loop {
-        match decode_record(r) {
-            Ok(rec) => out.push(rec),
-            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
-            Err(e) => return Err(e),
-        }
+    while (cursor.position() as usize) < cursor.get_ref().len() {
+        out.push(decode_record(&mut cursor)?);
     }
     Ok(out)
 }
@@ -913,7 +915,30 @@ mod tests {
     #[test]
     fn bad_magic_rejected() {
         let buf = b"BADSIG!!\x01\x00".as_slice();
-        assert!(decode(&mut { buf }).is_err());
+        let err = decode(&mut { buf }).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(err.to_string(), "bad magic");
+    }
+
+    #[test]
+    fn header_error_classes_are_distinct() {
+        let err = decode(&mut b"SHOGIESA".as_slice()).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+
+        let err = decode(&mut b"SHOGIESA\xff\xff".as_slice()).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(err.to_string(), "unsupported pack version 65535");
+
+        let err = decode(&mut b"SHOGIESA\x00\x0b".as_slice()).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(err.to_string(), "unsupported pack version 2816");
+    }
+
+    #[test]
+    fn truncated_record_is_not_treated_as_clean_eof() {
+        let bytes = b"SHOGIESA\x0b\x00\x0b\x00";
+        let err = decode(&mut bytes.as_slice()).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
     }
 
     #[test]

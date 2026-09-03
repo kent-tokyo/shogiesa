@@ -112,3 +112,15 @@ guessing with measurement:
 If you take away one thing from this document: shogiesa's numbers describe *what the engine
 output*, faithfully and without any statistical interpretation layered on top. Deciding what those
 numbers *mean* for your specific training pipeline is what `calibrate`/`audit`/`tune` are for.
+
+## Fixture cross-check
+
+The definitions above are checked against small, reproducible fixtures rather than a private
+corpus. `report_shows_labeled_diagnostics` runs `sample.csa` through the fake USI engine with two
+depths and MultiPV, then checks the report sections for cp/mate ratio, score swing, policy margin,
+evaluation buckets, agreement, and score bounds. `validate_clean_data_exits_0` checks that a clean
+extracted fixture is accepted, while `validate_broken_fixture_has_stable_normal_and_strict_outcomes`
+checks that the same broken JSONL fixture is a warning in normal mode and non-zero in strict mode.
+
+These tests verify the meaning and presence of the diagnostics; they do not measure calibration,
+engine strength, training improvement, or performance on a representative corpus.

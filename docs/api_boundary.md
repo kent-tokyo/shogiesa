@@ -29,6 +29,12 @@ The stable interchange boundary is versioned JSONL. Pack is derived and must ret
 inspection. USI is a process boundary: engines are launched directly, never through shell-string
 interpolation, and engine-specific internals are not part of the public API.
 
+For pack consumers, `shogiesa-pack::read_header` reports invalid magic, incomplete headers, and
+unsupported versions separately. `decode` is strict about trailing bytes: a partial record returns
+`UnexpectedEof` instead of being accepted as clean EOF. See the [pack compatibility and error
+classification](design/schema_compatibility.md#pack-error-classification) reference for the
+contract and the corresponding unit tests.
+
 This example documents the API shape; it is not a claim that every future schema version preserves
 all fields unchanged. Additive JSONL fields use serde defaults where documented, while pack readers
 accept the current format version only.

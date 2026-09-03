@@ -233,6 +233,8 @@ NNUE の学習結果を改善すること、処理速度・メモリ上限、Sek
   回帰チェックし、失敗理由の可観測性を固定する。
 - `[x]` shogiesa-pack の library 単体テストでエラー種別・文言と clean EOF を固定し、batch
   `decode` が途中レコードを成功扱いしない strict boundary を実装する。
+- `[x]` pack API のエラー分類（magic、header/version、record truncation、clean EOF）を公開 API
+  boundary / schema compatibility docs に整理し、単体テストへの導線を追加する。
 
 ## Phase 4 — Sekirei での効果検証
 

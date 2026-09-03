@@ -40,3 +40,22 @@ The pack encoder/decoder preserves the optional source, observation, stability, 
 fields represented by the current Rust types. Older pack formats need an explicit decoder or a
 conversion fixture before they can be called supported; this repository does not claim that
 support from the current `read_header` check alone.
+
+### Pack error classification
+
+The public `shogiesa-pack` API keeps format errors distinguishable by `io::ErrorKind` and a stable
+diagnostic class:
+
+| API / condition | `ErrorKind` or result | Meaning |
+|---|---|---|
+| `read_header`: wrong magic | `InvalidData`, `bad magic` | The file is not a shogiesa pack |
+| `read_header`: short header | `UnexpectedEof` | The 10-byte header is incomplete |
+| `read_header`: unsupported or wrong-endian version | `InvalidData`, `unsupported pack version N` | The header is complete but the version is not 11 little-endian |
+| `decode_record`: short record | `UnexpectedEof` | A record began but did not contain all fields |
+| batch `decode`: clean EOF after a complete record | `Ok(Vec<...>)` | Normal end of the pack |
+| batch `decode`: incomplete trailing bytes | `UnexpectedEof` | Corrupt input; never treated as clean EOF |
+
+`decode` is the strict batch convenience API: it buffers the input so it can distinguish clean EOF
+from a partial record. Streaming callers using `read_header` and `decode_record` must perform the
+same boundary check before calling `decode_record` again. The CLI `unpack` reports a partial record
+as `truncated pack record` and does not claim successful output.

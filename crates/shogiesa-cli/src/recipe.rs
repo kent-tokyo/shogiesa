@@ -48,6 +48,9 @@ struct RecipeRunArgs {
     /// Write the complete run manifest as JSON to this path
     #[arg(long)]
     json_out: Option<PathBuf>,
+    /// Continue a run whose atomic checkpoint is marked running
+    #[arg(long)]
+    resume: bool,
 }
 
 #[derive(clap::Args)]
@@ -202,10 +205,11 @@ struct RunManifest {
     recipe_version: u32,
     recipe_path: String,
     recipe_hash: String,
+    status: String,
     stages: Vec<RunStage>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct RunStage {
     id: String,
     stage_identity: String,
@@ -689,8 +693,30 @@ fn run_recipe(args: RecipeRunArgs) -> Result<()> {
         .ok()
         .and_then(|bytes| serde_json::from_slice::<RunManifest>(&bytes).ok())
         .filter(|manifest| manifest.recipe_hash == recipe_hash);
+    if previous
+        .as_ref()
+        .is_some_and(|manifest| manifest.status == "running")
+        && !args.resume
+    {
+        bail!("run manifest is incomplete; rerun with --resume to continue");
+    }
     let executable = std::env::current_exe().context("cannot locate shogiesa executable")?;
     let mut stages = Vec::new();
+    let write_checkpoint = |status: &str, stages: &[RunStage]| -> Result<()> {
+        let manifest = RunManifest {
+            run_version: RUN_VERSION,
+            recipe_version: spec.recipe_version,
+            recipe_path: args.recipe.display().to_string(),
+            recipe_hash: recipe_hash.clone(),
+            status: status.to_string(),
+            stages: stages.to_vec(),
+        };
+        atomic_write(
+            &previous_path,
+            &(serde_json::to_string_pretty(&manifest)? + "\n"),
+        )
+    };
+    write_checkpoint("running", &stages)?;
     for (stage, planned) in spec.stages.iter().zip(&plan.stages) {
         let old = previous
             .as_ref()
@@ -702,6 +728,7 @@ fn run_recipe(args: RecipeRunArgs) -> Result<()> {
                 status: "reused".to_string(),
                 outputs: old.unwrap().outputs.clone(),
             });
+            write_checkpoint("running", &stages)?;
             continue;
         }
         if planned.status.starts_with("blocked") {
@@ -734,12 +761,14 @@ fn run_recipe(args: RecipeRunArgs) -> Result<()> {
             status: "succeeded".to_string(),
             outputs,
         });
+        write_checkpoint("running", &stages)?;
     }
     let manifest = RunManifest {
         run_version: RUN_VERSION,
         recipe_version: spec.recipe_version,
         recipe_path: args.recipe.display().to_string(),
         recipe_hash,
+        status: "completed".to_string(),
         stages,
     };
     let json = serde_json::to_string_pretty(&manifest)? + "\n";
@@ -764,7 +793,10 @@ fn verify_recipe(args: RecipeVerifyArgs) -> Result<()> {
         .with_context(|| format!("cannot read run manifest {manifest_path:?}"))?;
     let manifest: RunManifest = serde_json::from_slice(&bytes)
         .with_context(|| format!("cannot parse run manifest {manifest_path:?}"))?;
-    if manifest.run_version != RUN_VERSION || manifest.recipe_hash != recipe_hash {
+    if manifest.run_version != RUN_VERSION
+        || manifest.recipe_hash != recipe_hash
+        || manifest.status != "completed"
+    {
         bail!("run manifest does not match recipe or run version");
     }
     if manifest.stages.len() != plan.stages.len() {

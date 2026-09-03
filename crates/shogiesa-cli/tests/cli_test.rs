@@ -371,6 +371,40 @@ fn recipe_run_verify_and_reuse_stage_outputs() {
         .stdout
         .clone();
     assert!(String::from_utf8(first).unwrap().contains("succeeded"));
+    let manifest_path = run_dir.join("run.json");
+    let mut interrupted: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    interrupted["status"] = serde_json::json!("running");
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&interrupted).unwrap(),
+    )
+    .unwrap();
+    shogiesa()
+        .args([
+            "recipe",
+            "run",
+            "--recipe",
+            recipe.to_str().unwrap(),
+            "--run-dir",
+            run_dir.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--resume"));
+    shogiesa()
+        .args([
+            "recipe",
+            "run",
+            "--recipe",
+            recipe.to_str().unwrap(),
+            "--run-dir",
+            run_dir.to_str().unwrap(),
+            "--resume",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("compare — reused"));
     shogiesa()
         .args([
             "recipe",

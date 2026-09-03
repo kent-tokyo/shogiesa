@@ -21,6 +21,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
   and verify recorded output hashes for safe local resume.
 - recipe stage commits now validate every declared output first and restore pre-existing outputs if
   a multi-output commit fails midway.
+- `recipe run` now checkpoints after each stage and requires explicit `--resume` for an incomplete
+  run, so interrupted work can reuse only durably recorded successful stages.
 
 ## [0.9.1] — 2026-09-03
 

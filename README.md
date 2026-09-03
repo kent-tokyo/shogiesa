@@ -945,6 +945,7 @@ of the typed shogiesa command variants.
 
 ```bash
 shogiesa recipe run --recipe recipe.json --run-dir .shogiesa-run --json-out run.json
+shogiesa recipe run --recipe recipe.json --run-dir .shogiesa-run --resume
 shogiesa recipe verify --recipe recipe.json --run-dir .shogiesa-run
 ```
 
@@ -954,7 +955,8 @@ existing output files are restored if a commit fails. `run.json` is replaced ato
 each output hash and stage identity. A later run reuses a stage only when the recipe/input identity
 and every recorded output hash still match. `verify` checks those identities and hashes without
 executing commands. A failed or interrupted stage is not recorded as a successful artifact; remove
-stale staging files only after inspecting them.
+stale staging files only after inspecting them. A stage-complete checkpoint is written after every
+stage; if the checkpoint says `running`, continuation requires the explicit `--resume` flag.
 
 ### `conflict-report` — CP / game-outcome sign diagnostics
 

@@ -120,7 +120,8 @@ corpus. `report_shows_labeled_diagnostics` runs `sample.csa` through the fake US
 depths and MultiPV, then checks the report sections for cp/mate ratio, score swing, policy margin,
 evaluation buckets, agreement, and score bounds. `validate_clean_data_exits_0` checks that a clean
 extracted fixture is accepted, while `validate_broken_fixture_has_stable_normal_and_strict_outcomes`
-checks that the same broken JSONL fixture is a warning in normal mode and non-zero in strict mode.
+compares the complete `VALIDATE_BROKEN_GOLDEN_STDOUT` for the same broken JSONL fixture and checks
+that it is a warning in normal mode and non-zero in strict mode.
 
 These tests verify the meaning and presence of the diagnostics; they do not measure calibration,
 engine strength, training improvement, or performance on a representative corpus.

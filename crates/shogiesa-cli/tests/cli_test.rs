@@ -617,6 +617,19 @@ fn validate_broken_json_shows_warn_but_exits_0() {
         .stdout(predicate::str::contains("WARN"));
 }
 
+const VALIDATE_BROKEN_GOLDEN_STDOUT: &str = r#"=== shogiesa validate ===
+total lines    : 1
+valid JSON     : 0
+valid records  : 0
+broken lines   : 1
+invalid SFENs  : 0
+duplicate SFENs: 0
+tag mismatches : 0  (side_to_move vs SFEN)
+schema versions: {}
+
+WARN: 1 broken lines
+"#;
+
 #[test]
 fn validate_broken_fixture_has_stable_normal_and_strict_outcomes() {
     shogiesa()
@@ -627,10 +640,7 @@ fn validate_broken_fixture_has_stable_normal_and_strict_outcomes() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("total lines    : 1"))
-        .stdout(predicate::str::contains("valid JSON     : 0"))
-        .stdout(predicate::str::contains("broken lines   : 1"))
-        .stdout(predicate::str::contains("WARN: 1 broken lines"));
+        .stdout(VALIDATE_BROKEN_GOLDEN_STDOUT);
 
     shogiesa()
         .args([
@@ -641,7 +651,7 @@ fn validate_broken_fixture_has_stable_normal_and_strict_outcomes() {
         ])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("WARN: 1 broken lines"));
+        .stdout(VALIDATE_BROKEN_GOLDEN_STDOUT);
 }
 
 // --- validate --strict ---

@@ -133,8 +133,8 @@ NNUE の学習結果を改善すること、処理速度・メモリ上限、Sek
 - `[x]` CP、policy margin、score swing、bestmove/engine agreement、bound、mate、resign/win/none の定義を統一する。
   `docs/THEORY.md` と README の定義を実装の型・診断出力に合わせる。
 - `[x]` `report`/`validate` と `docs/THEORY.md` の例を fixture で照合する。
-  `report_shows_labeled_diagnostics`、`validate_clean_data_exits_0`、broken JSONL の normal/strict
-  回帰を `docs/THEORY.md` の fixture cross-check として参照する。
+  `report` の full stdout golden、`validate` の broken JSONL full stdout golden、clean fixture の
+  normal/strict 回帰を `docs/THEORY.md` の fixture cross-check として参照する。
 - `[x]` 指標を未校正の確率や強さの証拠として表現せず、filter の各理由を独立再現できる。
   指標の注意書きと理由別 filter 回帰テストを保持する。
 

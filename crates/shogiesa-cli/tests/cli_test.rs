@@ -4161,23 +4161,14 @@ fn filter_preset_conflicts_with_individual_flags() {
 
 #[test]
 fn calibrate_sweep_policy_margin_produces_golden_csv_rows() {
-    // margins 50 and 150; sweeping thresholds 0/100/200 crosses each record's margin exactly once.
-    let f = make_labeled_jsonl(&[
-        position(
-            "opening",
-            serde_json::json!([obs_with_margin("7g7f", 50, 4, 50)]),
-        ),
-        position(
-            "opening",
-            serde_json::json!([obs_with_margin("7g7f", 50, 4, 150)]),
-        ),
-    ]);
     let out = NamedTempFile::new().unwrap();
     shogiesa()
         .args([
             "calibrate",
             "--input",
-            f.path().to_str().unwrap(),
+            fixture("calibrate_policy_margin_input.jsonl")
+                .to_str()
+                .unwrap(),
             "--sweep-policy-margin",
             "0,100,200",
             "--out",
@@ -4185,15 +4176,10 @@ fn calibrate_sweep_policy_margin_produces_golden_csv_rows() {
         ])
         .assert()
         .success();
-    let content = std::fs::read_to_string(out.path()).unwrap();
-    let lines: Vec<&str> = content.lines().collect();
     assert_eq!(
-        lines[0],
-        "sweep_param,sweep_value,total,kept,dropped,coverage_pct,drop_reasons"
+        std::fs::read_to_string(out.path()).unwrap(),
+        std::fs::read_to_string(fixture("calibrate_policy_margin.golden")).unwrap()
     );
-    assert_eq!(lines[1], "policy_margin,0,2,2,0,100.00,");
-    assert_eq!(lines[2], "policy_margin,100,2,1,1,50.00,policy_margin=1");
-    assert_eq!(lines[3], "policy_margin,200,2,0,2,0.00,policy_margin=2");
 }
 
 #[test]

@@ -1,0 +1,4 @@
+sweep_param,sweep_value,total,kept,dropped,coverage_pct,drop_reasons
+policy_margin,0,2,2,0,100.00,
+policy_margin,100,2,1,1,50.00,policy_margin=1
+policy_margin,200,2,0,2,0.00,policy_margin=2

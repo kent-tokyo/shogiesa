@@ -172,6 +172,8 @@ NNUE の学習結果を改善すること、処理速度・メモリ上限、Sek
 
 - `[x]` `tune --preset-out` で `calibrate`/`audit` 統合結果を full `QualityConfig` 付き recipe/preset として保存し、`filter --preset` へ再投入できるようにする。
 - `[MEASURE]` depth/node、MultiPV、teacher 数、filter 閾値の coverage/agreement/bound率を深い teacher と比較する。
+- `[x]` `calibrate` の policy-margin threshold sweep を固定 fixture / golden CSV で検証し、coverage と
+  drop reason の出力境界を再現可能にした（深い teacher との性能・品質比較は未測定）。
 - `[GATE]` 推奨閾値に dataset/engine 固有の根拠があり、単一 score や未校正 probability に依存しない。
 
 ## Phase 2 — recipe / provenance の固定

@@ -226,6 +226,42 @@ fn conflict_report_excludes_unknown_draw_and_mate_and_counts_cp_sign_conflicts()
 }
 
 #[test]
+fn conflict_report_includes_mainline_and_variation_records_in_same_fixture_matrix() {
+    let mut mainline = position("middlegame", serde_json::json!([obs("7g7f", 300, 4)]));
+    mainline["source"]["path"] = serde_json::json!("game.kif");
+    mainline["game_result"] = serde_json::json!({
+        "outcome": "black_wins", "result_source": "kif_marker"
+    });
+
+    let mut variation = position("middlegame", serde_json::json!([obs("2g2f", 300, 4)]));
+    variation["source"] = serde_json::json!({
+        "kind": "kif",
+        "path": "game.kif#var1@2",
+        "ply": 3,
+        "root_id": "game.kif",
+        "variation_id": "var1",
+        "branch_from_ply": 2
+    });
+    variation["game_result"] = serde_json::json!({
+        "outcome": "white_wins", "result_source": "kif_variation"
+    });
+
+    let input = make_labeled_jsonl(&[mainline, variation]);
+    shogiesa()
+        .args(["conflict-report", "--input", input.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("records read      : 2"))
+        .stdout(predicate::str::contains("decisive records  : 2"))
+        .stdout(predicate::str::contains("evaluated pairs   : 2"))
+        .stdout(predicate::str::contains("conflicts         : 1  (50.0%)"))
+        .stdout(predicate::str::contains("test / weight=none"))
+        .stdout(predicate::str::contains(
+            "evaluated=     2 conflicts=     1 (50.0%)",
+        ));
+}
+
+#[test]
 fn block_report_keeps_roots_separate_and_reports_cp_summary() {
     let mut first = position("middlegame", serde_json::json!([obs("7g7f", 100, 4)]));
     first["source"]["path"] = serde_json::json!("game-a.csa");

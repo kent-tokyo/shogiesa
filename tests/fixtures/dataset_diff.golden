@@ -1,0 +1,27 @@
+dataset diff
+match by           : occurrence
+baseline           : <baseline>
+candidate          : <candidate>
+baseline records   : 3
+candidate records  : 3
+baseline broken    : 0
+candidate broken   : 0
+matched records    : 2
+unchanged records  : 1
+changed records    : 1
+added records      : 1
+removed records    : 1
+observation delta  : +1
+field changes:
+  observations: 1
+source-root delta:
+  game-c.kif: -1
+  game-d.csa: +1
+phase delta:
+  endgame: -1
+  opening: +1
+eval-bucket delta:
+  -200: -1
+  -400: +1
+  _none_: -1
+  mate: +1

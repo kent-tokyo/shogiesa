@@ -187,6 +187,11 @@ NNUE の学習結果を改善すること、処理速度・メモリ上限、Sek
 - `[x]` 診断 manifest に source root、engine、weight hash の入力分布を保存し、欠落 weight は `unknown` として扱う。
 - `[x]` input/output hash、schema、args、seed、source root、engine/weight provenance を manifest で追跡する。
   command-specific manifest と欠落 weight の `unknown` 表現を実装する。
+- `[x]` `dataset-diff` で入力順に依存せず、追加・削除・変更、field、source root、phase、
+  eval bucket、observation 数の差を human-readable summary と versioned JSON artifact に保存する。
+  occurrence identity と path 移動を許容する position identity を明示的に分離する。
+- `[x]` `dataset-diff` の fixture/golden 回帰を local measurement smoke と repository contract に
+  組み込み、同一SFENの重複照合を二乗探索にしない。
 - `[MEASURE]` 異なる path、入力順、worker 数で再実行し、dataset identity と order hash を比較する。
 - `[GATE]` 再現に必要な情報が欠落せず、null の `opening_id` を推測で補わない。
 

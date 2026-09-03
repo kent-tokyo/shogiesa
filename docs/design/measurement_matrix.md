@@ -5,8 +5,8 @@ after its listed artifact contains the measured result and the environment is re
 
 For changes that do not require external engines, start with
 `bash scripts/run_local_measurement_smoke.sh`. It validates the repository contract, formatting,
-and four deterministic fixture-backed regression points (streaming report output, conflict
-exclusions, split reproducibility, and pack manifest hashes). A PASS here is local regression evidence only; it does not
+and five deterministic fixture-backed regression points (streaming report output, conflict
+exclusions, semantic dataset diff, split reproducibility, and pack manifest hashes). A PASS here is local regression evidence only; it does not
 complete any scale, cross-platform, training, or external-interoperability row below.
 
 | area | fixed input/control | record | completion artifact |

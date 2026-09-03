@@ -84,6 +84,8 @@ enum Commands {
     BlockReport(BlockReportArgs),
     /// Report statistics about a positions dataset
     Report(ReportArgs),
+    /// Compare two datasets semantically, independent of JSONL input order
+    DatasetDiff(DatasetDiffArgs),
     /// Report phase/side/eval-bucket/ply/source-root distribution, explicitly flagging bucket
     /// combinations that have zero records within the observed range -- distinct from `select
     /// --strategy coverage` (which *ranks* existing records by thin-bucket membership for
@@ -204,6 +206,22 @@ struct ReportArgs {
     /// Input JSONL file
     #[arg(short, long)]
     input: PathBuf,
+}
+
+#[derive(clap::Args)]
+struct DatasetDiffArgs {
+    /// Reference dataset JSONL
+    #[arg(long)]
+    baseline: PathBuf,
+    /// Dataset JSONL to compare against the baseline
+    #[arg(long)]
+    candidate: PathBuf,
+    /// Record identity: occurrence uses sfen+source path+ply; position uses sfen only
+    #[arg(long, default_value = "occurrence", value_parser = ["occurrence", "position"])]
+    match_by: String,
+    /// Write the complete deterministic comparison report as JSON
+    #[arg(long)]
+    json_out: Option<PathBuf>,
 }
 
 #[derive(clap::Args)]
@@ -1092,6 +1110,7 @@ fn main() -> Result<()> {
         Commands::ConflictReport(args) => cmd_conflict_report(args),
         Commands::BlockReport(args) => cmd_block_report(args),
         Commands::Report(args) => cmd_report(args),
+        Commands::DatasetDiff(args) => cmd_dataset_diff(args),
         Commands::Distribution(args) => cmd_distribution(args),
         Commands::Validate(args) => cmd_validate(args),
         Commands::Cache(args) => match args.action {
@@ -7069,6 +7088,320 @@ fn load_records(path: &PathBuf) -> Result<(Vec<PositionRecord>, usize)> {
     Ok((records, broken))
 }
 
+#[derive(Debug, Serialize)]
+struct DatasetDiffFileSummary {
+    path: String,
+    input_hash: String,
+    records: usize,
+    broken_lines: usize,
+    observations: usize,
+}
+
+#[derive(Debug, Default, Serialize)]
+struct DatasetDiffSummary {
+    matched_records: usize,
+    unchanged_records: usize,
+    changed_records: usize,
+    added_records: usize,
+    removed_records: usize,
+}
+
+#[derive(Debug, Default, Serialize)]
+struct DatasetDiffDeltas {
+    observations: i64,
+    source_roots: BTreeMap<String, i64>,
+    phases: BTreeMap<String, i64>,
+    eval_buckets: BTreeMap<String, i64>,
+}
+
+#[derive(Debug, Serialize)]
+struct DatasetDiffReport {
+    report_version: u32,
+    match_by: String,
+    baseline: DatasetDiffFileSummary,
+    candidate: DatasetDiffFileSummary,
+    summary: DatasetDiffSummary,
+    field_changes: BTreeMap<String, usize>,
+    deltas: DatasetDiffDeltas,
+}
+
+fn dataset_diff_key(record: &PositionRecord, match_by: &str) -> String {
+    match match_by {
+        "position" => record.sfen.clone(),
+        "occurrence" => format!(
+            "{}\0{}\0{}",
+            record.sfen, record.source.path, record.source.ply
+        ),
+        _ => unreachable!("clap restricts --match-by"),
+    }
+}
+
+fn add_dataset_delta(map: &mut BTreeMap<String, i64>, key: String, amount: i64) {
+    let remove = {
+        let entry = map.entry(key.clone()).or_default();
+        *entry += amount;
+        *entry == 0
+    };
+    if remove {
+        map.remove(&key);
+    }
+}
+
+fn accumulate_dataset_deltas(
+    records: &[PositionRecord],
+    direction: i64,
+    deltas: &mut DatasetDiffDeltas,
+) {
+    for record in records {
+        deltas.observations += direction * record.observations.len() as i64;
+        add_dataset_delta(
+            &mut deltas.source_roots,
+            split_root_key(&record.source).to_string(),
+            direction,
+        );
+        add_dataset_delta(&mut deltas.phases, record.tags.phase.to_string(), direction);
+        add_dataset_delta(
+            &mut deltas.eval_buckets,
+            eval_bucket_of(record).to_string(),
+            direction,
+        );
+    }
+}
+
+fn count_changed_field<T: Serialize>(
+    name: &str,
+    baseline: &T,
+    candidate: &T,
+    changes: &mut BTreeMap<String, usize>,
+) -> Result<()> {
+    if serde_json::to_value(baseline)? != serde_json::to_value(candidate)? {
+        *changes.entry(name.to_string()).or_default() += 1;
+    }
+    Ok(())
+}
+
+fn record_dataset_field_changes(
+    baseline: &PositionRecord,
+    candidate: &PositionRecord,
+    changes: &mut BTreeMap<String, usize>,
+) -> Result<()> {
+    count_changed_field(
+        "schema_version",
+        &baseline.schema_version,
+        &candidate.schema_version,
+        changes,
+    )?;
+    count_changed_field("sfen", &baseline.sfen, &candidate.sfen, changes)?;
+    count_changed_field("source", &baseline.source, &candidate.source, changes)?;
+    count_changed_field("tags", &baseline.tags, &candidate.tags, changes)?;
+    count_changed_field(
+        "observations",
+        &baseline.observations,
+        &candidate.observations,
+        changes,
+    )?;
+    count_changed_field(
+        "stability",
+        &baseline.stability,
+        &candidate.stability,
+        changes,
+    )?;
+    count_changed_field(
+        "game_result",
+        &baseline.game_result,
+        &candidate.game_result,
+        changes,
+    )?;
+    Ok(())
+}
+
+fn dataset_file_summary(
+    path: &Path,
+    records: &[PositionRecord],
+    broken_lines: usize,
+) -> Result<DatasetDiffFileSummary> {
+    Ok(DatasetDiffFileSummary {
+        path: path.display().to_string(),
+        input_hash: hash_file(path)?,
+        records: records.len(),
+        broken_lines,
+        observations: records.iter().map(|record| record.observations.len()).sum(),
+    })
+}
+
+fn write_delta_section(out: &mut String, title: &str, values: &BTreeMap<String, i64>) {
+    writeln!(out, "{title}:").unwrap();
+    if values.is_empty() {
+        writeln!(out, "  (none)").unwrap();
+    } else {
+        for (key, delta) in values {
+            writeln!(out, "  {key}: {delta:+}").unwrap();
+        }
+    }
+}
+
+fn records_by_serialized_form(
+    records: Vec<PositionRecord>,
+) -> Result<BTreeMap<String, Vec<PositionRecord>>> {
+    let mut grouped = BTreeMap::<String, Vec<PositionRecord>>::new();
+    for record in records {
+        grouped
+            .entry(serde_json::to_string(&record)?)
+            .or_default()
+            .push(record);
+    }
+    Ok(grouped)
+}
+
+fn cmd_dataset_diff(args: DatasetDiffArgs) -> Result<()> {
+    let (baseline_records, baseline_broken) = load_records(&args.baseline)?;
+    let (candidate_records, candidate_broken) = load_records(&args.candidate)?;
+
+    let baseline = dataset_file_summary(&args.baseline, &baseline_records, baseline_broken)?;
+    let candidate = dataset_file_summary(&args.candidate, &candidate_records, candidate_broken)?;
+
+    let mut deltas = DatasetDiffDeltas::default();
+    accumulate_dataset_deltas(&baseline_records, -1, &mut deltas);
+    accumulate_dataset_deltas(&candidate_records, 1, &mut deltas);
+
+    let mut baseline_by_key = BTreeMap::<String, Vec<PositionRecord>>::new();
+    for record in baseline_records {
+        baseline_by_key
+            .entry(dataset_diff_key(&record, &args.match_by))
+            .or_default()
+            .push(record);
+    }
+    let mut candidate_by_key = BTreeMap::<String, Vec<PositionRecord>>::new();
+    for record in candidate_records {
+        candidate_by_key
+            .entry(dataset_diff_key(&record, &args.match_by))
+            .or_default()
+            .push(record);
+    }
+
+    let keys: BTreeSet<String> = baseline_by_key
+        .keys()
+        .chain(candidate_by_key.keys())
+        .cloned()
+        .collect();
+    let mut summary = DatasetDiffSummary::default();
+    let mut field_changes = BTreeMap::<String, usize>::new();
+
+    for key in keys {
+        let baseline_group = baseline_by_key.remove(&key).unwrap_or_default();
+        let candidate_group = candidate_by_key.remove(&key).unwrap_or_default();
+        let mut baseline_group = records_by_serialized_form(baseline_group)?;
+        let mut candidate_group = records_by_serialized_form(candidate_group)?;
+        let serialized_forms: BTreeSet<String> = baseline_group
+            .keys()
+            .chain(candidate_group.keys())
+            .cloned()
+            .collect();
+        let mut unmatched_baseline = Vec::<(String, PositionRecord)>::new();
+        let mut unmatched_candidate = Vec::<(String, PositionRecord)>::new();
+        for serialized in serialized_forms {
+            let mut baseline_records = baseline_group.remove(&serialized).unwrap_or_default();
+            let mut candidate_records = candidate_group.remove(&serialized).unwrap_or_default();
+            let unchanged = baseline_records.len().min(candidate_records.len());
+            summary.unchanged_records += unchanged;
+            baseline_records.drain(..unchanged);
+            candidate_records.drain(..unchanged);
+            unmatched_baseline.extend(
+                baseline_records
+                    .into_iter()
+                    .map(|record| (serialized.clone(), record)),
+            );
+            unmatched_candidate.extend(
+                candidate_records
+                    .into_iter()
+                    .map(|record| (serialized.clone(), record)),
+            );
+        }
+
+        let changed = unmatched_baseline.len().min(unmatched_candidate.len());
+        for ((_, baseline), (_, candidate)) in unmatched_baseline
+            .iter()
+            .take(changed)
+            .zip(unmatched_candidate.iter().take(changed))
+        {
+            record_dataset_field_changes(baseline, candidate, &mut field_changes)?;
+        }
+        summary.changed_records += changed;
+        summary.removed_records += unmatched_baseline.len() - changed;
+        summary.added_records += unmatched_candidate.len() - changed;
+    }
+    summary.matched_records = summary.unchanged_records + summary.changed_records;
+
+    let report = DatasetDiffReport {
+        report_version: 1,
+        match_by: args.match_by,
+        baseline,
+        candidate,
+        summary,
+        field_changes,
+        deltas,
+    };
+
+    if let Some(path) = &args.json_out {
+        fs::write(path, serde_json::to_string_pretty(&report)? + "\n")
+            .with_context(|| format!("cannot write {path:?}"))?;
+    }
+
+    let mut out = String::new();
+    writeln!(out, "dataset diff").unwrap();
+    writeln!(out, "match by           : {}", report.match_by).unwrap();
+    writeln!(out, "baseline           : {}", report.baseline.path).unwrap();
+    writeln!(out, "candidate          : {}", report.candidate.path).unwrap();
+    writeln!(out, "baseline records   : {}", report.baseline.records).unwrap();
+    writeln!(out, "candidate records  : {}", report.candidate.records).unwrap();
+    writeln!(out, "baseline broken    : {}", report.baseline.broken_lines).unwrap();
+    writeln!(
+        out,
+        "candidate broken   : {}",
+        report.candidate.broken_lines
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "matched records    : {}",
+        report.summary.matched_records
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "unchanged records  : {}",
+        report.summary.unchanged_records
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "changed records    : {}",
+        report.summary.changed_records
+    )
+    .unwrap();
+    writeln!(out, "added records      : {}", report.summary.added_records).unwrap();
+    writeln!(
+        out,
+        "removed records    : {}",
+        report.summary.removed_records
+    )
+    .unwrap();
+    writeln!(out, "observation delta  : {:+}", report.deltas.observations).unwrap();
+    writeln!(out, "field changes:").unwrap();
+    if report.field_changes.is_empty() {
+        writeln!(out, "  (none)").unwrap();
+    } else {
+        for (field, count) in &report.field_changes {
+            writeln!(out, "  {field}: {count}").unwrap();
+        }
+    }
+    write_delta_section(&mut out, "source-root delta", &report.deltas.source_roots);
+    write_delta_section(&mut out, "phase delta", &report.deltas.phases);
+    write_delta_section(&mut out, "eval-bucket delta", &report.deltas.eval_buckets);
+    print!("{out}");
+    Ok(())
+}
+
 fn cmd_report(args: ReportArgs) -> Result<()> {
     let reader = BufReader::new(
         File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
@@ -7819,15 +8152,14 @@ fn cmd_block_report(args: BlockReportArgs) -> Result<()> {
         };
         let root = split_root_key(&record.source).to_string();
         let root_changed = current.as_ref().is_some_and(|block| block.root != root);
-        if root_changed
+        if (root_changed
             || current
                 .as_ref()
-                .is_some_and(|block| block.records >= args.block_size)
+                .is_some_and(|block| block.records >= args.block_size))
+            && let Some(block) = current.take()
         {
-            if let Some(block) = current.take() {
-                block.print();
-                blocks += 1;
-            }
+            block.print();
+            blocks += 1;
         }
         if current.is_none() {
             current = Some(BlockReportStats::new(root, blocks + 1));

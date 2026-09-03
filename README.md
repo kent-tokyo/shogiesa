@@ -981,6 +981,27 @@ rate, a mover-relative WDL distribution (from `game_result`, see the JSONL schem
 see the JSONL schema section). Streams its input in a single pass and never materializes the record
 set; memory scales with distinct SFEN/source-file count, not total records.
 
+### `dataset-diff` — semantic dataset comparison
+
+```bash
+shogiesa dataset-diff \
+  --baseline previous.jsonl \
+  --candidate candidate.jsonl \
+  --json-out dataset-diff.json
+```
+
+Compares datasets independently of JSONL line order. The default `--match-by occurrence` identity
+is `(sfen, source.path, source.ply)`; use `--match-by position` to align the same SFEN after a path
+move and report source provenance as a changed field. The report separates unchanged, changed,
+added, and removed records, then records field-change counts and candidate-minus-baseline deltas
+for observations, source roots, phases, and evaluation buckets. Duplicate identities are matched
+deterministically, with byte-equivalent normalized records paired before changed records.
+
+Human-readable stdout is intended for review. `--json-out` writes the same result as a versioned,
+deterministically ordered JSON artifact, including both normalized input hashes and malformed-line
+counts. A semantic match does not make two byte-level input hashes equal, and position matching
+does not erase a changed source path from the field-change report.
+
 ### `distribution` — bucket-coverage diagnostic
 
 ```bash

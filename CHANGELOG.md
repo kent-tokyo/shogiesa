@@ -8,6 +8,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ## [Unreleased]
 
+### Added
+- `dataset-diff` compares two JSONL datasets independently of line order and emits both a human
+  summary and a versioned JSON artifact. It separates added/removed/changed records, field changes,
+  and source-root/phase/eval-bucket/observation deltas, with explicit occurrence- or SFEN-based
+  identity modes.
+
 ## [0.9.1] — 2026-09-03
 
 ### Added

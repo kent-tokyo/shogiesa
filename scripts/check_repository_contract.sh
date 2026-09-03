@@ -43,6 +43,9 @@ required_files=(
   tests/fixtures/distribution_malformed.golden
   tests/fixtures/calibrate_policy_margin_input.jsonl
   tests/fixtures/calibrate_policy_margin.golden
+  tests/fixtures/dataset_diff_baseline.jsonl
+  tests/fixtures/dataset_diff_candidate.jsonl
+  tests/fixtures/dataset_diff.golden
   tests/fixtures/pack_bad_magic.hex
   tests/fixtures/pack_truncated_header.hex
   tests/fixtures/pack_unsupported_version.hex
@@ -100,6 +103,9 @@ check_marker tests/fixtures/distribution_malformed_input.jsonl '^not json$' 'dis
 check_marker tests/fixtures/distribution_malformed.golden '^broken lines: 1$' 'distribution malformed golden'
 check_marker tests/fixtures/calibrate_policy_margin_input.jsonl '"policy_margin_cp":150' 'calibrate policy margin input'
 check_marker tests/fixtures/calibrate_policy_margin.golden '^policy_margin,200,2,0,2,0\.00,policy_margin=2$' 'calibrate policy margin golden'
+check_marker tests/fixtures/dataset_diff_baseline.jsonl '"path":"game-c.kif"' 'dataset diff removed root input'
+check_marker tests/fixtures/dataset_diff_candidate.jsonl '"path":"game-d.csa"' 'dataset diff added root input'
+check_marker tests/fixtures/dataset_diff.golden '^changed records    : 1$' 'dataset diff golden changed count'
 check_marker tests/fixtures/pack_bad_magic.hex '^00000000000000000b00$' 'pack bad magic bytes'
 check_marker tests/fixtures/pack_truncated_header.hex '^53484f4749455341$' 'pack truncated header bytes'
 check_marker tests/fixtures/pack_unsupported_version.hex '^53484f4749455341ffff$' 'pack unsupported version bytes'

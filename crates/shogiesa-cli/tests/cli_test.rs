@@ -163,6 +163,93 @@ fn report_shows_stats() {
 }
 
 #[test]
+fn dataset_diff_fixture_reports_semantic_changes_independent_of_input_order() {
+    let json_out = NamedTempFile::new().unwrap();
+    let output = shogiesa()
+        .args([
+            "dataset-diff",
+            "--baseline",
+            fixture("dataset_diff_baseline.jsonl").to_str().unwrap(),
+            "--candidate",
+            fixture("dataset_diff_candidate.jsonl").to_str().unwrap(),
+            "--json-out",
+            json_out.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    let normalized = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            if line.starts_with("baseline           : ") {
+                "baseline           : <baseline>"
+            } else if line.starts_with("candidate          : ") {
+                "candidate          : <candidate>"
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    assert_eq!(
+        normalized,
+        std::fs::read_to_string(fixture("dataset_diff.golden")).unwrap()
+    );
+
+    let report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(json_out.path()).unwrap()).unwrap();
+    assert_eq!(report["report_version"], 1);
+    assert_eq!(report["summary"]["unchanged_records"], 1);
+    assert_eq!(report["summary"]["changed_records"], 1);
+    assert_eq!(report["summary"]["added_records"], 1);
+    assert_eq!(report["summary"]["removed_records"], 1);
+    assert_eq!(report["field_changes"]["observations"], 1);
+    assert_eq!(report["deltas"]["observations"], 1);
+    assert_eq!(report["deltas"]["source_roots"]["game-c.kif"], -1);
+    assert_eq!(report["deltas"]["source_roots"]["game-d.csa"], 1);
+}
+
+#[test]
+fn dataset_diff_position_mode_treats_source_path_change_as_a_field_change() {
+    let baseline = NamedTempFile::new().unwrap();
+    let candidate = NamedTempFile::new().unwrap();
+    let record = std::fs::read_to_string(fixture("dataset_diff_baseline.jsonl"))
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap()
+        .to_string()
+        + "\n";
+    std::fs::write(baseline.path(), &record).unwrap();
+    std::fs::write(
+        candidate.path(),
+        record.replace("game-a.csa", "moved/game-a.csa"),
+    )
+    .unwrap();
+
+    shogiesa()
+        .args([
+            "dataset-diff",
+            "--baseline",
+            baseline.path().to_str().unwrap(),
+            "--candidate",
+            candidate.path().to_str().unwrap(),
+            "--match-by",
+            "position",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("matched records    : 1"))
+        .stdout(predicate::str::contains("changed records    : 1"))
+        .stdout(predicate::str::contains("added records      : 0"))
+        .stdout(predicate::str::contains("removed records    : 0"))
+        .stdout(predicate::str::contains("  source: 1"));
+}
+
+#[test]
 fn conflict_report_excludes_unknown_draw_and_mate_and_counts_cp_sign_conflicts() {
     let output = shogiesa()
         .args([

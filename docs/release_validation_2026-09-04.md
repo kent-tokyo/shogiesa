@@ -13,8 +13,8 @@ this environment and does not claim external performance, training, Elo, or nati
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | PASS | completed successfully |
 | fixture-backed recipe run/verify | PASS | run, verify, reuse, partial checkpoint resume, output tamper, and manifest topology checks passed in the targeted integration tests |
 | external measurements | UNMEASURED | 1M/10M throughput, multi-OS behavior, training effect, Elo, and native interoperability remain outside this local validation |
-| GitHub tag/push | PENDING | to be performed after the release commit |
-| crates.io publish | PENDING | to be performed after package verification |
+| GitHub `main` and `v0.9.2` tag push | PASS | `main` and annotated `v0.9.2` point to release commit `94f2a412afe08cbd2eccc1d585d2c5ec3438afdf` |
+| crates.io publish | BLOCKED | `shogiesa-core v0.9.2` upload returned HTTP 403 authentication failed; no workspace crate was published |
 
 The release readiness wrapper initially exposed two stale fixture expectations; they were updated to
 the current `conflict-report` and omitted-empty-`candidates` contracts, and the affected tests then

@@ -19,7 +19,8 @@ manifest provenance、JSONL/pack 境界（corruption fixture を含む）、reci
 ツールの native interoperability など、実測結果が必要なものに限定している。
 `0.9.2` を今回のリリース対象とする。Cargo version は `0.9.2` に固定し、外部測定を
 実施済みと扱わないまま、recipe実行・fixture・contract・ドキュメントの改善をリリース単位として記録する。
-GitHub `main` と `v0.9.2` tag、crates.io公開の結果は今回の検証ログに記録する。
+GitHub `main` と `v0.9.2` tag は push 済みである。crates.io は package/verify 後の
+`shogiesa-core v0.9.2` upload が認証403で停止し、公開未完了である（検証ログ参照）。
 
 ```text
 CSA / KIF / match kifu

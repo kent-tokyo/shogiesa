@@ -45,8 +45,11 @@ complete.
 
 ## Publication status
 
-- [ ] `v0.9.2` release commit is tagged and pushed to GitHub as `v0.9.2`.
-- [ ] crates.io publication: PENDING until the release packages are verified and uploaded.
+- [x] `v0.9.2` release commit `94f2a412afe08cbd2eccc1d585d2c5ec3438afdf` is tagged and pushed
+      to GitHub as `v0.9.2`.
+- [ ] crates.io publication: BLOCKED by HTTP 403 authentication failure on
+      `shogiesa-core v0.9.2`; no workspace crate was published. Retry after configuring a valid
+      crates.io token.
 
 ## Release gate
 

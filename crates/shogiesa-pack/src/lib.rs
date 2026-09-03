@@ -942,6 +942,16 @@ mod tests {
     }
 
     #[test]
+    fn trailing_byte_after_valid_pack_is_not_treated_as_clean_eof() {
+        let mut bytes = Vec::new();
+        encode(&[sample()], &mut bytes).unwrap();
+        bytes.push(0xff);
+
+        let err = decode(&mut bytes.as_slice()).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
     fn empty_pack_ok() {
         let mut buf = Vec::new();
         write_header(&mut buf).unwrap();

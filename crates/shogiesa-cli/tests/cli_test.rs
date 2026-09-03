@@ -238,8 +238,19 @@ fn block_report_keeps_roots_separate_and_reports_cp_summary() {
     second["source"]["ply"] = serde_json::json!(2);
     second["tags"]["in_check"] = serde_json::json!(true);
     let mut third = position("endgame", serde_json::json!([obs("8h2b", -200, 8)]));
-    third["source"]["path"] = serde_json::json!("game-b.csa");
-    let input = make_labeled_jsonl(&[first, second, third]);
+    third["source"] = serde_json::json!({
+        "kind": "kif",
+        "path": "game-b.kif#var1@2",
+        "ply": 3,
+        "root_id": "game-b.kif",
+        "variation_id": "var1",
+        "branch_from_ply": 2
+    });
+    let mut fourth = third.clone();
+    fourth["source"]["path"] = serde_json::json!("game-b.kif#var2@3");
+    fourth["source"]["ply"] = serde_json::json!(4);
+    fourth["source"]["variation_id"] = serde_json::json!("var2");
+    let input = make_labeled_jsonl(&[first, second, third, fourth]);
 
     shogiesa()
         .args([
@@ -255,7 +266,21 @@ fn block_report_keeps_roots_separate_and_reports_cp_summary() {
         .stdout(predicate::str::contains("game-a.csa#block1 records=2"))
         .stdout(predicate::str::contains("cp_mean=200.0"))
         .stdout(predicate::str::contains("cp_variance=10000.0"))
-        .stdout(predicate::str::contains("game-b.csa#block2 records=1"));
+        .stdout(predicate::str::contains("game-b.kif#block2 records=2"));
+
+    shogiesa()
+        .args([
+            "block-report",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--block-size",
+            "1",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("blocks            : 4"))
+        .stdout(predicate::str::contains("game-b.kif#block3 records=1"))
+        .stdout(predicate::str::contains("game-b.kif#block4 records=1"));
 }
 
 #[test]

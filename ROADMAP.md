@@ -229,6 +229,7 @@ NNUE の学習結果を改善すること、処理速度・メモリ上限、Sek
   run manifest を使う。
 - `[x]` recipe hash、stage identity、output hash が一致する成功済みstageだけを再利用し、
   `recipe verify` が実行なしで全stageの成果物を検査する。
+- `[x]` 複数outputのstageも全成果物を先に検査し、commit途中の失敗では既存成果物を復元する。
 - `[x]` run/verify の正常、reuse、改変検知を local fixture で確認し、0.9.1 のバージョンを
   固定したまま README/CHANGELOG に運用境界を記録する。
 

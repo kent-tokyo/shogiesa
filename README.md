@@ -949,11 +949,12 @@ shogiesa recipe verify --recipe recipe.json --run-dir .shogiesa-run
 ```
 
 `run` invokes only the typed shogiesa command variants, never a shell. Declared outputs are written
-to a per-stage staging directory and committed only after the stage succeeds; `run.json` is replaced
-atomically and records each output hash and stage identity. A later run reuses a stage only when the
-recipe/input identity and every recorded output hash still match. `verify` checks those identities and
-hashes without executing commands. A failed or interrupted stage is not recorded as a successful
-artifact; remove stale staging files only after inspecting them.
+to a per-stage staging directory and all output files are checked and committed transactionally;
+existing output files are restored if a commit fails. `run.json` is replaced atomically and records
+each output hash and stage identity. A later run reuses a stage only when the recipe/input identity
+and every recorded output hash still match. `verify` checks those identities and hashes without
+executing commands. A failed or interrupted stage is not recorded as a successful artifact; remove
+stale staging files only after inspecting them.
 
 ### `conflict-report` — CP / game-outcome sign diagnostics
 

@@ -618,6 +618,65 @@ fn rewritten_args(stage: &RecipeStage, recipe_dir: &Path, staging: &Path) -> Vec
         .collect()
 }
 
+fn commit_stage_outputs(
+    stage_id: &str,
+    output_paths: &[PathBuf],
+    staging: &Path,
+) -> Result<Vec<RunOutput>> {
+    let mut prepared = Vec::with_capacity(output_paths.len());
+    for output in output_paths {
+        let temp = staging.join(output.file_name().unwrap_or_default());
+        if !temp.is_file() {
+            bail!(
+                "stage {:?} did not produce declared output {:?}",
+                stage_id,
+                output
+            );
+        }
+        let hash = hash_file(&temp)?;
+        prepared.push((output, temp, hash));
+    }
+
+    let mut backups = Vec::new();
+    let mut committed = Vec::new();
+    let rollback = |backups: &[(PathBuf, PathBuf)], committed: &[PathBuf]| {
+        for path in committed {
+            let _ = fs::remove_file(path);
+        }
+        for (backup, original) in backups.iter().rev() {
+            let _ = fs::rename(backup, original);
+        }
+    };
+    for (index, (output, temp, _)) in prepared.iter().enumerate() {
+        let backup = staging.join(format!(".backup-{index}"));
+        let _ = fs::remove_file(&backup);
+        if output.is_file() {
+            if let Err(error) = fs::rename(output, &backup) {
+                rollback(&backups, &committed);
+                return Err(error)
+                    .with_context(|| format!("cannot stage existing output {output:?}"));
+            }
+            backups.push((backup.clone(), (*output).clone()));
+        }
+        if let Err(error) = fs::rename(temp, output) {
+            rollback(&backups, &committed);
+            return Err(error).with_context(|| format!("cannot commit stage output {output:?}"));
+        }
+        committed.push((*output).clone());
+    }
+    let outputs = prepared
+        .iter()
+        .map(|(output, _, hash)| RunOutput {
+            path: output.display().to_string(),
+            hash: hash.clone(),
+        })
+        .collect();
+    for (backup, _) in backups {
+        fs::remove_file(&backup).with_context(|| format!("cannot remove backup {backup:?}"))?;
+    }
+    Ok(outputs)
+}
+
 fn run_recipe(args: RecipeRunArgs) -> Result<()> {
     let (spec, recipe_hash) = load_recipe(&args.recipe)?;
     let plan = build_plan(&args.recipe, spec.clone(), recipe_hash.clone())?;
@@ -668,23 +727,7 @@ fn run_recipe(args: RecipeRunArgs) -> Result<()> {
         if !status.success() {
             bail!("stage {:?} failed with {status}", stage.id);
         }
-        let mut outputs = Vec::new();
-        for output in output_paths {
-            let temp = staging.join(output.file_name().unwrap_or_default());
-            if !temp.is_file() {
-                bail!(
-                    "stage {:?} did not produce declared output {:?}",
-                    stage.id,
-                    output
-                );
-            }
-            fs::rename(&temp, &output)
-                .with_context(|| format!("cannot commit stage output {output:?}"))?;
-            outputs.push(RunOutput {
-                path: output.display().to_string(),
-                hash: hash_file(&output)?,
-            });
-        }
+        let outputs = commit_stage_outputs(&stage.id, &output_paths, &staging)?;
         stages.push(RunStage {
             id: stage.id.clone(),
             stage_identity: planned.stage_identity.clone(),

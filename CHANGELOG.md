@@ -19,6 +19,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 - `recipe run` and `recipe verify` execute typed stages without a shell, commit declared outputs
   through per-stage staging, atomically replace the run manifest, reuse matching successful stages,
   and verify recorded output hashes for safe local resume.
+- recipe stage commits now validate every declared output first and restore pre-existing outputs if
+  a multi-output commit fails midway.
 
 ## [0.9.1] — 2026-09-03
 

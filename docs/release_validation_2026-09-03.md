@@ -13,9 +13,11 @@ It is evidence for this environment only and is not a claim of full release read
 | fixture-backed local measurement smoke | BLOCKED | `cargo test --offline` could not start because `float-cmp v0.10.0` was not cached |
 | `cargo test --offline --workspace` | BLOCKED | dependency cache lacks `float-cmp v0.10.0`; no success claim is made |
 | `cargo clippy --offline --workspace --all-targets --all-features -- -D warnings` | BLOCKED | dependency cache lacks `float-cmp v0.10.0`; no success claim is made |
+| GitHub `main` and `v0.9.1` tag push | PASS | `origin/main` advanced to `10eccc8`; tag points to the release commit |
+| crates.io publish | BLOCKED | package/verify passed, then `shogiesa-core v0.9.1` upload returned HTTP 403 authentication failed; no crate was published |
 
-The release commit, tag, push, and registry publication result are recorded below after those
-operations complete.
+Release commit and tag push completed. Registry publication requires a valid crates.io token and
+must be retried separately; the failed upload did not publish any workspace crate.
 
 The smoke script intentionally uses `--offline`: it must not turn a missing dependency or network
 failure into a successful measurement. Re-run

@@ -43,6 +43,13 @@ v0.10.0` dependency; the unchecked items below must not be read as passed.
 - [x] unmeasured RSS, speed, training effect, and Elo claims remain labeled unverified.
 - [x] release notes state the exact validation environment and blocked checks.
 
+## Publication status
+
+- [x] `v0.9.1` release commit `10eccc836c50367389de13ad1aac479bed00179a` was tagged and pushed
+      to GitHub as `v0.9.1`.
+- [ ] crates.io publication: BLOCKED by HTTP 403 authentication failure on the first upload
+      (`shogiesa-core v0.9.1`); retry after configuring a valid crates.io token.
+
 ## Release gate
 
 Release only when required checks have evidence from the same clean checkout. A release may be

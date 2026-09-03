@@ -30,6 +30,8 @@ required_files=(
   tests/fixtures/broken.jsonl
   tests/fixtures/pack_input.jsonl
   tests/fixtures/malformed_mixed.jsonl
+  tests/fixtures/conflict_report_input.jsonl
+  tests/fixtures/conflict_report.golden
   tests/fixtures/pack_bad_magic.hex
   tests/fixtures/pack_truncated_header.hex
   tests/fixtures/pack_unsupported_version.hex
@@ -74,6 +76,8 @@ check_marker tests/fixtures/variation.kif '^変化：2手' 'KIF variation marker
 check_marker tests/fixtures/broken.jsonl '^not json$' 'broken JSONL line'
 check_marker tests/fixtures/pack_input.jsonl '"schema_version":11' 'pack input schema'
 check_marker tests/fixtures/malformed_mixed.jsonl '^not json$' 'mixed JSONL malformed suffix'
+check_marker tests/fixtures/conflict_report_input.jsonl '"variation_id":"var1"' 'conflict report variation input'
+check_marker tests/fixtures/conflict_report.golden '^conflicts         : 1  \(33\.3%\)$' 'conflict report golden summary'
 check_marker tests/fixtures/pack_bad_magic.hex '^00000000000000000b00$' 'pack bad magic bytes'
 check_marker tests/fixtures/pack_truncated_header.hex '^53484f4749455341$' 'pack truncated header bytes'
 check_marker tests/fixtures/pack_unsupported_version.hex '^53484f4749455341ffff$' 'pack unsupported version bytes'

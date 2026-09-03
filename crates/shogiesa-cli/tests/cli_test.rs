@@ -164,50 +164,12 @@ fn report_shows_stats() {
 
 #[test]
 fn conflict_report_excludes_unknown_draw_and_mate_and_counts_cp_sign_conflicts() {
-    let mut black_win_ok = position("middlegame", serde_json::json!([obs("7g7f", 300, 4)]));
-    black_win_ok["game_result"] = serde_json::json!({
-        "outcome": "black_wins", "result_source": "test"
-    });
-    let mut black_win_conflict = position("middlegame", serde_json::json!([obs("7g7f", -300, 4)]));
-    black_win_conflict["game_result"] = serde_json::json!({
-        "outcome": "black_wins", "result_source": "test"
-    });
-    let mut white_win_ok = position("middlegame", serde_json::json!([obs("7g7f", -300, 4)]));
-    white_win_ok["game_result"] = serde_json::json!({
-        "outcome": "white_wins", "result_source": "test"
-    });
-    let mut draw = position("middlegame", serde_json::json!([obs("7g7f", 300, 4)]));
-    draw["game_result"] = serde_json::json!({ "outcome": "draw", "result_source": "test" });
-    let mut mate = position(
-        "middlegame",
-        serde_json::json!([serde_json::json!({
-            "engine": "7g7f",
-            "engine_version": null,
-            "depth": 4,
-            "score": {"kind": "mate", "moves": 1},
-            "bestmove": "7g7f",
-            "nodes": null,
-            "time_ms": null,
-            "pv": null
-        })]),
-    );
-    mate["game_result"] = serde_json::json!({
-        "outcome": "black_wins", "result_source": "test"
-    });
-    black_win_ok["observations"][0]["engine"] = serde_json::json!("engine-a");
-    black_win_ok["observations"][0]["weight_sha256"] = serde_json::json!("weight-a");
-    black_win_conflict["observations"][0]["engine"] = serde_json::json!("engine-a");
-    black_win_conflict["observations"][0]["weight_sha256"] = serde_json::json!("weight-a");
-    white_win_ok["observations"][0]["engine"] = serde_json::json!("engine-b");
-    white_win_ok["observations"][0]["weight_sha256"] = serde_json::json!("weight-b");
-    draw["observations"][0]["engine"] = serde_json::json!("engine-a");
-    draw["observations"][0]["weight_sha256"] = serde_json::json!("weight-a");
-    mate["observations"][0]["engine"] = serde_json::json!("engine-b");
-    mate["observations"][0]["weight_sha256"] = serde_json::json!("weight-b");
-    let input = make_labeled_jsonl(&[black_win_ok, black_win_conflict, white_win_ok, draw, mate]);
-
     let output = shogiesa()
-        .args(["conflict-report", "--input", input.path().to_str().unwrap()])
+        .args([
+            "conflict-report",
+            "--input",
+            fixture("conflict_report_input.jsonl").to_str().unwrap(),
+        ])
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -224,25 +186,11 @@ fn conflict_report_excludes_unknown_draw_and_mate_and_counts_cp_sign_conflicts()
         .collect::<Vec<_>>()
         .join("\n")
         + "\n";
-    assert_eq!(normalized, CONFLICT_REPORT_GOLDEN_STDOUT);
+    assert_eq!(
+        normalized,
+        std::fs::read_to_string(fixture("conflict_report.golden")).unwrap()
+    );
 }
-
-const CONFLICT_REPORT_GOLDEN_STDOUT: &str = r#"=== shogiesa conflict-report ===
-input             : <fixture>
-records read      : 5
-parse errors      : 0
-no game_result    : 0
-non-decisive result: 1
-decisive records  : 3
-evaluated pairs   : 3
-conflicts         : 1  (33.3%)
-excluded no CP/mate: 1
-excluded deadband : 0  (|cp| <= 0)
-
-by engine / weight:
-  engine-a / weight=weight-a              evaluated=     2 conflicts=     1 (50.0%)
-  engine-b / weight=weight-b              evaluated=     1 conflicts=     0 (0.0%)
-"#;
 
 #[test]
 fn conflict_report_includes_mainline_and_variation_records_in_same_fixture_matrix() {

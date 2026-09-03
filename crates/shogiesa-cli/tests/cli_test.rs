@@ -7883,45 +7883,32 @@ fn ply_row_contains(b: u32, bucket_size: u32, count: usize, flag: &str) -> Strin
 
 #[test]
 fn distribution_shows_basic_sections() {
-    let pos = NamedTempFile::new().unwrap();
-    shogiesa()
+    let output = shogiesa()
         .args([
-            "extract",
+            "distribution",
             "--input",
-            fixture("sample.csa").to_str().unwrap(),
-            "--out",
-            pos.path().to_str().unwrap(),
+            fixture("block_report_input.jsonl").to_str().unwrap(),
         ])
-        .assert()
-        .success();
-
-    shogiesa()
-        .args(["distribution", "--input", pos.path().to_str().unwrap()])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("=== shogiesa distribution ==="))
-        .stdout(predicate::str::contains(
-            "phase x side x eval-bucket coverage",
-        ))
-        .stdout(predicate::str::contains("ply distribution"))
-        .stdout(predicate::str::contains("source-root distribution"))
-        .stdout(predicate::str::contains("distinct roots"))
-        // Sentinel cells (mate/unlabeled x phase/side) are a separate code path from the cp grid
-        // -- these positions are unlabeled (extract only, no `label` step), so every sentinel row
-        // for phases/sides that don't occur in this 5-ply game must still print, flagged MISSING.
-        .stdout(predicate::str::contains(coverage_row_contains(
-            "opening:black:mate",
-            0,
-            "MISSING",
-        )))
-        .stdout(predicate::str::contains(coverage_row_contains(
-            "middlegame:black:unlabeled",
-            0,
-            "MISSING",
-        )))
-        .stdout(predicate::str::contains(
-            "(sentinel cells (mate/unlabeled x phase/side): 12 cells, 10 empty)",
-        ));
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let normalized = stdout
+        .lines()
+        .map(|line| {
+            if line.starts_with("input             : ") {
+                "input             : <fixture>"
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    assert_eq!(
+        normalized,
+        std::fs::read_to_string(fixture("distribution.golden")).unwrap()
+    );
 }
 
 #[test]

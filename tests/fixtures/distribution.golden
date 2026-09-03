@@ -1,0 +1,53 @@
+=== shogiesa distribution ===
+positions   : 4
+broken lines: 0
+
+phase x side x eval-bucket coverage:
+  opening:black:unlabeled              0  MISSING
+  opening:black:mate                   0  MISSING
+  opening:black:-200..-1               0  MISSING
+  opening:black:+0..+199               0  MISSING
+  opening:black:+200..+399             0  MISSING
+  opening:white:unlabeled              0  MISSING
+  opening:white:mate                   0  MISSING
+  opening:white:-200..-1               0  MISSING
+  opening:white:+0..+199               0  MISSING
+  opening:white:+200..+399             0  MISSING
+  middlegame:black:unlabeled           0  MISSING
+  middlegame:black:mate                0  MISSING
+  middlegame:black:-200..-1            0  MISSING
+  middlegame:black:+0..+199            1  OK
+  middlegame:black:+200..+399          1  OK
+  middlegame:white:unlabeled           0  MISSING
+  middlegame:white:mate                0  MISSING
+  middlegame:white:-200..-1            0  MISSING
+  middlegame:white:+0..+199            0  MISSING
+  middlegame:white:+200..+399          0  MISSING
+  endgame:black:unlabeled              0  MISSING
+  endgame:black:mate                   0  MISSING
+  endgame:black:-200..-1               2  OK
+  endgame:black:+0..+199               0  MISSING
+  endgame:black:+200..+399             0  MISSING
+  endgame:white:unlabeled              0  MISSING
+  endgame:white:mate                   0  MISSING
+  endgame:white:-200..-1               0  MISSING
+  endgame:white:+0..+199               0  MISSING
+  endgame:white:+200..+399             0  MISSING
+  (cp-grid: 18 cells, 15 missing)
+  (sentinel cells (mate/unlabeled x phase/side): 12 cells, 12 empty)
+
+ply distribution (bucket size 20):
+     0..19       4  OK
+  (1 buckets enumerated, 0 missing)
+
+source-root distribution:
+  distinct roots : 2
+  top root       : 50.0%  OK
+
+wdl distribution (mover-relative):
+  success          1  25.0%
+  unknown          3  75.0%
+
+game_result source distribution:
+  no_game_result                 3  75.0%
+  test                           1  25.0%

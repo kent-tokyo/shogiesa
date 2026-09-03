@@ -7913,38 +7913,21 @@ fn distribution_shows_basic_sections() {
 
 #[test]
 fn distribution_flags_missing_eval_bucket_as_missing() {
-    // -250cp -> bucket -400 ("-400..-201"); 250cp -> bucket 200 ("+200..+399"). The span between
-    // them (-400, -200, 0, 200) means -200 and 0 are enumerated but never observed for
-    // middlegame:black -- exactly the gap this command exists to surface.
-    let input = make_labeled_jsonl(&[
-        position("middlegame", serde_json::json!([obs("7g7f", -250, 4)])),
-        position("middlegame", serde_json::json!([obs("3c3d", 250, 4)])),
-    ]);
-
-    shogiesa()
-        .args(["distribution", "--input", input.path().to_str().unwrap()])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains(coverage_row_contains(
-            "middlegame:black:-400..-201",
-            1,
-            "OK",
-        )))
-        .stdout(predicate::str::contains(coverage_row_contains(
-            "middlegame:black:-200..-1",
-            0,
-            "MISSING",
-        )))
-        .stdout(predicate::str::contains(coverage_row_contains(
-            "middlegame:black:+0..+199",
-            0,
-            "MISSING",
-        )))
-        .stdout(predicate::str::contains(coverage_row_contains(
-            "middlegame:black:+200..+399",
-            1,
-            "OK",
-        )));
+    let output = shogiesa()
+        .args([
+            "distribution",
+            "--input",
+            fixture("distribution_missing_bucket_input.jsonl")
+                .to_str()
+                .unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        std::fs::read_to_string(fixture("distribution_missing_bucket.golden")).unwrap()
+    );
 }
 
 #[test]

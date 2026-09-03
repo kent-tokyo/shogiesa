@@ -1016,6 +1016,10 @@ result-source tallies). Diagnostic only — `distribution` itself has no `--out`
 shape as `report`; `block-report` and the calibration diagnostics have their own manifest options
 where documented above.
 
+The missing-bucket regression uses `tests/fixtures/distribution_missing_bucket_input.jsonl` and
+the full expected output in `distribution_missing_bucket.golden`; observed buckets must remain
+`OK` while gaps inside the observed range remain explicitly `MISSING`.
+
 The fixture-backed regression uses `tests/fixtures/block_report_input.jsonl` and compares the
 complete output with `tests/fixtures/distribution.golden`, keeping the bucket, root, WDL, and
 result-source diagnostics inspectable and reproducible.

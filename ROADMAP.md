@@ -161,6 +161,8 @@ NNUE の学習結果を改善すること、処理速度・メモリ上限、Sek
   として外部 fixture 化し、full stdout の診断値を固定する。
 - `[x]` distribution の missing eval bucket 異常系を `distribution_missing_bucket.golden` に固定し、
   観測済み bucket の `OK` と未観測 gap の `MISSING` を full stdout で回帰する。
+- `[x]` distribution の malformed JSONL 混在入力を fixture 化し、有効レコードを保持しながら
+  `broken lines` を報告する full stdout golden を追加する。
 - `[x]` source root をまたいで混ざらず、NNUE の実 feature index ではない代替指標だと明記する。
   block boundary のテストと README の proxy 明記で固定する。
 

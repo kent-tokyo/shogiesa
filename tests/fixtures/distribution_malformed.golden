@@ -1,0 +1,39 @@
+=== shogiesa distribution ===
+positions   : 1
+broken lines: 1
+
+phase x side x eval-bucket coverage:
+  opening:black:unlabeled              0  MISSING
+  opening:black:mate                   0  MISSING
+  opening:black:+0..+199               0  MISSING
+  opening:white:unlabeled              0  MISSING
+  opening:white:mate                   0  MISSING
+  opening:white:+0..+199               0  MISSING
+  middlegame:black:unlabeled           0  MISSING
+  middlegame:black:mate                0  MISSING
+  middlegame:black:+0..+199            1  OK
+  middlegame:white:unlabeled           0  MISSING
+  middlegame:white:mate                0  MISSING
+  middlegame:white:+0..+199            0  MISSING
+  endgame:black:unlabeled              0  MISSING
+  endgame:black:mate                   0  MISSING
+  endgame:black:+0..+199               0  MISSING
+  endgame:white:unlabeled              0  MISSING
+  endgame:white:mate                   0  MISSING
+  endgame:white:+0..+199               0  MISSING
+  (cp-grid: 6 cells, 5 missing)
+  (sentinel cells (mate/unlabeled x phase/side): 12 cells, 12 empty)
+
+ply distribution (bucket size 20):
+     0..19       1  OK
+  (1 buckets enumerated, 0 missing)
+
+source-root distribution:
+  distinct roots : 1
+  top root       : 100.0%  WARN: too concentrated
+
+wdl distribution (mover-relative):
+  unknown          1  100.0%
+
+game_result source distribution:
+  no_game_result                 1  100.0%

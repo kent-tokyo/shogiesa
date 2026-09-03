@@ -1020,6 +1020,9 @@ The missing-bucket regression uses `tests/fixtures/distribution_missing_bucket_i
 the full expected output in `distribution_missing_bucket.golden`; observed buckets must remain
 `OK` while gaps inside the observed range remain explicitly `MISSING`.
 
+Malformed JSONL is also fixture-backed: `distribution_malformed_input.jsonl` keeps the valid record,
+counts the broken line, and matches `distribution_malformed.golden` on stdout.
+
 The fixture-backed regression uses `tests/fixtures/block_report_input.jsonl` and compares the
 complete output with `tests/fixtures/distribution.golden`, keeping the bucket, root, WDL, and
 result-source diagnostics inspectable and reproducible.

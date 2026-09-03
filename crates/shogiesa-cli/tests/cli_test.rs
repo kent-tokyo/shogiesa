@@ -7931,6 +7931,25 @@ fn distribution_flags_missing_eval_bucket_as_missing() {
 }
 
 #[test]
+fn distribution_malformed_fixture_keeps_valid_records_and_goldenizes_warning_count() {
+    let output = shogiesa()
+        .args([
+            "distribution",
+            "--input",
+            fixture("distribution_malformed_input.jsonl")
+                .to_str()
+                .unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        std::fs::read_to_string(fixture("distribution_malformed.golden")).unwrap()
+    );
+}
+
+#[test]
 fn distribution_ply_histogram_flags_missing_bucket() {
     // Plies 1 and 5 fall in bucket 0..19; ply 45 falls in bucket 40..59. Bucket 20..39 is
     // enumerated (it's within the observed span) but has zero records.

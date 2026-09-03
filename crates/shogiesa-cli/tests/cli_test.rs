@@ -194,6 +194,16 @@ fn conflict_report_excludes_unknown_draw_and_mate_and_counts_cp_sign_conflicts()
     mate["game_result"] = serde_json::json!({
         "outcome": "black_wins", "result_source": "test"
     });
+    black_win_ok["observations"][0]["engine"] = serde_json::json!("engine-a");
+    black_win_ok["observations"][0]["weight_sha256"] = serde_json::json!("weight-a");
+    black_win_conflict["observations"][0]["engine"] = serde_json::json!("engine-a");
+    black_win_conflict["observations"][0]["weight_sha256"] = serde_json::json!("weight-a");
+    white_win_ok["observations"][0]["engine"] = serde_json::json!("engine-b");
+    white_win_ok["observations"][0]["weight_sha256"] = serde_json::json!("weight-b");
+    draw["observations"][0]["engine"] = serde_json::json!("engine-a");
+    draw["observations"][0]["weight_sha256"] = serde_json::json!("weight-a");
+    mate["observations"][0]["engine"] = serde_json::json!("engine-b");
+    mate["observations"][0]["weight_sha256"] = serde_json::json!("weight-b");
     let input = make_labeled_jsonl(&[black_win_ok, black_win_conflict, white_win_ok, draw, mate]);
 
     shogiesa()
@@ -204,7 +214,15 @@ fn conflict_report_excludes_unknown_draw_and_mate_and_counts_cp_sign_conflicts()
         .stdout(predicate::str::contains("evaluated pairs   : 3"))
         .stdout(predicate::str::contains("conflicts         : 1  (33.3%)"))
         .stdout(predicate::str::contains("non-decisive result: 1"))
-        .stdout(predicate::str::contains("excluded no CP/mate: 1"));
+        .stdout(predicate::str::contains("excluded no CP/mate: 1"))
+        .stdout(predicate::str::contains("engine-a / weight=weight-a"))
+        .stdout(predicate::str::contains(
+            "evaluated=     2 conflicts=     1 (50.0%)",
+        ))
+        .stdout(predicate::str::contains("engine-b / weight=weight-b"))
+        .stdout(predicate::str::contains(
+            "evaluated=     1 conflicts=     0 (0.0%)",
+        ));
 }
 
 #[test]

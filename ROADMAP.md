@@ -141,7 +141,9 @@ NNUE の学習結果を改善すること、処理速度・メモリ上限、Sek
 ### 1.2 CP と WDL の矛盾診断
 
 - `[x]` teacher CP と game outcome/WDL target の符号相違を集計する `conflict-report` を実装する。
-- `[MEASURE]` 終端、mainline/variation、engine/weight 別の conflict rate を比較する。
+- `[x]` 終端、mainline/variation、engine/weight 別の conflict rate を比較する。
+  小規模 fixture で decisive/non-decisive、mate 除外と engine/weight 別の evaluated/conflict
+  件数・率を固定する。
 - `[x]` unknown outcome を conflict と誤分類せず、対象母数と除外理由を表示する。
   `conflict_report_excludes_unknown_draw_and_mate_and_counts_cp_sign_conflicts` で固定する。
 

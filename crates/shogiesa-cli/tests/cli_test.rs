@@ -206,24 +206,43 @@ fn conflict_report_excludes_unknown_draw_and_mate_and_counts_cp_sign_conflicts()
     mate["observations"][0]["weight_sha256"] = serde_json::json!("weight-b");
     let input = make_labeled_jsonl(&[black_win_ok, black_win_conflict, white_win_ok, draw, mate]);
 
-    shogiesa()
+    let output = shogiesa()
         .args(["conflict-report", "--input", input.path().to_str().unwrap()])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("decisive records  : 3"))
-        .stdout(predicate::str::contains("evaluated pairs   : 3"))
-        .stdout(predicate::str::contains("conflicts         : 1  (33.3%)"))
-        .stdout(predicate::str::contains("non-decisive result: 1"))
-        .stdout(predicate::str::contains("excluded no CP/mate: 1"))
-        .stdout(predicate::str::contains("engine-a / weight=weight-a"))
-        .stdout(predicate::str::contains(
-            "evaluated=     2 conflicts=     1 (50.0%)",
-        ))
-        .stdout(predicate::str::contains("engine-b / weight=weight-b"))
-        .stdout(predicate::str::contains(
-            "evaluated=     1 conflicts=     0 (0.0%)",
-        ));
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let normalized = stdout
+        .lines()
+        .map(|line| {
+            if line.starts_with("input             : ") {
+                "input             : <fixture>"
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    assert_eq!(normalized, CONFLICT_REPORT_GOLDEN_STDOUT);
 }
+
+const CONFLICT_REPORT_GOLDEN_STDOUT: &str = r#"=== shogiesa conflict-report ===
+input             : <fixture>
+records read      : 5
+parse errors      : 0
+no game_result    : 0
+non-decisive result: 1
+decisive records  : 3
+evaluated pairs   : 3
+conflicts         : 1  (33.3%)
+excluded no CP/mate: 1
+excluded deadband : 0  (|cp| <= 0)
+
+by engine / weight:
+  engine-a / weight=weight-a              evaluated=     2 conflicts=     1 (50.0%)
+  engine-b / weight=weight-b              evaluated=     1 conflicts=     0 (0.0%)
+"#;
 
 #[test]
 fn conflict_report_includes_mainline_and_variation_records_in_same_fixture_matrix() {

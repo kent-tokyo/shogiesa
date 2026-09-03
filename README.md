@@ -934,7 +934,8 @@ teacher or game result is wrong.
 
 Mainline and variation records are evaluated with the same rule; their `source.root_id`,
 `variation_id`, and branch provenance remain in the input records and are not silently merged into
-an unrelated game. Use the output counts together with source provenance when comparing subsets.
+an unrelated game. The fixture-backed CLI test also golden-checks the complete summary, including
+engine/weight groups; use these output counts together with source provenance when comparing subsets.
 
 ### `block-report` — contiguous block diagnostics
 

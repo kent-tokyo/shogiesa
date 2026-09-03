@@ -114,6 +114,7 @@ check_marker tests/fixtures/recipe_plan.json '"id": "unpack-candidate"' 'recipe 
 check_marker tests/fixtures/recipe_plan.golden '^executed           : no$' 'recipe plan dry-run golden'
 check_marker tests/fixtures/recipe_forward_dependency.json '"id": "consume"' 'recipe forward dependency rejection input'
 check_marker tests/fixtures/recipe_output_escape.json '"../outside.shgpk"' 'recipe output escape rejection input'
+check_marker crates/shogiesa-cli/tests/cli_test.rs 'fn recipe_run_verify_and_reuse_stage_outputs' 'recipe run verify reuse regression'
 check_marker tests/fixtures/pack_bad_magic.hex '^00000000000000000b00$' 'pack bad magic bytes'
 check_marker tests/fixtures/pack_truncated_header.hex '^53484f4749455341$' 'pack truncated header bytes'
 check_marker tests/fixtures/pack_unsupported_version.hex '^53484f4749455341ffff$' 'pack unsupported version bytes'

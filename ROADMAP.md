@@ -225,6 +225,13 @@ NNUE の学習結果を改善すること、処理速度・メモリ上限、Sek
 `recipe run` / `recipe verify` である。実行・resumeはplannerと分離し、途中出力を成功artifactとして
 扱わない。
 
+- `[x]` `recipe run` が typed command のみを直接起動し、stageごとの staging output と atomic
+  run manifest を使う。
+- `[x]` recipe hash、stage identity、output hash が一致する成功済みstageだけを再利用し、
+  `recipe verify` が実行なしで全stageの成果物を検査する。
+- `[x]` run/verify の正常、reuse、改変検知を local fixture で確認し、0.9.1 のバージョンを
+  固定したまま README/CHANGELOG に運用境界を記録する。
+
 ## Phase 3 — 大規模実行と配布
 
 ### 3.1 ストリーミング境界

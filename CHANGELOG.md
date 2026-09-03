@@ -16,6 +16,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 - `recipe plan` validates a typed recipe-v1 stage graph without executing it, rejects unsafe or
   ambiguous topology, hashes external inputs, derives portable stage identities, and emits a
   versioned ready/waiting/blocked plan artifact.
+- `recipe run` and `recipe verify` execute typed stages without a shell, commit declared outputs
+  through per-stage staging, atomically replace the run manifest, reuse matching successful stages,
+  and verify recorded output hashes for safe local resume.
 
 ## [0.9.1] — 2026-09-03
 

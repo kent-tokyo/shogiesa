@@ -3,6 +3,7 @@ use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -20,6 +21,10 @@ pub(crate) struct RecipeArgs {
 enum RecipeAction {
     /// Validate a recipe and print its dependency/identity plan; executes no stages
     Plan(RecipePlanArgs),
+    /// Execute stages into an atomic run bundle, reusing verified stage outputs
+    Run(RecipeRunArgs),
+    /// Verify a completed run bundle and its output hashes
+    Verify(RecipeVerifyArgs),
 }
 
 #[derive(clap::Args)]
@@ -32,9 +37,34 @@ struct RecipePlanArgs {
     json_out: Option<PathBuf>,
 }
 
+#[derive(clap::Args)]
+struct RecipeRunArgs {
+    /// Typed recipe JSON file
+    #[arg(long)]
+    recipe: PathBuf,
+    /// Directory containing the durable run manifest and temporary staging files
+    #[arg(long)]
+    run_dir: Option<PathBuf>,
+    /// Write the complete run manifest as JSON to this path
+    #[arg(long)]
+    json_out: Option<PathBuf>,
+}
+
+#[derive(clap::Args)]
+struct RecipeVerifyArgs {
+    /// Typed recipe JSON file
+    #[arg(long)]
+    recipe: PathBuf,
+    /// Directory containing the durable run manifest
+    #[arg(long)]
+    run_dir: Option<PathBuf>,
+}
+
 pub(crate) fn run(args: RecipeArgs) -> Result<()> {
     match args.action {
         RecipeAction::Plan(args) => plan(args),
+        RecipeAction::Run(args) => run_recipe(args),
+        RecipeAction::Verify(args) => verify_recipe(args),
     }
 }
 
@@ -100,7 +130,7 @@ impl RecipeCommand {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct RecipeSpec {
     recipe_version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -108,7 +138,7 @@ struct RecipeSpec {
     stages: Vec<RecipeStage>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct RecipeStage {
     id: String,
     command: RecipeCommand,
@@ -165,6 +195,31 @@ struct PlanSummary {
     blocked_missing_input: usize,
     blocked_dependency: usize,
 }
+
+#[derive(Debug, Deserialize, Serialize)]
+struct RunManifest {
+    run_version: u32,
+    recipe_version: u32,
+    recipe_path: String,
+    recipe_hash: String,
+    stages: Vec<RunStage>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct RunStage {
+    id: String,
+    stage_identity: String,
+    status: String,
+    outputs: Vec<RunOutput>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct RunOutput {
+    path: String,
+    hash: String,
+}
+
+const RUN_VERSION: u32 = 1;
 
 fn hash_file(path: &Path) -> Result<String> {
     let mut reader = BufReader::new(
@@ -459,5 +514,246 @@ fn plan(args: RecipePlanArgs) -> Result<()> {
     .unwrap();
     writeln!(out, "executed           : no").unwrap();
     print!("{out}");
+    Ok(())
+}
+
+fn run_dir(recipe_path: &Path, requested: Option<PathBuf>) -> PathBuf {
+    requested.unwrap_or_else(|| {
+        recipe_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(".shogiesa-run")
+    })
+}
+
+fn atomic_write(path: &Path, contents: &str) -> Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent).with_context(|| format!("cannot create {parent:?}"))?;
+    let temp = parent.join(format!(
+        ".{}.tmp",
+        path.file_name().unwrap_or_default().to_string_lossy()
+    ));
+    fs::write(&temp, contents).with_context(|| format!("cannot write {temp:?}"))?;
+    fs::rename(&temp, path).with_context(|| format!("cannot atomically replace {path:?}"))?;
+    Ok(())
+}
+
+fn load_recipe(path: &Path) -> Result<(RecipeSpec, String)> {
+    let bytes = fs::read(path).with_context(|| format!("cannot read recipe {path:?}"))?;
+    let spec =
+        serde_json::from_slice(&bytes).with_context(|| format!("cannot parse recipe {path:?}"))?;
+    Ok((spec, blake3::hash(&bytes).to_hex().to_string()))
+}
+
+fn stage_reusable(previous: Option<&RunStage>, planned: &PlannedStage) -> Result<bool> {
+    let Some(previous) = previous else {
+        return Ok(false);
+    };
+    if previous.stage_identity != planned.stage_identity
+        || !matches!(previous.status.as_str(), "succeeded" | "reused")
+    {
+        return Ok(false);
+    }
+    if previous.outputs.len() != planned.outputs.len() {
+        return Ok(false);
+    }
+    for output in &previous.outputs {
+        let Some(expected) = planned.outputs.iter().find(|path| *path == &output.path) else {
+            return Ok(false);
+        };
+        if hash_file(Path::new(expected))? != output.hash {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn rewritten_args(stage: &RecipeStage, recipe_dir: &Path, staging: &Path) -> Vec<String> {
+    let outputs: BTreeMap<String, String> = stage
+        .outputs
+        .iter()
+        .map(|raw| {
+            let final_path = normalized_recipe_path(recipe_dir, raw);
+            let temp_path = staging.join(final_path.file_name().unwrap_or_default());
+            (raw.clone(), temp_path.display().to_string())
+        })
+        .chain(stage.outputs.iter().map(|raw| {
+            let final_path = normalized_recipe_path(recipe_dir, raw);
+            let temp_path = staging.join(final_path.file_name().unwrap_or_default());
+            (
+                final_path.display().to_string(),
+                temp_path.display().to_string(),
+            )
+        }))
+        .collect();
+    let inputs: BTreeMap<String, String> = stage
+        .inputs
+        .iter()
+        .map(|raw| {
+            (
+                raw.clone(),
+                normalized_recipe_path(recipe_dir, raw)
+                    .display()
+                    .to_string(),
+            )
+        })
+        .chain(stage.inputs.iter().map(|raw| {
+            let resolved = normalized_recipe_path(recipe_dir, raw);
+            (
+                resolved.display().to_string(),
+                resolved.display().to_string(),
+            )
+        }))
+        .collect();
+    stage
+        .args
+        .iter()
+        .map(|arg| {
+            outputs
+                .get(arg)
+                .or_else(|| inputs.get(arg))
+                .cloned()
+                .unwrap_or_else(|| arg.clone())
+        })
+        .collect()
+}
+
+fn run_recipe(args: RecipeRunArgs) -> Result<()> {
+    let (spec, recipe_hash) = load_recipe(&args.recipe)?;
+    let plan = build_plan(&args.recipe, spec.clone(), recipe_hash.clone())?;
+    let recipe_dir = args.recipe.parent().unwrap_or_else(|| Path::new("."));
+    let bundle = run_dir(&args.recipe, args.run_dir);
+    fs::create_dir_all(&bundle)
+        .with_context(|| format!("cannot create run directory {bundle:?}"))?;
+    let previous_path = bundle.join("run.json");
+    let previous = fs::read(&previous_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<RunManifest>(&bytes).ok())
+        .filter(|manifest| manifest.recipe_hash == recipe_hash);
+    let executable = std::env::current_exe().context("cannot locate shogiesa executable")?;
+    let mut stages = Vec::new();
+    for (stage, planned) in spec.stages.iter().zip(&plan.stages) {
+        let old = previous
+            .as_ref()
+            .and_then(|manifest| manifest.stages.iter().find(|item| item.id == stage.id));
+        if stage_reusable(old, planned)? {
+            stages.push(RunStage {
+                id: stage.id.clone(),
+                stage_identity: planned.stage_identity.clone(),
+                status: "reused".to_string(),
+                outputs: old.unwrap().outputs.clone(),
+            });
+            continue;
+        }
+        if planned.status.starts_with("blocked") {
+            bail!("stage {:?} is {}", stage.id, planned.status);
+        }
+        let staging = bundle.join("staging").join(&stage.id);
+        fs::create_dir_all(&staging).with_context(|| format!("cannot create {staging:?}"))?;
+        let output_paths: Vec<PathBuf> = stage
+            .outputs
+            .iter()
+            .map(|raw| normalized_recipe_path(recipe_dir, raw))
+            .collect();
+        for output in &output_paths {
+            if let Some(parent) = output.parent() {
+                fs::create_dir_all(parent).with_context(|| format!("cannot create {parent:?}"))?;
+            }
+        }
+        let status = Command::new(&executable)
+            .arg(stage.command.as_str())
+            .args(rewritten_args(stage, recipe_dir, &staging))
+            .status()
+            .with_context(|| format!("cannot execute stage {:?}", stage.id))?;
+        if !status.success() {
+            bail!("stage {:?} failed with {status}", stage.id);
+        }
+        let mut outputs = Vec::new();
+        for output in output_paths {
+            let temp = staging.join(output.file_name().unwrap_or_default());
+            if !temp.is_file() {
+                bail!(
+                    "stage {:?} did not produce declared output {:?}",
+                    stage.id,
+                    output
+                );
+            }
+            fs::rename(&temp, &output)
+                .with_context(|| format!("cannot commit stage output {output:?}"))?;
+            outputs.push(RunOutput {
+                path: output.display().to_string(),
+                hash: hash_file(&output)?,
+            });
+        }
+        stages.push(RunStage {
+            id: stage.id.clone(),
+            stage_identity: planned.stage_identity.clone(),
+            status: "succeeded".to_string(),
+            outputs,
+        });
+    }
+    let manifest = RunManifest {
+        run_version: RUN_VERSION,
+        recipe_version: spec.recipe_version,
+        recipe_path: args.recipe.display().to_string(),
+        recipe_hash,
+        stages,
+    };
+    let json = serde_json::to_string_pretty(&manifest)? + "\n";
+    atomic_write(&previous_path, &json)?;
+    if let Some(path) = args.json_out {
+        atomic_write(&path, &json)?;
+    }
+    println!("recipe run");
+    println!("stages             : {}", manifest.stages.len());
+    for stage in &manifest.stages {
+        println!("  {} — {}", stage.id, stage.status);
+    }
+    println!("manifest           : {}", previous_path.display());
+    Ok(())
+}
+
+fn verify_recipe(args: RecipeVerifyArgs) -> Result<()> {
+    let (spec, recipe_hash) = load_recipe(&args.recipe)?;
+    let plan = build_plan(&args.recipe, spec, recipe_hash.clone())?;
+    let manifest_path = run_dir(&args.recipe, args.run_dir).join("run.json");
+    let bytes = fs::read(&manifest_path)
+        .with_context(|| format!("cannot read run manifest {manifest_path:?}"))?;
+    let manifest: RunManifest = serde_json::from_slice(&bytes)
+        .with_context(|| format!("cannot parse run manifest {manifest_path:?}"))?;
+    if manifest.run_version != RUN_VERSION || manifest.recipe_hash != recipe_hash {
+        bail!("run manifest does not match recipe or run version");
+    }
+    if manifest.stages.len() != plan.stages.len() {
+        bail!("run manifest stage count does not match recipe");
+    }
+    for planned in &plan.stages {
+        let stage = manifest
+            .stages
+            .iter()
+            .find(|stage| stage.id == planned.id)
+            .with_context(|| format!("run manifest is missing stage {:?}", planned.id))?;
+        if stage.stage_identity != planned.stage_identity {
+            bail!(
+                "stage {:?} identity does not match recipe inputs",
+                planned.id
+            );
+        }
+        if stage.status != "succeeded" && stage.status != "reused" {
+            bail!("stage {:?} is not complete", planned.id);
+        }
+        for output in &stage.outputs {
+            if hash_file(Path::new(&output.path))? != output.hash {
+                bail!(
+                    "stage {:?} output hash mismatch: {:?}",
+                    planned.id,
+                    output.path
+                );
+            }
+        }
+    }
+    println!("recipe verify");
+    println!("stages             : {}", manifest.stages.len());
+    println!("status             : verified");
     Ok(())
 }

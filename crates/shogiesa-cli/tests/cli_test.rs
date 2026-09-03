@@ -323,6 +323,100 @@ fn recipe_plan_rejects_output_outside_recipe_directory() {
 }
 
 #[test]
+fn recipe_run_verify_and_reuse_stage_outputs() {
+    let dir = TempDir::new().unwrap();
+    let baseline = fixture("dataset_diff_baseline.jsonl");
+    let candidate = fixture("dataset_diff_candidate.jsonl");
+    let recipe = dir.path().join("recipe.json");
+    let spec = serde_json::json!({
+        "recipe_version": 1,
+        "stages": [
+            {
+                "id": "compare",
+                "command": "dataset-diff",
+                "args": ["--baseline", baseline, "--candidate", candidate, "--json-out", "diff.json"],
+                "inputs": [baseline, candidate],
+                "outputs": ["diff.json"]
+            },
+            {
+                "id": "pack",
+                "command": "pack",
+                "args": ["--input", candidate, "--out", "candidate.shgpk"],
+                "inputs": [candidate],
+                "outputs": ["candidate.shgpk"]
+            },
+            {
+                "id": "unpack",
+                "command": "unpack",
+                "args": ["--input", "candidate.shgpk", "--out", "roundtrip.jsonl"],
+                "inputs": ["candidate.shgpk"],
+                "outputs": ["roundtrip.jsonl"]
+            }
+        ]
+    });
+    std::fs::write(&recipe, serde_json::to_vec_pretty(&spec).unwrap()).unwrap();
+    let run_dir = dir.path().join("run");
+    let first = shogiesa()
+        .args([
+            "recipe",
+            "run",
+            "--recipe",
+            recipe.to_str().unwrap(),
+            "--run-dir",
+            run_dir.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert!(String::from_utf8(first).unwrap().contains("succeeded"));
+    shogiesa()
+        .args([
+            "recipe",
+            "verify",
+            "--recipe",
+            recipe.to_str().unwrap(),
+            "--run-dir",
+            run_dir.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("status             : verified"));
+    shogiesa()
+        .args([
+            "recipe",
+            "run",
+            "--recipe",
+            recipe.to_str().unwrap(),
+            "--run-dir",
+            run_dir.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("compare — reused"))
+        .stdout(predicate::str::contains("unpack — reused"));
+
+    let mut output = std::fs::OpenOptions::new()
+        .append(true)
+        .open(dir.path().join("roundtrip.jsonl"))
+        .unwrap();
+    writeln!(output, "tampered").unwrap();
+    shogiesa()
+        .args([
+            "recipe",
+            "verify",
+            "--recipe",
+            recipe.to_str().unwrap(),
+            "--run-dir",
+            run_dir.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("output hash mismatch"));
+}
+
+#[test]
 fn conflict_report_excludes_unknown_draw_and_mate_and_counts_cp_sign_conflicts() {
     let output = shogiesa()
         .args([

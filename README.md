@@ -939,7 +939,21 @@ The planner never executes a stage (`executed: false`). Human-readable stdout sh
 dependency-waiting, and blocked stages; `--json-out` retains the complete versioned plan. Relative
 paths are resolved from the recipe file's directory, while stage identities remain independent of
 where that directory is located. Arbitrary shell commands are not accepted: `command` must be one
-of the typed shogiesa command variants. Execution, atomic run bundles, and resume are a later gate.
+of the typed shogiesa command variants.
+
+### `recipe run` / `recipe verify` — atomic local recipe execution
+
+```bash
+shogiesa recipe run --recipe recipe.json --run-dir .shogiesa-run --json-out run.json
+shogiesa recipe verify --recipe recipe.json --run-dir .shogiesa-run
+```
+
+`run` invokes only the typed shogiesa command variants, never a shell. Declared outputs are written
+to a per-stage staging directory and committed only after the stage succeeds; `run.json` is replaced
+atomically and records each output hash and stage identity. A later run reuses a stage only when the
+recipe/input identity and every recorded output hash still match. `verify` checks those identities and
+hashes without executing commands. A failed or interrupted stage is not recorded as a successful
+artifact; remove stale staging files only after inspecting them.
 
 ### `conflict-report` — CP / game-outcome sign diagnostics
 

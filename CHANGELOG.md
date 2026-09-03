@@ -8,6 +8,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-09-03
+
+### Added
+- Pack boundary and corruption fixtures covering malformed input, bad magic/version/endian,
+  truncation, and error classification.
+- Fixture-backed golden outputs for `report`, `validate`, `conflict-report`, `block-report`,
+  `distribution`, and `calibrate`, including missing-bucket and malformed-input cases.
+
+### Changed
+- Updated the roadmap, release checklist, validation evidence, and public command documentation
+  to match the current JSONL/pack contracts and regression fixtures.
+- Kept external measurements, large-dataset performance, training effect, Elo, and native
+  interoperability claims explicitly unmeasured; this release does not imply those results.
+
+### Validation
+- Repository contract, formatting, and offline workspace checks were run locally.
+- Full fixture tests and all-target clippy remain environment-blocked when `float-cmp v0.10.0`
+  is unavailable from the offline dependency cache; this is recorded in the release evidence.
+
 ## [0.9.0] — 2026-07-26
 
 ### Added
@@ -234,7 +253,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 - CLI integration tests (`assert_cmd` / `predicates` / `tempfile`)
 - `LICENSE-MIT` and `LICENSE-APACHE`
 
-[Unreleased]: https://github.com/kent-tokyo/shogiesa/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/kent-tokyo/shogiesa/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/kent-tokyo/shogiesa/compare/v0.9.0...v0.9.1
+[0.9.0]: https://github.com/kent-tokyo/shogiesa/compare/v0.8.0...v0.9.0
 [0.4.0]: https://github.com/kent-tokyo/shogiesa/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/kent-tokyo/shogiesa/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/kent-tokyo/shogiesa/compare/v0.1.0...v0.2.0

@@ -17,8 +17,9 @@ GUI、対局大会基盤にはしない。
 manifest provenance、JSONL/pack 境界（corruption fixture を含む）、recipe・API・release evidence である。未チェックの
 項目は、3 OS の反復、1M/10M 規模の性能・資源測定、閾値校正、学習効果、対局効果、外部
 ツールの native interoperability など、実測結果が必要なものに限定している。
-`0.9.0` は GitHub `main` / `v0.9.0` tag / crates.io の公開状態を確認済みであり、次の候補
-作業でも Cargo version は変更しない。
+`0.9.1` を今回のリリース対象とする。Cargo version は `0.9.1` に固定し、外部測定を
+実施済みと扱わないまま、fixture・contract・ドキュメントの改善をリリース単位として記録する。
+GitHub `main`、`v0.9.1` tag、crates.io の公開結果はリリース実行後に検証ログへ追記する。
 
 ```text
 CSA / KIF / match kifu

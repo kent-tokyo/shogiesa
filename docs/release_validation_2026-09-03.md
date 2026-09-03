@@ -1,6 +1,6 @@
 # Release validation log — 2026-09-03
 
-This log records the local, version-preserving validation run after the `v0.9.0` publication.
+This log records the local validation run for the `v0.9.1` release candidate.
 It is evidence for this environment only and is not a claim of full release readiness.
 
 | check | result | evidence |
@@ -8,8 +8,14 @@ It is evidence for this environment only and is not a claim of full release read
 | repository contract check | PASS | all required docs, schema, fixtures, and checked BUILD items found |
 | `cargo fmt --all -- --check` | PASS | completed successfully |
 | `git diff --check` | PASS | completed successfully; macOS `xcrun_db` warnings were non-fatal |
+| workspace metadata/version | PASS | all publishable workspace crates resolve to `0.9.1` |
 | corruption fixture inventory | PASS | malformed JSONL, bad magic, and truncated header markers are present and checked |
 | fixture-backed local measurement smoke | BLOCKED | `cargo test --offline` could not start because `float-cmp v0.10.0` was not cached |
+| `cargo test --offline --workspace` | BLOCKED | dependency cache lacks `float-cmp v0.10.0`; no success claim is made |
+| `cargo clippy --offline --workspace --all-targets --all-features -- -D warnings` | BLOCKED | dependency cache lacks `float-cmp v0.10.0`; no success claim is made |
+
+The release commit, tag, push, and registry publication result are recorded below after those
+operations complete.
 
 The smoke script intentionally uses `--offline`: it must not turn a missing dependency or network
 failure into a successful measurement. Re-run

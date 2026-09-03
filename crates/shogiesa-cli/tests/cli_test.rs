@@ -229,6 +229,38 @@ fn conflict_report_includes_mainline_and_variation_records_in_same_fixture_matri
 }
 
 #[test]
+fn conflict_report_deadband_fixture_goldenizes_excluded_cp_count() {
+    let output = shogiesa()
+        .args([
+            "conflict-report",
+            "--input",
+            fixture("conflict_report_input.jsonl").to_str().unwrap(),
+            "--min-abs-cp",
+            "300",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let normalized = stdout
+        .lines()
+        .map(|line| {
+            if line.starts_with("input             : ") {
+                "input             : <fixture>"
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    assert_eq!(
+        normalized,
+        std::fs::read_to_string(fixture("conflict_report_deadband.golden")).unwrap()
+    );
+}
+
+#[test]
 fn block_report_keeps_roots_separate_and_reports_cp_summary() {
     for (block_size, golden_name) in [
         ("2", "block_report_size2.golden"),

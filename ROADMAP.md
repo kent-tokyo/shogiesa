@@ -147,6 +147,8 @@ NNUE の学習結果を改善すること、処理速度・メモリ上限、Sek
   で mainline / variation の両 provenance を同じ母数として確認する。
 - `[x]` conflict-report の fixture-backed CLI summary を `tests/fixtures/conflict_report.golden` の
   full stdout golden として固定し、集計見出し・除外理由・engine/weight 別の率のフォーマット回帰を追加する。
+- `[x]` conflict-report の `--min-abs-cp` deadband 境界を golden 化し、閾値内 CP が conflict
+  母数から除外される件数と率の出力を固定する。
 - `[x]` unknown outcome を conflict と誤分類せず、対象母数と除外理由を表示する。
   `conflict_report_excludes_unknown_draw_and_mate_and_counts_cp_sign_conflicts` で固定する。
 

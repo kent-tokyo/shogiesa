@@ -32,6 +32,7 @@ required_files=(
   tests/fixtures/malformed_mixed.jsonl
   tests/fixtures/conflict_report_input.jsonl
   tests/fixtures/conflict_report.golden
+  tests/fixtures/conflict_report_deadband.golden
   tests/fixtures/block_report_input.jsonl
   tests/fixtures/block_report_size1.golden
   tests/fixtures/block_report_size2.golden
@@ -86,6 +87,7 @@ check_marker tests/fixtures/pack_input.jsonl '"schema_version":11' 'pack input s
 check_marker tests/fixtures/malformed_mixed.jsonl '^not json$' 'mixed JSONL malformed suffix'
 check_marker tests/fixtures/conflict_report_input.jsonl '"variation_id":"var1"' 'conflict report variation input'
 check_marker tests/fixtures/conflict_report.golden '^conflicts         : 1  \(33\.3%\)$' 'conflict report golden summary'
+check_marker tests/fixtures/conflict_report_deadband.golden '^excluded deadband : 3  \(\|cp\| <= 300\)$' 'conflict report deadband golden'
 check_marker tests/fixtures/block_report_input.jsonl '"root_id":"game-b.kif"' 'block report variation root input'
 check_marker tests/fixtures/block_report_size2.golden '^blocks            : 2$' 'block report size 2 golden'
 check_marker tests/fixtures/block_report_size1.golden '^blocks            : 4$' 'block report size 1 golden'

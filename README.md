@@ -922,6 +922,25 @@ individual flags): `experiment_id`/`candidate_id`/`baseline_id`/`lineage_id`/`da
 (see [`docs/design/experiment_envelope.md`](docs/design/experiment_envelope.md)) — not yet wired
 into every manifest-producing command, and not yet vendored into any sibling repo.
 
+### `recipe plan` — typed pipeline planning without execution
+
+```bash
+shogiesa recipe plan --recipe recipe.json --json-out plan.json
+```
+
+Recipe schema version 1 describes an ordered list of typed shogiesa commands, argv tokens, explicit
+inputs, and explicit outputs. `plan` validates the version, command names, stage IDs, duplicate or
+self-overwriting outputs, NUL bytes, and topological order. It hashes existing external inputs,
+links generated inputs to their producer stage, and derives a deterministic identity for every
+stage from the raw recipe definition, input content hashes, and upstream stage identities.
+Outputs must remain inside the recipe directory; absolute and `..` output paths are rejected.
+
+The planner never executes a stage (`executed: false`). Human-readable stdout shows ready,
+dependency-waiting, and blocked stages; `--json-out` retains the complete versioned plan. Relative
+paths are resolved from the recipe file's directory, while stage identities remain independent of
+where that directory is located. Arbitrary shell commands are not accepted: `command` must be one
+of the typed shogiesa command variants. Execution, atomic run bundles, and resume are a later gate.
+
 ### `conflict-report` — CP / game-outcome sign diagnostics
 
 ```bash

@@ -1,0 +1,27 @@
+{
+  "recipe_version": 1,
+  "name": "dataset-diff-roundtrip",
+  "stages": [
+    {
+      "id": "compare",
+      "command": "dataset-diff",
+      "args": ["--baseline", "dataset_diff_baseline.jsonl", "--candidate", "dataset_diff_candidate.jsonl", "--json-out", "artifacts/diff.json"],
+      "inputs": ["dataset_diff_baseline.jsonl", "dataset_diff_candidate.jsonl"],
+      "outputs": ["artifacts/diff.json"]
+    },
+    {
+      "id": "pack-candidate",
+      "command": "pack",
+      "args": ["--input", "dataset_diff_candidate.jsonl", "--out", "artifacts/candidate.shgpk"],
+      "inputs": ["dataset_diff_candidate.jsonl"],
+      "outputs": ["artifacts/candidate.shgpk"]
+    },
+    {
+      "id": "unpack-candidate",
+      "command": "unpack",
+      "args": ["--input", "artifacts/candidate.shgpk", "--out", "artifacts/roundtrip.jsonl"],
+      "inputs": ["artifacts/candidate.shgpk"],
+      "outputs": ["artifacts/roundtrip.jsonl"]
+    }
+  ]
+}

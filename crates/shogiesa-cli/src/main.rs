@@ -27,6 +27,8 @@ use stratifykit_core::{
 };
 use tracing::info;
 
+mod recipe;
+
 #[derive(Parser)]
 #[command(
     name = "shogiesa",
@@ -86,6 +88,8 @@ enum Commands {
     Report(ReportArgs),
     /// Compare two datasets semantically, independent of JSONL input order
     DatasetDiff(DatasetDiffArgs),
+    /// Validate and plan a typed multi-stage dataset recipe without executing it
+    Recipe(recipe::RecipeArgs),
     /// Report phase/side/eval-bucket/ply/source-root distribution, explicitly flagging bucket
     /// combinations that have zero records within the observed range -- distinct from `select
     /// --strategy coverage` (which *ranks* existing records by thin-bucket membership for
@@ -1111,6 +1115,7 @@ fn main() -> Result<()> {
         Commands::BlockReport(args) => cmd_block_report(args),
         Commands::Report(args) => cmd_report(args),
         Commands::DatasetDiff(args) => cmd_dataset_diff(args),
+        Commands::Recipe(args) => recipe::run(args),
         Commands::Distribution(args) => cmd_distribution(args),
         Commands::Validate(args) => cmd_validate(args),
         Commands::Cache(args) => match args.action {

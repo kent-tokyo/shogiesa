@@ -13,6 +13,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
   summary and a versioned JSON artifact. It separates added/removed/changed records, field changes,
   and source-root/phase/eval-bucket/observation deltas, with explicit occurrence- or SFEN-based
   identity modes.
+- `recipe plan` validates a typed recipe-v1 stage graph without executing it, rejects unsafe or
+  ambiguous topology, hashes external inputs, derives portable stage identities, and emits a
+  versioned ready/waiting/blocked plan artifact.
 
 ## [0.9.1] — 2026-09-03
 

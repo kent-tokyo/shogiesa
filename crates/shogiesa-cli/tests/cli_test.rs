@@ -250,6 +250,79 @@ fn dataset_diff_position_mode_treats_source_path_change_as_a_field_change() {
 }
 
 #[test]
+fn recipe_plan_fixture_is_typed_deterministic_and_dry_run_only() {
+    let json_out = NamedTempFile::new().unwrap();
+    let output = shogiesa()
+        .args([
+            "recipe",
+            "plan",
+            "--recipe",
+            fixture("recipe_plan.json").to_str().unwrap(),
+            "--json-out",
+            json_out.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let normalized = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            if line.starts_with("recipe             : ") {
+                "recipe             : <recipe>"
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    assert_eq!(
+        normalized,
+        std::fs::read_to_string(fixture("recipe_plan.golden")).unwrap()
+    );
+
+    let report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(json_out.path()).unwrap()).unwrap();
+    assert_eq!(report["plan_version"], 1);
+    assert_eq!(report["recipe_version"], 1);
+    assert_eq!(report["summary"]["ready"], 2);
+    assert_eq!(report["summary"]["waiting_for_dependencies"], 1);
+    assert_eq!(report["summary"]["blocked_missing_input"], 0);
+    assert_eq!(report["executed"], false);
+    assert_eq!(report["stages"][2]["dependencies"][0], "pack-candidate");
+    assert_eq!(report["stages"][2]["status"], "waiting-for-dependencies");
+}
+
+#[test]
+fn recipe_plan_rejects_forward_dependencies() {
+    shogiesa()
+        .args([
+            "recipe",
+            "plan",
+            "--recipe",
+            fixture("recipe_forward_dependency.json").to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("produced by later stage"));
+}
+
+#[test]
+fn recipe_plan_rejects_output_outside_recipe_directory() {
+    shogiesa()
+        .args([
+            "recipe",
+            "plan",
+            "--recipe",
+            fixture("recipe_output_escape.json").to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("escapes the recipe directory"));
+}
+
+#[test]
 fn conflict_report_excludes_unknown_draw_and_mate_and_counts_cp_sign_conflicts() {
     let output = shogiesa()
         .args([

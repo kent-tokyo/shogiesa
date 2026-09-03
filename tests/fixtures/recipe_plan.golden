@@ -1,0 +1,13 @@
+recipe plan
+recipe             : <recipe>
+recipe version     : 1
+stages             : 3
+  [1] compare (dataset-diff) — ready
+  [2] pack-candidate (pack) — ready
+  [3] unpack-candidate (unpack) — waiting-for-dependencies
+      depends on: pack-candidate
+ready              : 2
+waiting            : 1
+blocked missing    : 0
+blocked dependency : 0
+executed           : no

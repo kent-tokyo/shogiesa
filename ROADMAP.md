@@ -212,6 +212,19 @@ NNUE の学習結果を改善すること、処理速度・メモリ上限、Sek
   `envelope_version: 1` / `$id`末尾 `:1` とし、cross-repository canonical adoption は未決定と
   明記する。
 
+### 2.4 typed recipe orchestration
+
+- `[x]` recipe schema v1 と `recipe plan` を追加し、既知 command、stage ID、明示 input/output、
+  出力衝突、自己上書き、forward dependency、不足 external input を実行前に検証する。
+- `[x]` external input の content hash と upstream stage identity から移動可能な stage identity を
+  生成し、ready/waiting/blocked を versioned JSON plan と human-readable summary に保存する。
+- `[x]` planner は arbitrary shell command を受け付けず、`executed: false` の dry-run 専用として
+  fixture/golden と local measurement smoke で境界を固定する。
+
+次候補は、このplanをatomic run bundleとして実行し、成功済みstageをidentity一致時だけ再利用する
+`recipe run` / `recipe verify` である。実行・resumeはplannerと分離し、途中出力を成功artifactとして
+扱わない。
+
 ## Phase 3 — 大規模実行と配布
 
 ### 3.1 ストリーミング境界

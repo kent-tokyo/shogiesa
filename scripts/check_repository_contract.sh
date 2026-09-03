@@ -46,6 +46,10 @@ required_files=(
   tests/fixtures/dataset_diff_baseline.jsonl
   tests/fixtures/dataset_diff_candidate.jsonl
   tests/fixtures/dataset_diff.golden
+  tests/fixtures/recipe_plan.json
+  tests/fixtures/recipe_plan.golden
+  tests/fixtures/recipe_forward_dependency.json
+  tests/fixtures/recipe_output_escape.json
   tests/fixtures/pack_bad_magic.hex
   tests/fixtures/pack_truncated_header.hex
   tests/fixtures/pack_unsupported_version.hex
@@ -106,6 +110,10 @@ check_marker tests/fixtures/calibrate_policy_margin.golden '^policy_margin,200,2
 check_marker tests/fixtures/dataset_diff_baseline.jsonl '"path":"game-c.kif"' 'dataset diff removed root input'
 check_marker tests/fixtures/dataset_diff_candidate.jsonl '"path":"game-d.csa"' 'dataset diff added root input'
 check_marker tests/fixtures/dataset_diff.golden '^changed records    : 1$' 'dataset diff golden changed count'
+check_marker tests/fixtures/recipe_plan.json '"id": "unpack-candidate"' 'recipe plan dependent stage'
+check_marker tests/fixtures/recipe_plan.golden '^executed           : no$' 'recipe plan dry-run golden'
+check_marker tests/fixtures/recipe_forward_dependency.json '"id": "consume"' 'recipe forward dependency rejection input'
+check_marker tests/fixtures/recipe_output_escape.json '"../outside.shgpk"' 'recipe output escape rejection input'
 check_marker tests/fixtures/pack_bad_magic.hex '^00000000000000000b00$' 'pack bad magic bytes'
 check_marker tests/fixtures/pack_truncated_header.hex '^53484f4749455341$' 'pack truncated header bytes'
 check_marker tests/fixtures/pack_unsupported_version.hex '^53484f4749455341ffff$' 'pack unsupported version bytes'

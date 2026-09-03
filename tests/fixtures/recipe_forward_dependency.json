@@ -1,0 +1,15 @@
+{
+  "recipe_version": 1,
+  "stages": [
+    {
+      "id": "consume",
+      "command": "unpack",
+      "inputs": ["later.shgpk"]
+    },
+    {
+      "id": "produce",
+      "command": "pack",
+      "outputs": ["later.shgpk"]
+    }
+  ]
+}

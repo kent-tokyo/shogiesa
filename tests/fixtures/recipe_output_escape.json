@@ -1,0 +1,10 @@
+{
+  "recipe_version": 1,
+  "stages": [
+    {
+      "id": "escape",
+      "command": "pack",
+      "outputs": ["../outside.shgpk"]
+    }
+  ]
+}

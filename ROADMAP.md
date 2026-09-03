@@ -260,6 +260,8 @@ NNUE の学習結果を改善すること、処理速度・メモリ上限、Sek
   `decode` が途中レコードを成功扱いしない strict boundary を実装する。
 - `[x]` pack API のエラー分類（magic、header/version、record truncation、clean EOF）を公開 API
   boundary / schema compatibility docs に整理し、単体テストへの導線を追加する。
+- `[x]` repository contract check が pack の trailing-byte library regression test の存在も検査し、
+  fixture と library 境界の回帰を同時に保護する。
 
 ## Phase 4 — Sekirei での効果検証
 

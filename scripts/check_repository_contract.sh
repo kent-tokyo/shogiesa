@@ -107,6 +107,13 @@ check_marker tests/fixtures/pack_trailing_bytes.hex '^53484f47494553410b00ff$' '
 check_marker tests/fixtures/pack_wrong_endian_version.hex '^53484f4749455341000b$' 'pack wrong-endian version bytes'
 check_marker tests/fixtures/pack_truncated_record.hex '^53484f47494553410b000b00$' 'pack truncated record bytes'
 
+if rg -q 'fn trailing_byte_after_valid_pack_is_not_treated_as_clean_eof' crates/shogiesa-pack/src/lib.rs; then
+  printf 'PASS pack trailing-byte library regression marker\n'
+else
+  printf 'FAIL pack trailing-byte library regression marker missing\n'
+  missing=1
+fi
+
 if rg -q 'SCHEMA_VERSION = 11|FORMAT_VERSION: u16 = 11' crates/shogiesa-core/src/lib.rs crates/shogiesa-pack/src/lib.rs; then
   printf 'PASS schema/pack version markers\n'
 else

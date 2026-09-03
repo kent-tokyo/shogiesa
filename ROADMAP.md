@@ -19,7 +19,8 @@ manifest provenance、JSONL/pack 境界（corruption fixture を含む）、reci
 ツールの native interoperability など、実測結果が必要なものに限定している。
 `0.9.1` を今回のリリース対象とする。Cargo version は `0.9.1` に固定し、外部測定を
 実施済みと扱わないまま、fixture・contract・ドキュメントの改善をリリース単位として記録する。
-GitHub `main` と `v0.9.1` tag は `10eccc8` へ push 済み。crates.io は package/verify 後の
+GitHub `main` は `69c2dfc` まで push 済みで、`v0.9.1` tag は release commit `10eccc8` を
+指す。crates.io は package/verify 後の
 upload が認証 403 で停止し、公開未完了である（検証ログ参照）。
 
 ```text

@@ -13,7 +13,9 @@ It is evidence for this environment only and is not a claim of full release read
 | fixture-backed local measurement smoke | BLOCKED | `cargo test --offline` could not start because `float-cmp v0.10.0` was not cached |
 | `cargo test --offline --workspace` | BLOCKED | dependency cache lacks `float-cmp v0.10.0`; no success claim is made |
 | `cargo clippy --offline --workspace --all-targets --all-features -- -D warnings` | BLOCKED | dependency cache lacks `float-cmp v0.10.0`; no success claim is made |
-| GitHub `main` and `v0.9.1` tag push | PASS | `origin/main` advanced to `10eccc8`; tag points to the release commit |
+| `cargo clippy --offline -p shogiesa-pack --all-targets -- -D warnings` | PASS | pack boundary change is warning-free |
+| repository contract and diff check after follow-up work | PASS | all required fixture/docs markers and whitespace checks passed |
+| GitHub `main` and `v0.9.1` tag push | PASS | `origin/main` is at `69c2dfc`; tag points to release commit `10eccc8` |
 | crates.io publish | BLOCKED | package/verify passed, then `shogiesa-core v0.9.1` upload returned HTTP 403 authentication failed; no crate was published |
 
 Release commit and tag push completed. Registry publication requires a valid crates.io token and

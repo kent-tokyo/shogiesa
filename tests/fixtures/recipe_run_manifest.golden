@@ -1,21 +1,21 @@
 {
   "run_version": 1,
-  "status": "completed",
   "stages": [
     {
       "id": "compare",
-      "status": "succeeded",
-      "outputs": 1
+      "outputs": 1,
+      "status": "succeeded"
     },
     {
       "id": "pack",
-      "status": "succeeded",
-      "outputs": 1
+      "outputs": 1,
+      "status": "succeeded"
     },
     {
       "id": "unpack",
-      "status": "succeeded",
-      "outputs": 1
+      "outputs": 1,
+      "status": "succeeded"
     }
-  ]
+  ],
+  "status": "completed"
 }

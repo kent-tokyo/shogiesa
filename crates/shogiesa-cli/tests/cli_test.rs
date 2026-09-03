@@ -1404,7 +1404,10 @@ fn label_existing_policy_distinguishes_multipv_setting() {
     .unwrap();
     let observations = value["observations"].as_array().unwrap();
     assert_eq!(observations.len(), 2);
-    assert_eq!(observations[0]["candidates"].as_array().unwrap().len(), 0);
+    assert_eq!(
+        observations[0]["candidates"].as_array().map_or(0, Vec::len),
+        0
+    );
     assert_eq!(observations[1]["candidates"].as_array().unwrap().len(), 2);
 
     // Re-labeling single-PV must not replace the existing MultiPV observation: the setting is

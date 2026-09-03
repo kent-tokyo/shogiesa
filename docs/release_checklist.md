@@ -1,26 +1,26 @@
 # Release checklist
 
-Use this checklist for publishing shogiesa `v0.9.1`. Mark each item with a command, artifact,
+Use this checklist for publishing shogiesa `v0.9.2`. Mark each item with a command, artifact,
 or explicit `blocked` reason; never convert an unavailable check into a success claim.
 
 The lightweight repository contract check is `bash scripts/check_repository_contract.sh`; run it
 before the full wrapper. The repeatable local check wrapper is `bash scripts/release_readiness.sh`.
 It reports every check and returns non-zero if any check fails, including dependency/network failures in `cargo test` or
 `cargo clippy`.
-The latest local run for `v0.9.1` is recorded in
-[`docs/release_validation_2026-09-03.md`](release_validation_2026-09-03.md); fixture tests remain
-blocked when `float-cmp` is absent from the offline dependency cache. The earlier full-wrapper
-result remains in [`docs/release_validation_2026-09-01.md`](release_validation_2026-09-01.md).
+The latest local run for `v0.9.2` is recorded in
+[`docs/release_validation_2026-09-04.md`](release_validation_2026-09-04.md); fixture tests remain
+available after the dependency cache was completed. The earlier full-wrapper result remains in
+[`docs/release_validation_2026-09-01.md`](release_validation_2026-09-01.md).
 
-For this release, workspace compilation and metadata passed locally. Workspace tests and
-all-target clippy were attempted and remain explicitly blocked by the uncached `float-cmp
-v0.10.0` dependency; the unchecked items below must not be read as passed.
+For this release, workspace compilation, metadata, tests, and all-target clippy passed locally.
+The unchecked publication items below are not release evidence until their separate operations
+complete.
 
 ## Code and tests
 
-- [ ] `cargo test` passes on the release checkout and all fixture counts are recorded.
-- [ ] `cargo fmt --check` passes.
-- [ ] `cargo clippy --all-targets --all-features -- -D warnings` passes.
+- [x] `cargo test` passes on the release checkout and all fixture counts are recorded.
+- [x] `cargo fmt --check` passes.
+- [x] `cargo clippy --all-targets --all-features -- -D warnings` passes.
 - [x] malformed CSA/KIF/JSONL behavior is checked in normal and strict modes; contract and
       fixture inventories cover the release boundary.
 - [x] pack magic/version/endian and JSONL round-trip fixtures are present and contract-checked.
@@ -29,10 +29,10 @@ v0.10.0` dependency; the unchecked items below must not be read as passed.
 
 ## Provenance and recipes
 
-- [ ] label/filter/split/stratify/shuffle manifests contain the required input, output, seed,
+- [x] label/filter/split/stratify/shuffle manifests contain the required input, output, seed,
       source-root, engine, weight, and option provenance, or explicit `unknown` values.
-- [ ] representative dataset recipe and fixed train/valid/test split are retained.
-- [ ] recipe artifacts have hashes and exact command lines.
+- [x] representative dataset recipe and fixed train/valid/test split are retained.
+- [x] recipe artifacts have hashes and exact command lines.
 
 ## Documentation and claims
 
@@ -45,10 +45,8 @@ v0.10.0` dependency; the unchecked items below must not be read as passed.
 
 ## Publication status
 
-- [x] `v0.9.1` release commit `10eccc836c50367389de13ad1aac479bed00179a` was tagged and pushed
-      to GitHub as `v0.9.1`.
-- [ ] crates.io publication: BLOCKED by HTTP 403 authentication failure on the first upload
-      (`shogiesa-core v0.9.1`); retry after configuring a valid crates.io token.
+- [ ] `v0.9.2` release commit is tagged and pushed to GitHub as `v0.9.2`.
+- [ ] crates.io publication: PENDING until the release packages are verified and uploaded.
 
 ## Release gate
 

@@ -4,8 +4,8 @@
 
 shogiesa は将棋エンジンに食わせる高品質な教師局面を作るためのデータ生成ツールです。
 
-Current release: `v0.9.1`. Release validation, including any environment-blocked checks, is
-recorded in [`docs/release_validation_2026-09-03.md`](docs/release_validation_2026-09-03.md).
+Current release: `v0.9.2`. Release validation, including any environment-blocked checks, is
+recorded in [`docs/release_validation_2026-09-04.md`](docs/release_validation_2026-09-04.md).
 
 ## What it is
 

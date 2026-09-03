@@ -4,12 +4,12 @@ records read      : 5
 parse errors      : 0
 no game_result    : 0
 non-decisive result: 1
-decisive records  : 3
+decisive records  : 4
 evaluated pairs   : 3
 conflicts         : 1  (33.3%)
 excluded no CP/mate: 1
 excluded deadband : 0  (|cp| <= 0)
 
 by engine / weight:
-  engine-a / weight=weight-a              evaluated=     2 conflicts=     1 (50.0%)
-  engine-b / weight=weight-b              evaluated=     1 conflicts=     0 (0.0%)
+  engine-a / weight=weight-a               evaluated=     2 conflicts=     1 (50.0%)
+  engine-b / weight=weight-b               evaluated=     1 conflicts=     0 (0.0%)

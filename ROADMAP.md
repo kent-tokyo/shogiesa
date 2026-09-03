@@ -10,18 +10,16 @@ GUI、対局大会基盤にはしない。
 
 現在の基礎パイプラインは実装済みである。
 
-### 2026-09-03 status
+### 2026-09-04 status
 
 実装・fixture・回帰テスト・公開文書で確認できた項目には `[x]` を付けている。現在の
 チェック済み範囲は、入力異常系と USI lifecycle、再ラベル判定、品質診断、root-aware split、
 manifest provenance、JSONL/pack 境界（corruption fixture を含む）、recipe・API・release evidence である。未チェックの
 項目は、3 OS の反復、1M/10M 規模の性能・資源測定、閾値校正、学習効果、対局効果、外部
 ツールの native interoperability など、実測結果が必要なものに限定している。
-`0.9.1` を今回のリリース対象とする。Cargo version は `0.9.1` に固定し、外部測定を
-実施済みと扱わないまま、fixture・contract・ドキュメントの改善をリリース単位として記録する。
-GitHub `main` は `69c2dfc` まで push 済みで、`v0.9.1` tag は release commit `10eccc8` を
-指す。crates.io は package/verify 後の
-upload が認証 403 で停止し、公開未完了である（検証ログ参照）。
+`0.9.2` を今回のリリース対象とする。Cargo version は `0.9.2` に固定し、外部測定を
+実施済みと扱わないまま、recipe実行・fixture・contract・ドキュメントの改善をリリース単位として記録する。
+GitHub `main` と `v0.9.2` tag、crates.io公開の結果は今回の検証ログに記録する。
 
 ```text
 CSA / KIF / match kifu
@@ -238,7 +236,7 @@ NNUE の学習結果を改善すること、処理速度・メモリ上限、Sek
   schemaの主要フィールドを回帰固定する。
 - `[x]` stage prefixだけがcheckpointされた中断状態で、`--resume`がprefixを再利用し後続stageを
   再実行するfixture回帰を追加する。
-- `[x]` run/verify の正常、reuse、改変検知を local fixture で確認し、0.9.1 のバージョンを
+- `[x]` run/verify の正常、reuse、改変検知を local fixture で確認し、0.9.2 のバージョンを
   固定したまま README/CHANGELOG に運用境界を記録する。
 
 ## Phase 3 — 大規模実行と配布

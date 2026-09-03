@@ -8,6 +8,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ## [Unreleased]
 
+No changes yet.
+
+## [0.9.2] — 2026-09-04
+
 ### Added
 - `dataset-diff` compares two JSONL datasets independently of line order and emits both a human
   summary and a versioned JSON artifact. It separates added/removed/changed records, field changes,
@@ -275,7 +279,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 - CLI integration tests (`assert_cmd` / `predicates` / `tempfile`)
 - `LICENSE-MIT` and `LICENSE-APACHE`
 
-[Unreleased]: https://github.com/kent-tokyo/shogiesa/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/kent-tokyo/shogiesa/compare/v0.9.2...HEAD
+[0.9.2]: https://github.com/kent-tokyo/shogiesa/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/kent-tokyo/shogiesa/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/kent-tokyo/shogiesa/compare/v0.8.0...v0.9.0
 [0.4.0]: https://github.com/kent-tokyo/shogiesa/compare/v0.3.0...v0.4.0

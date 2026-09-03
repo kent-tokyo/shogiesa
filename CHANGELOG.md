@@ -25,6 +25,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
   run, so interrupted work can reuse only durably recorded successful stages.
 - `recipe verify` now validates manifest version, stage order, exact output topology, and hash shape
   before checking output contents.
+- Added a normalized run-manifest golden fixture that fixes the durable schema without baking in
+  machine-specific paths or content hashes.
 
 ## [0.9.1] — 2026-09-03
 

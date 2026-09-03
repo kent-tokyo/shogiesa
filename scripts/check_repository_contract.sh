@@ -48,6 +48,7 @@ required_files=(
   tests/fixtures/dataset_diff.golden
   tests/fixtures/recipe_plan.json
   tests/fixtures/recipe_plan.golden
+  tests/fixtures/recipe_run_manifest.golden
   tests/fixtures/recipe_forward_dependency.json
   tests/fixtures/recipe_output_escape.json
   tests/fixtures/pack_bad_magic.hex
@@ -112,6 +113,7 @@ check_marker tests/fixtures/dataset_diff_candidate.jsonl '"path":"game-d.csa"' '
 check_marker tests/fixtures/dataset_diff.golden '^changed records    : 1$' 'dataset diff golden changed count'
 check_marker tests/fixtures/recipe_plan.json '"id": "unpack-candidate"' 'recipe plan dependent stage'
 check_marker tests/fixtures/recipe_plan.golden '^executed           : no$' 'recipe plan dry-run golden'
+check_marker tests/fixtures/recipe_run_manifest.golden '"run_version": 1' 'recipe run manifest golden version'
 check_marker tests/fixtures/recipe_forward_dependency.json '"id": "consume"' 'recipe forward dependency rejection input'
 check_marker tests/fixtures/recipe_output_escape.json '"../outside.shgpk"' 'recipe output escape rejection input'
 check_marker crates/shogiesa-cli/tests/cli_test.rs 'fn recipe_run_verify_and_reuse_stage_outputs' 'recipe run verify reuse regression'

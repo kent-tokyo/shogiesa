@@ -1,0 +1,21 @@
+{
+  "run_version": 1,
+  "status": "completed",
+  "stages": [
+    {
+      "id": "compare",
+      "status": "succeeded",
+      "outputs": 1
+    },
+    {
+      "id": "pack",
+      "status": "succeeded",
+      "outputs": 1
+    },
+    {
+      "id": "unpack",
+      "status": "succeeded",
+      "outputs": 1
+    }
+  ]
+}

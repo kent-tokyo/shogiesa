@@ -372,6 +372,23 @@ fn recipe_run_verify_and_reuse_stage_outputs() {
         .clone();
     assert!(String::from_utf8(first).unwrap().contains("succeeded"));
     let manifest_path = run_dir.join("run.json");
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    let normalized = serde_json::json!({
+        "run_version": manifest["run_version"],
+        "status": manifest["status"],
+        "stages": manifest["stages"].as_array().unwrap().iter().map(|stage| {
+            serde_json::json!({
+                "id": stage["id"],
+                "status": stage["status"],
+                "outputs": stage["outputs"].as_array().unwrap().len(),
+            })
+        }).collect::<Vec<_>>(),
+    });
+    assert_eq!(
+        serde_json::to_string_pretty(&normalized).unwrap() + "\n",
+        std::fs::read_to_string(fixture("recipe_run_manifest.golden")).unwrap()
+    );
     let mut interrupted: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
     interrupted["status"] = serde_json::json!("running");

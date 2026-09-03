@@ -959,6 +959,9 @@ stale staging files only after inspecting them. A stage-complete checkpoint is w
 stage; if the checkpoint says `running`, continuation requires the explicit `--resume` flag.
 `verify` also checks manifest version, stage order, exact declared output paths/counts, and the
 canonical 64-character hexadecimal output hashes before accepting a run.
+The normalized manifest contract is regression-tested against
+`tests/fixtures/recipe_run_manifest.golden`; machine-specific paths and hashes are intentionally
+kept out of that golden.
 
 ### `conflict-report` — CP / game-outcome sign diagnostics
 

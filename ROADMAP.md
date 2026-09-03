@@ -234,6 +234,8 @@ NNUE の学習結果を改善すること、処理速度・メモリ上限、Sek
   として扱わない。
 - `[x]` run manifest のversion、stage順、output path/count、hash形式を検証し、改変manifestを
   再利用根拠として受け入れない。
+- `[x]` machine-specific path/hashを除いたrun manifestのnormalized golden fixtureを追加し、
+  schemaの主要フィールドを回帰固定する。
 - `[x]` run/verify の正常、reuse、改変検知を local fixture で確認し、0.9.1 のバージョンを
   固定したまま README/CHANGELOG に運用境界を記録する。
 

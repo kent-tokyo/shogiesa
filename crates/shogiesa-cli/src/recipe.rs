@@ -785,29 +785,27 @@ fn run_recipe(args: RecipeRunArgs) -> Result<()> {
     Ok(())
 }
 
-fn verify_recipe(args: RecipeVerifyArgs) -> Result<()> {
-    let (spec, recipe_hash) = load_recipe(&args.recipe)?;
-    let plan = build_plan(&args.recipe, spec, recipe_hash.clone())?;
-    let manifest_path = run_dir(&args.recipe, args.run_dir).join("run.json");
-    let bytes = fs::read(&manifest_path)
-        .with_context(|| format!("cannot read run manifest {manifest_path:?}"))?;
-    let manifest: RunManifest = serde_json::from_slice(&bytes)
-        .with_context(|| format!("cannot parse run manifest {manifest_path:?}"))?;
-    if manifest.run_version != RUN_VERSION
-        || manifest.recipe_hash != recipe_hash
-        || manifest.status != "completed"
-    {
+fn validate_run_manifest(
+    manifest: &RunManifest,
+    plan: &RecipePlan,
+    recipe_hash: &str,
+) -> Result<()> {
+    if manifest.run_version != RUN_VERSION || manifest.recipe_hash != recipe_hash {
         bail!("run manifest does not match recipe or run version");
+    }
+    if manifest.status != "completed" {
+        bail!("run manifest is not complete (status: {})", manifest.status);
     }
     if manifest.stages.len() != plan.stages.len() {
         bail!("run manifest stage count does not match recipe");
     }
-    for planned in &plan.stages {
-        let stage = manifest
-            .stages
-            .iter()
-            .find(|stage| stage.id == planned.id)
-            .with_context(|| format!("run manifest is missing stage {:?}", planned.id))?;
+    for (planned, stage) in plan.stages.iter().zip(&manifest.stages) {
+        if stage.id != planned.id {
+            bail!(
+                "run manifest stage order does not match recipe at {:?}",
+                planned.id
+            );
+        }
         if stage.stage_identity != planned.stage_identity {
             bail!(
                 "stage {:?} identity does not match recipe inputs",
@@ -817,7 +815,17 @@ fn verify_recipe(args: RecipeVerifyArgs) -> Result<()> {
         if stage.status != "succeeded" && stage.status != "reused" {
             bail!("stage {:?} is not complete", planned.id);
         }
-        for output in &stage.outputs {
+        if stage.outputs.len() != planned.outputs.len() {
+            bail!("stage {:?} output count does not match recipe", planned.id);
+        }
+        for (expected, output) in planned.outputs.iter().zip(&stage.outputs) {
+            if output.path != *expected {
+                bail!("stage {:?} output path does not match recipe", planned.id);
+            }
+            if output.hash.len() != 64 || !output.hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+            {
+                bail!("stage {:?} has an invalid output hash", planned.id);
+            }
             if hash_file(Path::new(&output.path))? != output.hash {
                 bail!(
                     "stage {:?} output hash mismatch: {:?}",
@@ -827,6 +835,18 @@ fn verify_recipe(args: RecipeVerifyArgs) -> Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+fn verify_recipe(args: RecipeVerifyArgs) -> Result<()> {
+    let (spec, recipe_hash) = load_recipe(&args.recipe)?;
+    let plan = build_plan(&args.recipe, spec, recipe_hash.clone())?;
+    let manifest_path = run_dir(&args.recipe, args.run_dir).join("run.json");
+    let bytes = fs::read(&manifest_path)
+        .with_context(|| format!("cannot read run manifest {manifest_path:?}"))?;
+    let manifest: RunManifest = serde_json::from_slice(&bytes)
+        .with_context(|| format!("cannot parse run manifest {manifest_path:?}"))?;
+    validate_run_manifest(&manifest, &plan, &recipe_hash)?;
     println!("recipe verify");
     println!("stages             : {}", manifest.stages.len());
     println!("status             : verified");

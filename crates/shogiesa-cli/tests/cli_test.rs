@@ -448,6 +448,29 @@ fn recipe_run_verify_and_reuse_stage_outputs() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("output hash mismatch"));
+
+    let mut malformed: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    malformed["stages"][0]["outputs"] = serde_json::json!([]);
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&malformed).unwrap(),
+    )
+    .unwrap();
+    shogiesa()
+        .args([
+            "recipe",
+            "verify",
+            "--recipe",
+            recipe.to_str().unwrap(),
+            "--run-dir",
+            run_dir.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "output count does not match recipe",
+        ));
 }
 
 #[test]

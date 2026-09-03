@@ -23,6 +23,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
   a multi-output commit fails midway.
 - `recipe run` now checkpoints after each stage and requires explicit `--resume` for an incomplete
   run, so interrupted work can reuse only durably recorded successful stages.
+- `recipe verify` now validates manifest version, stage order, exact output topology, and hash shape
+  before checking output contents.
 
 ## [0.9.1] — 2026-09-03
 

@@ -957,6 +957,8 @@ and every recorded output hash still match. `verify` checks those identities and
 executing commands. A failed or interrupted stage is not recorded as a successful artifact; remove
 stale staging files only after inspecting them. A stage-complete checkpoint is written after every
 stage; if the checkpoint says `running`, continuation requires the explicit `--resume` flag.
+`verify` also checks manifest version, stage order, exact declared output paths/counts, and the
+canonical 64-character hexadecimal output hashes before accepting a run.
 
 ### `conflict-report` — CP / game-outcome sign diagnostics
 

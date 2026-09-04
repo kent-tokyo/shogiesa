@@ -25,7 +25,7 @@ complete.
       fixture inventories cover the release boundary.
 - [x] pack magic/version/endian and JSONL round-trip fixtures are present and contract-checked.
 - [x] USI timeout, protocol violation, restart, and child-process cleanup coverage is present in
-      the repository test suite; full execution remains blocked by the uncached dev dependency.
+      the repository test suite and passed in the release validation run.
 
 ## Provenance and recipes
 

@@ -8,7 +8,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ## [Unreleased]
 
-No changes yet.
+### Fixed
+
+- Documentation maintenance: made the English/Japanese READMEs concise entry points, moved
+  option-level authority to CLI `--help`, condensed the roadmap and experiment-envelope draft,
+  and kept one `2026-09-04` release-validation record as the evidence source. Version remains
+  `0.9.2`.
+- Hardened SFEN parsing against oversized hand counts and excessively wide ranks, and hardened
+  `distribution` bucket iteration against extreme integer ranges. Added regression tests; version
+  remains `0.9.2`.
+- KIF: an indented nested `変化：N手` marker now replays from its active parent variation rather
+  than silently remapping to the mainline. Nested source paths and variation IDs retain the full
+  deterministic lineage (for example, `#var1@2#var2@3` and `var1.var2`); malformed nested markers
+  emit a diagnostic and are skipped without changing parentage.
 
 ## [0.9.2] — 2026-09-04
 

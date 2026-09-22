@@ -12,6 +12,14 @@ fn fixture(name: &str) -> std::path::PathBuf {
         .join(name)
 }
 
+/// Golden reports are canonical LF text. Normalize fixture checkout line endings so tests compare
+/// CLI output, rather than the developer's Git `core.autocrlf` setting.
+fn golden(name: &str) -> String {
+    std::fs::read_to_string(fixture(name))
+        .unwrap()
+        .replace("\r\n", "\n")
+}
+
 fn shogiesa() -> Command {
     Command::cargo_bin("shogiesa").unwrap()
 }
@@ -194,10 +202,7 @@ fn dataset_diff_fixture_reports_semantic_changes_independent_of_input_order() {
         .collect::<Vec<_>>()
         .join("\n")
         + "\n";
-    assert_eq!(
-        normalized,
-        std::fs::read_to_string(fixture("dataset_diff.golden")).unwrap()
-    );
+    assert_eq!(normalized, golden("dataset_diff.golden"));
 
     let report: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(json_out.path()).unwrap()).unwrap();
@@ -277,10 +282,7 @@ fn recipe_plan_fixture_is_typed_deterministic_and_dry_run_only() {
         .collect::<Vec<_>>()
         .join("\n")
         + "\n";
-    assert_eq!(
-        normalized,
-        std::fs::read_to_string(fixture("recipe_plan.golden")).unwrap()
-    );
+    assert_eq!(normalized, golden("recipe_plan.golden"));
 
     let report: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(json_out.path()).unwrap()).unwrap();
@@ -387,7 +389,7 @@ fn recipe_run_verify_and_reuse_stage_outputs() {
     });
     assert_eq!(
         serde_json::to_string_pretty(&normalized).unwrap() + "\n",
-        std::fs::read_to_string(fixture("recipe_run_manifest.golden")).unwrap()
+        golden("recipe_run_manifest.golden")
     );
     let mut interrupted: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
@@ -534,10 +536,7 @@ fn conflict_report_excludes_unknown_draw_and_mate_and_counts_cp_sign_conflicts()
         .collect::<Vec<_>>()
         .join("\n")
         + "\n";
-    assert_eq!(
-        normalized,
-        std::fs::read_to_string(fixture("conflict_report.golden")).unwrap()
-    );
+    assert_eq!(normalized, golden("conflict_report.golden"));
 }
 
 #[test]
@@ -602,10 +601,7 @@ fn conflict_report_deadband_fixture_goldenizes_excluded_cp_count() {
         .collect::<Vec<_>>()
         .join("\n")
         + "\n";
-    assert_eq!(
-        normalized,
-        std::fs::read_to_string(fixture("conflict_report_deadband.golden")).unwrap()
-    );
+    assert_eq!(normalized, golden("conflict_report_deadband.golden"));
 }
 
 #[test]
@@ -638,11 +634,7 @@ fn block_report_keeps_roots_separate_and_reports_cp_summary() {
             .collect::<Vec<_>>()
             .join("\n")
             + "\n";
-        assert_eq!(
-            normalized,
-            std::fs::read_to_string(fixture(golden_name)).unwrap(),
-            "block size {block_size}"
-        );
+        assert_eq!(normalized, golden(golden_name), "block size {block_size}");
     }
 }
 
@@ -4529,7 +4521,7 @@ fn calibrate_sweep_policy_margin_produces_golden_csv_rows() {
         .success();
     assert_eq!(
         std::fs::read_to_string(out.path()).unwrap(),
-        std::fs::read_to_string(fixture("calibrate_policy_margin.golden")).unwrap()
+        golden("calibrate_policy_margin.golden")
     );
 }
 
@@ -7511,10 +7503,10 @@ fn write_hex_fixture(name: &str) -> NamedTempFile {
         .unwrap()
         .split_whitespace()
         .flat_map(|chunk| {
-            chunk
-                .as_bytes()
-                .chunks_exact(2)
-                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            chunk.as_bytes().chunks(2).map(|pair| {
+                assert_eq!(pair.len(), 2, "hex fixture contains an incomplete byte");
+                u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap()
+            })
         })
         .collect();
     let mut out = NamedTempFile::new().unwrap();
@@ -8274,10 +8266,7 @@ fn distribution_shows_basic_sections() {
         .collect::<Vec<_>>()
         .join("\n")
         + "\n";
-    assert_eq!(
-        normalized,
-        std::fs::read_to_string(fixture("distribution.golden")).unwrap()
-    );
+    assert_eq!(normalized, golden("distribution.golden"));
 }
 
 #[test]
@@ -8295,7 +8284,7 @@ fn distribution_flags_missing_eval_bucket_as_missing() {
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
-        std::fs::read_to_string(fixture("distribution_missing_bucket.golden")).unwrap()
+        golden("distribution_missing_bucket.golden")
     );
 }
 
@@ -8314,7 +8303,7 @@ fn distribution_malformed_fixture_keeps_valid_records_and_goldenizes_warning_cou
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
-        std::fs::read_to_string(fixture("distribution_malformed.golden")).unwrap()
+        golden("distribution_malformed.golden")
     );
 }
 

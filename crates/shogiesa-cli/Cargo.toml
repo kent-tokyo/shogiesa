@@ -29,7 +29,7 @@ anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 blake3 = "1"
-sha2 = "0.10"
+sha2 = "0.11"
 shogi_core = "0.1"
 shogi_usi_parser = "0.1"
 shogi_legality_lite = "0.1"

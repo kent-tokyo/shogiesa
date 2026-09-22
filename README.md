@@ -1,33 +1,33 @@
 # shogiesa
 
-**将棋の餌。** Shogi training-data feed for NNUE engines.
+> Shogi training-data feed for NNUE engines.
 
-shogiesa は将棋エンジンに食わせる高品質な教師局面を作るためのデータ生成ツールです。
+shogiesa turns game records into inspectable, reproducible training data. It extracts SFEN
+positions, labels them through USI, records quality/provenance signals, and prepares datasets for
+an external trainer such as Sekirei.
 
-Current release: `v0.9.2`. Release validation, including any environment-blocked checks, is
-recorded in [`docs/release_validation_2026-09-04.md`](docs/release_validation_2026-09-04.md).
+Current source version: `0.9.2`. The `v0.9.2` tag and GitHub commit are published; crates.io
+publication is still blocked by authentication. The authoritative local validation record is
+[`docs/release_validation_2026-09-04.md`](docs/release_validation_2026-09-04.md).
 
-## What it is
+## Scope
 
-- CSA / KIF 棋譜から局面（SFEN）を抽出する
-- USI エンジンで局面にラベル（評価値・最善手）を付ける
-- 不安定局面をフィルタして訓練データを出力する
+shogiesa is a data forge, not a Shogi engine, NNUE trainer, GUI, tournament manager, or cloud
+service. Its outputs are JSONL, SFEN, USI moves, manifests, and an optional binary pack—not a
+claim that a dataset improves playing strength.
 
-## What it is NOT
+It provides:
 
-- 将棋エンジンではありません
-- NNUE トレーナーではありません
-- GUI ではありません
+- CSA/KIF and match-runner record ingestion;
+- conservative SFEN validation, deduplication, source-root provenance, and diagnostics;
+- USI teacher labeling with timeouts, restart handling, cache, and resume support;
+- stability, quality, conflict, block, distribution, and integrity diagnostics; and
+- deterministic split, quota sampling, shuffle, recipe, JSONL, and pack workflows.
 
-See [`docs/THEORY.md`](docs/THEORY.md) for what shogiesa's quality signals (`score.cp`,
-`policy_margin_cp`, `score_swing_cp`, `bestmove_agreement`, `QualityDecision.score`) actually mean
-— none of them are calibrated probabilities — and how `calibrate`/`audit` replace guessing at
-thresholds with measurement.
-
-## Installation
+## Install
 
 ```bash
-git clone https://github.com/kent-tokyo/shogiesa
+git clone https://github.com/kent-tokyo/shogiesa.git
 cd shogiesa
 cargo build --release
 # binary: target/release/shogiesa
@@ -36,1226 +36,121 @@ cargo build --release
 ## Quick start
 
 ```bash
-# 1. Extract positions from CSA game records
-shogiesa extract --input ./games --out positions.jsonl
+# 1. Extract post-move positions from CSA or KIF records.
+shogiesa extract --input ./games --out positions.jsonl --min-ply 20 --every-n-plies 2
 
-# 2. Label positions with engine evaluations
-shogiesa label \
-  --input positions.jsonl \
-  --engine ./your-engine \
-  --engine-name myengine \
-  --depths 4,6,8 \
-  --out observations.jsonl
+# 2. Label them with a USI engine.
+shogiesa label --input positions.jsonl --engine ./sekirei --depths 4,6,8 --out labeled.jsonl
 
-# 3. Check dataset quality
-shogiesa report   --input observations.jsonl
-shogiesa validate --input observations.jsonl
+# 3. Inspect and filter without guessing what the signals mean.
+shogiesa report --input labeled.jsonl
+shogiesa filter --input labeled.jsonl --min-stability 0.85 --out train.jsonl
 ```
+
+Every option is defined by the executable:
+
+```bash
+shogiesa --help
+shogiesa label --help
+shogiesa recipe run --help
+```
+
+## Workflow
+
+```text
+CSA / KIF / match kifu
+        ↓
+extract / from-match → label → stability / audit / calibrate / tune
+        ↓
+filter / select / mine / balance / stratify → split / shuffle → pack
+        ↓
+report / distribution / validate
+```
+
+Use a fixed input, engine binary/options, weight, seed, and command line for any result you need
+to reproduce. Commands that write manifests record the available identities and hashes; a missing
+value remains `unknown`, not inferred.
 
 ## Commands
 
-### `extract` — position extraction
-
-```bash
-shogiesa extract \
-  --input ./games \          # file or directory of .csa files
-  --out positions.jsonl
-  --min-ply 20               # skip openings (default: 1)
-  --max-ply 180
-  --every-n-plies 2          # sample every 2 plies
-  --dedup                    # deduplicate by SFEN
-```
-
-KIF `変化` (variation/branch) blocks are extracted too, each as its own set of positions with a
-`source.path` suffixed `#varN@ply` (e.g. `game.kif#var1@2`) so they never collide with the
-mainline's positions or with each other — `split --by-source` puts them in separate files.
-Variations always branch from the mainline; a variation nested inside another variation isn't
-supported. If another `変化` marker appears while a variation is active, shogiesa emits a warning
-and interprets it as a new mainline-rooted sibling; it does not claim to reconstruct a nested
-branch. Each such record also carries `source.root_id` (shared with its mainline),
-`source.variation_id` (e.g. `"var1"`), and `source.branch_from_ply` — see "JSONL Schema" below;
-`split --train/--valid/--test` uses `root_id` (falling back to the `path` suffix when absent) to
-keep a mainline and its variations from leaking across train/valid/test.
-
-### `label` — engine evaluation
-
-```bash
-shogiesa label \
-  --input positions.jsonl \
-  --engine ./engine-binary \
-  --engine-name myengine \   # optional; falls back to USI id name
-  --depths 4,6,8 \           # search depths (mutually exclusive with --nodes)
-  --timeout-ms 10000 \
-  --multipv 2 \              # optional; populates observations[].policy_margin_cp
-  --out observations.jsonl
-```
-
-By default, appends observations to existing records — safe to run multiple times with
-different depths, but re-running the same depth adds a duplicate. `--multipv N` (N≥2) sends
-`setoption name MultiPV value N` and records how far the bestmove beats the runner-up
-(`policy_margin_cp`) — a low margin means the label is a weak teaching signal even when a
-bestmove exists. Every rank the engine reports is kept in `observations[].candidates` (each with
-its own `multipv`/`bestmove`/`score`/`score_bound`/`pv`), not just the top two used for
-`policy_margin_cp` — empty unless MultiPV≥2 was actually used, so ordinary single-PV labeling
-gains no extra output. `score_bound` (`exact`/`lowerbound`/`upperbound`) marks whether a
-candidate's score is a confirmed evaluation or a search bound — a bound-tagged runner-up is
-never trusted for `policy_margin_cp`.
-
-**`--nodes N[,N2,...]`** is a fixed-node-count alternative to `--depths` — exactly one of the two
-is required, they're mutually exclusive. Sends `go nodes N` instead of `go depth N`. Use this when
-comparing different engines/versions as teachers: "depth" isn't a comparable unit of search work
-across engines (a stronger engine reaches a deeper depth in the same time), while a node count is.
-Populates `Observation.search_limit_kind` (`"depth"`/`"nodes"`) and `requested_nodes` (mirroring
-the existing `requested_depth`, `null` in depth mode) — the existing `nodes` field already records
-"actual nodes reached" in both modes, exactly parallel to how `depth` already records "actual
-depth reached" opposite `requested_depth`. The on-disk label cache (`--cache-dir`) folds the kind
-into its key, so `--depths 8` and `--nodes 8` never collide on the same cache entry despite the
-same numeric value.
-
-Every observation also records full search telemetry parsed straight from the engine's own USI
-`info` line: `seldepth`, `nps`, `hashfull` (all `null` if the engine never reported them).
-`--engine-option Threads=N`/`Hash=M` (case-insensitive) are echoed into `--manifest` as
-`engine_threads`/`engine_hash_mb` — constant for the whole run, so they live on the manifest, not
-duplicated per observation (same precedent as `multipv`). `Observation.engine_options_hash` (a
-full blake3 hex digest of the resolved `--engine-option` pairs, including a synthesized `MultiPV`
-entry if `--multipv` was used) lets a downstream consumer detect an engine-config change between
-two labeling runs without diffing the raw option list itself.
-
-**`--weight-file PATH`** computes the SHA-256 of that one file (rejecting a directory with a clear
-error) and records it as `Observation.weight_sha256` on every observation this run produces, plus
-`weight_sha256` on `--manifest` — e.g. the NNUE/eval weight file the engine is configured to load
-via `--engine-option EvalFile=...`. shogiesa never reads or interprets the file's contents beyond
-hashing it. Unlike `engine_threads`/`engine_hash_mb`, this is duplicated per observation (not just
-on the manifest): a retrained net loaded from the same option-string *path* is invisible to
-`engine_options_hash` alone, and observations can accumulate across multiple `label` invocations
-(`--resume-from`), so per-observation attribution is what survives once data is shuffled away from
-the manifest that produced it.
-
-`label` streams its input line-by-line through a bounded reader / worker-pool / writer pipeline
-instead of loading the whole dataset into memory — memory use scales with `--jobs`, not with
-dataset size. Each of the `--jobs` workers owns one long-lived engine process, launched once and
-reused across every position it processes (not respawned per position). **Output is unordered by
-default — each result is written the instant it arrives, in whatever order workers finish.** This
-is deliberately the safe default for interruption: `label` installs no signal handler, so killing
-it (Ctrl-C, SIGTERM, SIGKILL) always loses whatever hasn't been durably written yet. `--preserve-
-order` opts into strict input-order output instead (a bounded reorder buffer holds back an
-out-of-order result until its predecessors have been written) — but this means a single
-slow-to-label position can hold *every already-finished* position behind it in memory, unwritten,
-for as long as that position takes; killing `label` while that's happening discards all of that
-completed work, not just whatever was still mid-search. Only use `--preserve-order` when you
-specifically need output order to match input order (e.g. diffing against a prior run).
-
-`--skip-existing` skips a requested depth if this engine already has an observation reaching at
-least that depth with the same MultiPV setting — but it only sees what's already inside the
-*input* record it's currently reading, so feeding it the original (unlabeled) corpus does nothing,
-and feeding it a killed run's
-own partial `--out` skips only the positions that file happens to contain, silently dropping
-whatever the kill never got to at all. `--replace-existing` overwrites an existing observation at
-the same depth and MultiPV setting instead of duplicating it, for intentionally re-labeling.
-`--skip-existing` and
-`--replace-existing` are mutually exclusive, and both key off the depth the engine *actually
-reached*, not the one requested — an engine that stops early (e.g. a forced mate) can report a
-shallower depth than asked for, and these flags account for that rather than silently duplicating
-or failing to skip. Every observation also records `requested_depth` — the depth that was actually
-asked for on that call — so `--replace-existing` only treats two observations as the same slot when
-both the achieved depth *and* `requested_depth` match (a legacy observation with no recorded
-`requested_depth` still matches on achieved depth alone, for older JSONL).
-
-**Resuming an interrupted run**: `label --input original.jsonl --resume-from
-<killed-run's-partial-out.jsonl> --out new-out.jsonl ...` (same `--engine`/`--depths`/etc. as the
-original invocation). This merges the original *full* position set with whatever the killed run
-did manage to write, matched on `(sfen, source.path, source.ply)` — the same alignment key
-`merge-observations` uses — so positions the kill never reached at all are relabeled from scratch
-while already-covered ones are skipped automatically (same effect as `--skip-existing`, unless
-`--replace-existing` is also given). The path doesn't need to exist yet, so a wrapper script can
-pass `--resume-from` unconditionally from the very first run. `--resume-from` must not point at
-the same path as `--out`. Unlike `merge-observations`, this isn't a union — only `--input` is
-iterated, so `--input` must be the *original full corpus*; a record present only in
-`--resume-from` is silently dropped, not carried through. `--resume-from` is indexed in one
-streaming pass (alignment key → byte offset of that record's line, not the record itself), and
-each resumed record's observations are seeked and re-read on demand — so resuming a near-complete
-multi-GB run stays bounded by `--jobs`, the same as `label`'s own `--input`/`--out` streaming,
-instead of spiking RAM by the resume file's size.
-
-`--manifest PATH` writes a run manifest (engine/depths/MultiPV config, launch failures, coverage
-stats) — see "Run manifests" further down.
-
-`--cache-dir PATH` caches each observation as a small JSON file, sharded into subdirectories by
-the first two hex characters of a content hash over `(sfen, engine name, engine version, engine
-options, engine binary fingerprint, requested depth or node count (kind-tagged, so `--depths 8`
-and `--nodes 8` never collide), multipv, schema version)` — no database,
-just files you can inspect or delete by hand. Cache writes are atomic (temp file + rename), so a
-crash mid-write can never leave a torn file visible to a concurrent reader — relevant since a
-cache dir is meant to be shared across simultaneous `label` runs. Labeling (running the engine)
-is the dominant cost of the whole pipeline, so repeated experiments over the same positions
-(tuning a downstream filter config, resuming after a crash, sharing a labeling budget across
-datasets) reuse a cached observation instead of re-running the engine. Cache hit/miss counts
-appear in `--manifest`. The engine must still be launchable even on a run that hits the cache on
-every position — the cache saves search time, not engine availability (the probe launch and each
-worker's engine start happen regardless of hit rate).
-
-`--engine-fingerprint-mode content|metadata|none` (default `content`) controls whether the engine
-binary itself also contributes to the cache key, on top of its USI-reported `id name`/`id
-version` — those strings are controlled by the engine and aren't guaranteed to change after a
-local rebuild, so relying on them alone risks a cache hit silently reusing labels produced by a
-different executable. `content` hashes the binary's bytes (read once, negligible next to actually
-running search); `metadata` hashes its canonical path/size/mtime instead (cheaper, but
-invalidates on every rebuild into a fresh path even when the bytes are identical — e.g. a CI job
-that builds into a new directory each run); `none` restores the original behavior of trusting the
-USI id strings alone. If `--engine` names a bare command resolved via `PATH` (which reading/
-stat-ing the binary can't follow the way process spawning does), `content`/`metadata` fall back
-to `none`'s behavior for that run with a warning, rather than failing `label` outright.
-
-**USI lifecycle strict mode** (`--usi-strict` / `--restart-engine-every N` /
-`--restart-on-protocol-error` / `--transcript-on-error DIR`) detects and recovers from a desynced
-or half-dead engine process instead of silently trusting whatever it says — motivated by a real
-bug in a sibling project where a stale engine kept answering for the wrong position, silently
-corrupting an unattended labeling run. `--usi-strict` detects protocol violations: a bestmove with
-no matching `go`, a duplicate bestmove for the same `go`, a bestmove that arrives after its search
-was already timeout-salvaged, and (reusing the same `shogi_core`/`shogi_legality_lite` legality
-check `make-gate-openings` uses) a bestmove that isn't legal in the position it was given — an
-illegal bestmove is discarded rather than recorded as a trusted observation. Violations are
-counted in `--manifest` as `protocol_violations_count` (`null` unless `--usi-strict` is given, so
-a reader can distinguish "not checked" from "checked, found none").
-
-The actual root-cause fix ships regardless of any flag: a dead engine process (an I/O error — the
-pipe itself is broken) is now **unconditionally** relaunched instead of being silently reused for
-every remaining position on that worker thread. `--restart-on-protocol-error` extends relaunching
-to non-fatal failures too (a timeout, an unparseable response, or a `--usi-strict` violation) — off
-by default, since a bare timeout alone can just mean `--timeout-ms` is too tight for this engine,
-not proof it's dead. `--restart-engine-every N` relaunches periodically regardless of errors, as a
-hedge against slow resource growth in long unattended runs. `--transcript-on-error DIR` dumps the
-raw USI exchange since the last clean `go` to `{nanos}_worker{id}_{kind}.log` on any search error
-(not just strict-mode violations), for post-mortem debugging. `--manifest` gains `engine_restarts`,
-always populated (like `timeout_salvaged_count`) — it can be nonzero even with none of these flags
-set, since the dead-engine relaunch is unconditional.
-
-**Experiment envelope passthrough**: `--experiment-id`/`--candidate-id`/`--baseline-id`/
-`--lineage-id`/`--teacher-manifest-sha256`/`--init-seed`/`--split-seed`/`--split-sha256`/
-`--validity` are opaque tags echoed verbatim into `--manifest` — shogiesa doesn't interpret or
-validate any of them. Part of a shared provenance vocabulary drafted for a wider pipeline
-(shogiesa → quietset → lineprior → veridict); see
-[`docs/design/experiment_envelope.md`](docs/design/experiment_envelope.md) for the current status
-(a draft, not yet adopted by the other three repos) and
-[`schema/experiment_envelope.schema.json`](schema/experiment_envelope.schema.json) for the
-proposed shape. `--manifest` also gains computed `dataset_sha256` (SHA-256 of `--input`) and
-`binary_sha256` (SHA-256 of the engine binary) — both genuine SHA-256 (not blake3, unlike every
-other hash in this file), specifically because these are cross-repo-facing fields a sibling repo
-may verify with `shasum -a 256`.
-
-### `cache` — inspect/maintain a `label --cache-dir`
-
-```bash
-shogiesa cache stats  --cache-dir .shogiesa-cache
-shogiesa cache verify --cache-dir .shogiesa-cache
-shogiesa cache prune  --cache-dir .shogiesa-cache --older-than-days 30
-shogiesa cache prune  --cache-dir .shogiesa-cache --corrupted-only --yes
-shogiesa cache prune  --cache-dir .shogiesa-cache --legacy-only --yes
-```
-
-Every new cache entry is written as a small envelope (`cache_schema_version`, `created_at`,
-`schema_version`, engine name/version/fingerprint/fingerprint-mode, `requested_depth`,
-`search_limit_kind`/`search_limit_value`, `multipv`, and the `observation` itself) instead of a
-bare `Observation` — the cache *key*
-(`(sfen, engine name/version, engine options, engine binary fingerprint, requested depth or node
-count, multipv, schema version)`) already encodes all of this, but it's a one-way hash: there's no way to recover
-"what schema version was this?" from the filename alone. Storing it in the payload too costs
-nothing at write time and unlocks real introspection at read time. Cache dirs populated before
-this envelope existed keep working unchanged — every read tries the new format first, falling back
-to the old bare-`Observation` shape, so nothing needs migrating and nothing you deleted needs
-re-labeling.
-
-`cache stats` reports entry count, total size, oldest/newest entry age (in days), a per-engine
-distribution, a legacy (pre-envelope) entry count, and — for entries with the new metadata —
-`schema_version`/`engine_fingerprint`/`requested_depth`/`multipv`/`search_limit_kind`
-distributions (the last so a `--nodes`-labeled cache dir doesn't just report `requested_depth: 0`
-for every entry with nothing explaining why). `cache verify` detects corrupted
-(unparseable-as-either-format) entries and reports the same legacy/current split.
-**Scope note**: neither command does a *live* "does this entry match today's engine/schema" check
-— that would need `--engine`/`--engine-fingerprint-mode` arguments here to recompute the current
-fingerprint and compare, a real but separate feature. It's also not a correctness gap without it:
-`SCHEMA_VERSION` and the engine fingerprint are already folded into the cache key itself, so a
-schema bump or engine change simply produces a different key going forward — a stale entry is
-never wrongly reused, it's just orphaned dead weight on disk, which is what `cache prune
---older-than-days N` is for. `cache prune` is dry-run by default (reports what would be deleted) —
-pass `--yes` to actually delete. Requires at least one of `--corrupted-only`/`--legacy-only`/
-`--older-than-days`; combining flags deletes anything matching any of them. `--legacy-only` deletes
-only pre-envelope entries, for once you're confident the new format has fully replaced them.
-
-### `from-match` — extract positions from a match-runner's kifu logs
-
-```bash
-shogiesa from-match --input results/kifu/run1 --out failures.jsonl --losing-side engine1
-```
-
-A pure extractor for an external engine's match-runner output (e.g. Sekirei's own
-`sekirei-match-runner --output <dir>`, which writes one `gameNNNN.txt` per game: header lines
-naming each engine slot and the result, then a `position startpos moves ...` or
-`position sfen ... moves ...` USI move list — the latter when the match started from a custom
-position, e.g. a strength-gate run using `--positions`). Does **not** label — feed the output
-through the existing `label`/`select --strategy hard`/`filter` commands yourself, same as any
-other extracted dataset. This is deliberate: a match-runner's own result JSONL typically records
-only the win/loss/draw outcome, not per-ply evaluation (engines commonly discard `info` lines
-rather than logging them), so "which positions were actually mistakes" can only be discovered by
-relabeling the extracted positions and analyzing the fresh observations — not by a flag on
-`from-match` itself.
-
-`--losing-side engine1|engine2` extracts only from games where that literal kifu-file label lost,
-per its own `# Result: Engine1 Win`/`Engine2 Win` line — not an inferred candidate/baseline
-mapping (a match-runner's own source doesn't guarantee which physical engine slot is "the
-candidate" under test). Omit to extract from every game regardless of result. `--min-ply`/
-`--max-ply`/`--every-n-plies`/`--dedup` behave exactly like `extract`.
-
-A `position sfen ...` game's extracted positions carry their true overall ply, continuing from the
-starting SFEN's own move-count field (e.g. a game starting at move 22 gets ply 22, 23, ... — not
-0, 1, ...), so phase classification and ply-based filtering stay correct regardless of which form
-of `position` line a game's kifu used.
-
-### `make-gate-openings` — build a diverse opening suite for an external match-runner
-
-```bash
-shogiesa make-gate-openings --input positions.jsonl --out openings.sfen --count 100
-```
-
-Writes a plain-text file, one SFEN per line, ready for an external match-runner's own opening-book
-flag — e.g. Sekirei's `sekirei-match-runner --positions openings.sfen`, which gates a new build by
-playing candidate-vs-baseline games from each listed starting position instead of always
-`startpos`. `--input` need not be labeled (only `sfen`/`source` are read, `observations` are never
-inspected), so raw `extract`/`from-match` output works directly.
-
-Selection reuses `stratify`'s group-aware quota-fill (rank = how many positions from a record's own
-source root have already been kept, lower rank always wins, hash-tiebroken within a rank by
-`--seed`), degenerated to a single universal bucket sized `--count` — the same mechanism that keeps
-one source game from dominating a `stratify` bucket, applied here to keep one source game from
-dominating the whole suite. `--min-ply` (default 8, matching what a very early position offers
-little real opening variety) and `--max-ply` (unbounded by default) filter by `source.ply` first;
-pair with `filter`/`mine` upstream if the input is a late-game-heavy corpus (e.g. loss-mined data)
-so "opening" stays accurate. Positions are deduplicated on board+side+hand (ignoring the trailing
-move-count field and `source.path`/`ply`) before rank assignment, so two records that are the same
-starting position for gating purposes — even from different games — collapse to one kept entry
-instead of wasting two quota slots on an identical opening. Each output SFEN is validated via the
-same parser `label`/`filter` use before being written, so a malformed input line is skipped
-(`invalid_sfen`) rather than handed to an external match-runner as-is.
-
-A syntactically valid SFEN can still be useless for gating if the side to move has zero legal
-moves (a checkmate/stalemate-adjacent terminal position) — these are dropped by default
-(`unplayable`), since an external match runner needs a playable starting position, not a game-over
-one. Legality is checked via `shogi_core`/`shogi_usi_parser`/`shogi_legality_lite`, not shogiesa's
-own move logic. Pass `--allow-unplayable` to keep them anyway.
-
-`--manifest` reports `distinct_roots_kept` and `max_root_share_in_any_bucket` (reused verbatim from
-`stratify`, reinterpreted here as the largest fraction of the whole suite contributed by any single
-source game) alongside the usual drop-reason breakdown (`invalid_sfen`, `below_min_ply`,
-`above_max_ply`, `unplayable`, `duplicate_sfen`, `over_count`), plus: `selection_seed` (echoes
-`--seed`); `canonical_valid_count` (count surviving every filter, *before* `--count`'s quota trims
-it — distinct from `records_kept`, which is post-quota); `output_sha256` (SHA-256 of `--out`'s
-written bytes); `source_distribution`/`phase_distribution`/`material_distribution` over the final
-kept suite (`material_distribution` uses a standard integer piece-point table — P1/L3/N3/S5/G6/
-B8/R10, promoted minor pieces at Gold's value, King excluded — a fresh judgment call with no
-external-standard citation, since no prior material concept existed anywhere in this codebase);
-and `selection_algorithm_version` (bumped only when the underlying tie-break/ranking/dedup scheme
-itself changes, not for unrelated edits to this command). Line order in `--out` is deterministic
-input-encounter order, not seed-shuffled — `--seed` only breaks ties over which records win a
-`--count` quota — stable across repeated runs for a fixed input/seed/filter/`--count` combination,
-but not a portable cross-run join key on its own (changing `--count` changes which records survive
-the quota, so a line's position in the file shifts too).
-
-Producing this file is the easy part; whether it actually improves gate accuracy on Sekirei's own
-side (tighter Elo CIs, less opening-side bias, less single-root dominance) is a separate, external
-question — see [`docs/SEKIREI_GATE_EVALUATION.md`](docs/SEKIREI_GATE_EVALUATION.md) for a runbook
-comparing it against `startpos`-only and Sekirei's existing production suite.
-
-### `lineprior export` — export moves for offline `lineprior` dogfooding
-
-```bash
-shogiesa lineprior export \
-  --input ./games \
-  --out shogi_observations.jsonl \
-  --state-format sfen \
-  --action-format usi \
-  --max-ply 80 \
-  --source teacher_v012 \
-  --outcome-mode game-result \
-  --score-mode none \
-  --manifest export_manifest.json
-```
-
-Exports CSA/KIF game records into `lineprior`-compatible JSONL, one line per move actually played,
-for offline dogfooding of that tool (a separate, domain-agnostic action-prior builder — not part of
-this repo). Measurement-only in this phase: not
-integrated into Sekirei search. `state` is always the SFEN of the position *before* the move — the
-opposite of `extract`'s JSONL, which only keeps the post-move SFEN — and `action` is the USI move
-token played from that state. `--state-format`/`--action-format`/`--outcome-mode`/`--score-mode`
-currently accept exactly one value each (anything else is a clap error) — forward-compat
-placeholders, not yet configurable.
-
-**`outcome` is a weak game-result signal, not a best-move label.** It's derived purely from who won
-the game a move was played in — winner's moves → `success`, loser's moves → `failure`, draw →
-`draw`, undetermined result → `unknown` — and says nothing about whether any individual move was
-tactically correct. A blunder in a game its side went on to win is still labeled `success`; a strong
-move in a losing game is still labeled `failure`. Treat this like any noisy weak-supervision signal,
-not an engine-verified quality label.
-
-CSA outcome resolution uses the format's own typed terminal action (resignation, timeout, illegal
-move, nyugyoku win-declaration, repetition, impasse, etc.) and is exact. KIF outcome resolution is
-text-marker-based (`まで…の勝ち` summary line, inline `投了`/`持将棋`/`千日手`/`中断` tokens) and
-covers the common endings; anything else — including every move inside a `変化` (variation) branch,
-since a branch's own ending isn't the actual game's result — falls back to `outcome: "unknown"`
-rather than guessing. `先手`/`後手` in the KIF summary line name move *order*, not a fixed color, so
-handicap games (where the handicapped side conventionally moves first) resolve correctly too.
-
-`sequence_id` groups a KIF mainline with all of its variation branches (the same `source.root_id`
-convention `split`/`stratify`/`make-gate-openings` already use), so a `lineprior tune --split-by
-sequence`-style split doesn't leak near-duplicate correlated positions across train/test.
-
-`--manifest` writes record/sequence counts, an `outcome_distribution`, a phase `tag_distribution`,
-and `unknown_outcome_count` — the last one is a one-glance check for how much of a corpus is
-`変化` variation branches diluting the signal (see the outcome-resolution caveat above). Its
-`input_hash` covers only the game files the export actually read (a directory containing one
-unreadable/non-UTF-8 file still succeeds with that file skipped, same as without `--manifest`), so
-two runs against the same corpus always match, and it's meant for spotting when a corpus changed
-between runs, not as a strict precondition on every file in `--input`.
-
-Typical follow-up workflow (`lineprior` itself lives outside this repo):
-
-```bash
-shogiesa lineprior export --input ./games --out obs.jsonl --source teacher_v012
-lineprior tune obs.jsonl --split-by sequence --objective covered-mrr --save-best-config cfg.json
-lineprior eval obs.jsonl --config cfg.json
-# inspect: coverage, fallback_rate, top1/top3/top5_hit_rate, MRR
-```
-
-### `merge-observations` — combine a shallow pass with a deeper relabel
-
-```bash
-shogiesa merge-observations --primary observations.jsonl --secondary deep_observations.jsonl \
-  --out merged.jsonl --on-collision keep-both
-```
-
-Merges two labeled JSONL files record-by-record, matched on `(sfen, source.path, source.ply)` —
-not bare `sfen` alone, since two different games/plies can reach an identical position (common in
-early openings). Positions present in only one file pass through unchanged (a union, not an
-intersection); positions in both have their observation lists combined per `--on-collision`, keyed
-on `(engine, engine_version, depth, requested_depth)` — deliberately including `engine_version`
-(unlike `label`'s own narrower in-place dedup key), since this command is explicitly merging data
-whose provenance might differ, and conflating two different engine versions at the same nominal
-depth would be a real bug here.
-
-- `keep-both` (default) — both observations survive, no data loss. Matches `label`'s own
-  `ExistingPolicy::Append`-is-default convention.
-- `prefer-primary` — the `--primary` file's observation wins on a collision.
-- `prefer-secondary` — the `--secondary` file's observation wins on a collision.
-
-**Important: `--on-collision` is not a "the deeper depth wins" switch.** Because `depth` is part
-of the collision key, a shallow pass (depth 4) and a deeper relabel (depth 12) of the same
-position have *different* keys and never collide — both survive under every policy, same as
-`label --depths 4,12` would natively produce. `--on-collision` only resolves the narrower case of
-two passes landing on the exact same `(engine, engine_version, depth, requested_depth)` tuple
-(e.g. a flaky re-run at an identical depth). If you want a deeper pass to fully supersede a
-shallower one rather than accumulate alongside it, filter the shallow observations out of
-`--primary` yourself before merging (e.g. via `filter --min-depth-reached`).
-
-A merged record's `stability` is cleared — it was computed from only one side's observations and
-would otherwise silently misrepresent the combined set. Re-run `stability` after merging.
-
-### `stability` — compute stability scores
-
-```bash
-shogiesa stability --input observations.jsonl --out observations.jsonl
-```
-
-Adds `stability.score_swing_cp` (max − min cp across observations) and `stability.bestmove_agreement`
-to each record. If the record was labeled by 2+ distinct engines (see `label --engine-name`),
-also adds `stability.engine_bestmove_agreement` and `stability.engine_score_swing_cp` — computed
-from each engine's *deepest* observation, so a depth mismatch between engines can itself surface
-as disagreement (intentional: it's each engine's best-available answer). `None` with fewer than
-2 engines represented. Both agreement checks exclude special bestmove tokens (`resign`/`win`/`none`,
-see `bestmove_kind` under "JSONL Schema") from the comparison — one engine giving up isn't an
-opinion about which move is best, so it's neither counted as agreement nor disagreement.
-
-### `filter` — stability-based filtering
-
-```bash
-shogiesa filter \
-  --input observations.jsonl \
-  --max-score-swing-cp 150 \
-  --exclude-mate \
-  --require-bestmove-agreement \
-  --require-engine-agreement \
-  --out train.jsonl
-```
-
-Keeps only positions passing the given stability/eval-range/phase criteria. See `shogiesa filter --help` for the full flag list.
-`--eval-min`/`--eval-max` compare against Black-perspective cp (positive = good for Black,
-regardless of whose turn it was), not the raw side-to-move-relative value USI reports — see
-`Observation.score_perspective` under "JSONL Schema".
-`--require-engine-agreement` / `--max-engine-score-swing-cp` mirror
-`--require-bestmove-agreement` / `--max-score-swing-cp` but compare across distinct *engines*
-(a teacher-ensemble disagreement signal) instead of across depths of one engine — both are a
-no-op on positions labeled by only one engine.
-
-`--require-exact-score` excludes positions where any observation's score is a search bound
-(lowerbound/upperbound) rather than a confirmed evaluation. `--require-policy-margin` excludes
-positions where no observation has a computed `policy_margin_cp` at all — unlike
-`--min-policy-margin-cp` (a no-op when every margin is unset, since it only checks margins that
-were actually computed), this requires a margin to exist in the first place.
-
-`--min-depth-reached N` excludes positions where any *non-mate* observation's achieved `depth` is
-below `N`. Mate observations are exempt: an engine stopping short of the requested depth is
-dominantly caused by finding a forced mate (a confirmed, high-confidence result), not a weak
-search — gating on depth without this exemption would penalize the most reliable observations.
-
-`--require-requested-depth-reached` excludes positions where any *non-mate* observation's achieved
-`depth` fell short of its own `requested_depth` (the depth `label` asked for, recorded per
-observation — see `Observation.requested_depth` below). Unlike `--min-depth-reached` (a fixed
-floor you pick), this checks each observation against the depth it was itself asked to reach —
-useful once different observations in the same dataset were requested to different depths. A
-no-op on observations with no recorded `requested_depth` (labeled before this field existed).
-Mate is exempt for the same reason as `--min-depth-reached`, *except* for a timeout-salvaged mate
-score (see `Observation.was_timeout_salvaged` below) — it never actually confirmed the mate the
-way a genuine engine-initiated early stop does, so it's excluded from that exemption by default.
-Pass `--allow-timeout-salvaged-mate` to restore the blanket exemption for salvaged mates too.
-
-`--exclude-timeout-salvaged` excludes positions where any observation is a timeout-salvaged,
-degraded-but-real result (`label --timeout-ms` elapsed before `bestmove` arrived) rather than a
-full completion or a genuine engine-initiated early stop.
-
-`--manifest PATH` (also on `balance`/`sample`/`pack`/`label`, below) writes a run manifest — see
-"Run manifests" further down.
-
-`--dry-run` reports what would be kept/dropped (and why, via the same drop-reason breakdown) as
-a normal run, without writing `--out` — `--out` isn't required in this mode. Combine with
-`--manifest` to get a structured preview of a filter config's effect with no output file.
-
-`--explain-out PATH` writes every rejected record to a JSONL file, each line
-`{"record": ..., "quality": ...}` pairing the dropped record with its full `QualityDecision`
-(every failing reason, not just the first one used for the stderr breakdown) — useful for
-routing rejected positions to manual review or a future re-labeling pass. Works standalone or
-combined with `--dry-run`/`--manifest`.
-
-### `calibrate` — sweep quality-gate thresholds
-
-```bash
-shogiesa calibrate \
-  --input observations.jsonl \
-  --sweep-policy-margin 0,40,80,120,160 \
-  --sweep-score-swing 50,100,150,200 \
-  --out calibration.csv
-```
-
-`filter`'s thresholds (`--min-policy-margin-cp`, `--max-score-swing-cp`, ...) are otherwise picked
-by guesswork. `calibrate` reuses `shogiesa_core::evaluate_quality`/`QualityConfig` exactly as
-`filter` does — no separate quality-judgment logic — and sweeps a threshold across the values you
-give it, reporting how many positions each value would keep/drop and why, so you can pick a
-threshold based on your own dataset and engine instead of an assumed rule of thumb.
-`--sweep-policy-margin`/`--sweep-score-swing` each sweep independently (one CSV row per swept
-value); the other dimension can be held at a fixed value via `--min-policy-margin-cp`/
-`--max-score-swing-cp` (mutually exclusive with sweeping that same field). Every other `filter`
-gate flag (`--exclude-mate`, `--eval-min`/`--eval-max`, `--require-exact-score`, etc.) is also
-available here, held fixed across every swept value. Output is a CSV with one row per
-`(sweep_param, sweep_value)`: `total`/`kept`/`dropped`/`coverage_pct`, plus a `drop_reasons` column
-(first-failing-reason-only, same convention `filter`'s stderr breakdown uses). Separately, prints a
-one-time, sweep-independent stderr summary: `policy_margin_cp`/`score_swing_cp` distributions
-(50cp buckets, same convention as `report`'s histograms), observation-level `score_bound` counts,
-`requested_depth` underreach rate, and special-bestmove rate — context for interpreting the sweep,
-not something that varies by threshold.
-
-### `audit` — compare shallow vs. deep observations
-
-```bash
-shogiesa audit \
-  --input observations.jsonl \
-  --teacher-depth 14 \
-  --student-depths 6,8,10 \
-  --out audit.jsonl
-```
-
-Answers "how much does labeling at a shallower depth actually cost, per engine, on this dataset" —
-a pure analysis command over data you already have: one `label --depths 6,8,10,14` run already
-produces multiple same-engine `Observation`s per record, one per depth (see `Observation.depth`).
-For each record, groups observations by `engine` (a dataset labeled by 2+ engines never compares
-engine A's shallow observation against engine B's deep one), finds each engine's `--teacher-depth`
-observation (matched by `requested_depth`, falling back to achieved `depth` for legacy pre-schema-v6
-data) and each `--student-depths` observation under the same rule, and for every (engine,
-student_depth) pair where both exist, writes one `audit.jsonl` line:
-```json
-{"sfen": "...", "source": {...}, "engine": "sekirei",
- "teacher_requested_depth": 14, "teacher_depth": 14, "teacher_score_bound": "exact",
- "teacher_underreach": false, "teacher_bestmove_kind": null,
- "student_requested_depth": 8, "student_depth": 8, "student_score_bound": "exact",
- "student_underreach": false, "student_bestmove_kind": null,
- "bestmove_match": true, "score_error_cp": -35}
-```
-`bestmove_match` reuses `bestmove_agreement` (excludes resign/win/none from the comparison, same as
-everywhere else); `score_error_cp` (`None` when either side is mate) normalizes both sides through
-`cp_from_black_perspective` before subtracting, not a raw difference of side-to-move-relative
-values. A teacher observation that itself fell short of `--teacher-depth` on a forced mate is still
-used as the teacher (same mate-exemption convention as `filter`'s depth gates) — its
-`teacher_underreach` correctly reads `false`, not a bug. Prints a per-student-depth and overall
-stderr summary: pairs compared, bestmove-mismatch rate, average/max `|score_error_cp|`,
-teacher/student non-exact rate, teacher/student underreach rate, teacher/student special-bestmove
-rate.
-
-### `tune` — grid-sweep thresholds and compare against a teacher depth together
-
-```bash
-shogiesa tune \
-  --input observations.jsonl \
-  --teacher-depth 14 \
-  --student-depths 6,8,10 \
-  --sweep-policy-margin 0,40,80,120,160 \
-  --sweep-score-swing 50,100,150,200 \
-  --out tuning.csv \
-  --report tuning.md
-```
-
-Merges `calibrate` and `audit` into one question: does a quality-gate config that *keeps more
-data* also keep *less trustworthy* data? Grids `--sweep-policy-margin` × `--sweep-score-swing` (a
-combined threshold per grid cell, not `calibrate`'s independent 1D sweeps — a 1×N or N×1 grid
-degenerates to exactly `calibrate`'s behavior, so `tune` is a strict superset, not a second
-concept), and for each cell reports both coverage (via `evaluate_quality`/`QualityConfig`, same as
-`calibrate` — no separate judgment logic) and `audit`-style teacher/student mismatch metrics
-**restricted to the records that cell would keep**. Single streaming pass: each record's
-teacher/student comparisons are computed once (independent of any threshold) and folded into every
-grid cell that would keep that record, rather than recomputed per cell.
-
-`--out tuning.csv` has one row per `(policy_margin, score_swing)` cell: coverage/kept/dropped/
-drop-reasons (same convention as `calibrate`) plus `audit_pairs`/mismatch-rate/avg\|max
-`score_error_cp`/non-exact/underreach/special-bestmove rates — the audit-derived columns render
-empty (not `0.00`) when a cell has no audit pairs, so a genuine 0% mismatch is never confused with
-"no data."
-
-`--report tuning.md` (optional) computes the Pareto frontier over each cell's (coverage,
-mismatch-rate) point and presents 3 candidates — **broad** (max coverage), **strict** (min
-mismatch rate), **balanced** (closest to the ideal corner, coverage and mismatch-rate range-
-normalized to the frontier's own observed spread before computing distance — without this, a much
-wider coverage range than mismatch-rate range would make "balanced" collapse onto "broad") —
-instead of shogiesa picking one "correct" threshold. Whether a training run wants quantity or
-reliability varies run to run; `tune` hands back the trade-off curve, not a verdict.
-
-`--preset-out tuning.json` (optional) writes the same 3 candidates as machine-readable JSON, each
-carrying its **full** resolved `QualityConfig` (not just the swept fields), ready to feed straight
-into `filter --preset tuning.json:balanced` — this removes hand-transcribing thresholds from the
-Markdown report into `filter` flags, which breaks reproducibility and severs the link between a
-data condition and the coverage/mismatch numbers that justified picking it:
-
-```bash
-shogiesa filter --input observations.jsonl --out train.jsonl --preset tuning.json:balanced
-```
-
-`--preset` supplies the entire config and conflicts with every individual gate flag (`--exclude-
-mate`, `--min-policy-margin-cp`, etc.) so precedence is never ambiguous — pick one or the other.
-
-For a fixed train/valid/test comparison of baseline, filtered, mined, and balanced datasets, use
-the reproducibility checklist in [`docs/design/dataset_recipe_template.md`](docs/design/dataset_recipe_template.md).
-It keeps shogiesa transformation artifacts separate from trainer-owned seeds, architecture,
-optimizer, and training budget.
-The training-result comparison protocol is documented in
-[`docs/design/training_effect_measurement.md`](docs/design/training_effect_measurement.md).
-The remaining performance, reproducibility, training-effect, and interoperability runs are
-listed in the [measurement matrix](docs/design/measurement_matrix.md); it is a run plan, not
-benchmark evidence.
-For local fixture-backed regression checks, run `bash scripts/run_local_measurement_smoke.sh`.
-The interoperability evidence, API boundary, competitor evidence, and release checklist are in
-[`docs/interop_evidence.md`](docs/interop_evidence.md), [`docs/api_boundary.md`](docs/api_boundary.md),
-[`docs/competitor_evidence.md`](docs/competitor_evidence.md), and
-[`docs/release_checklist.md`](docs/release_checklist.md).
-The lightweight repository contract check is `bash scripts/check_repository_contract.sh`; the full
-release checks can be run together with `bash scripts/release_readiness.sh`.
-An environment-specific validation log is retained under `docs/release_validation_*.md`.
-
-### `mine` — hard-position mining
-
-```bash
-shogiesa mine --input observations.jsonl --blunder-threshold 200 --out hard.jsonl
-```
-
-Extracts positions around large eval swings (blunders) and/or a `--losing-threshold`.
-
-### `balance` — rebalance dataset distribution
-
-```bash
-shogiesa balance --input positions.jsonl --by phase --by side --out balanced.jsonl
-```
-
-Buckets by `phase`/`side`/`eval-bucket`/`wdl` and takes an equal number from each bucket. `wdl` is
-mover-relative (`success`/`failure`/`draw`/`unknown`) — see the `game_result` schema note below.
-`eval-bucket`
-buckets on Black-perspective cp, so the same absolute outcome (e.g. "Black is winning by 300")
-lands in the same bucket regardless of whose turn the position was. Reads its input twice (once to
-tally each bucket's size, since `--target` defaults to the smallest bucket's size; once to rank)
-and keeps a bounded top-`--target` heap per bucket instead of materializing the whole dataset, so
-memory scales with `(bucket count × target)`, not with dataset size.
-
-### `stratify` — quota-based, group-aware sampling
-
-```bash
-# 1. Observe current bucket counts as a hand-editable starting point
-shogiesa stratify --input positions.jsonl --write-template quota.json --by phase --by side
-
-# 2. Edit quota.json's "quotas" counts down to the desired per-bucket targets, then apply
-shogiesa stratify --input positions.jsonl --quota quota.json --out stratified.jsonl
-```
-
-Unlike `balance` (one uniform `--target` applied to every bucket), `stratify` reads a *different*
-target count per phase/side/eval-bucket/wdl combination from a JSON quota file, and is
-*group-aware*:
-when a bucket must be downsampled, the kept subset spreads across distinct source games/roots
-(the same `root_id`-or-path-derived key `split --train/--valid/--test` uses for leakage safety)
-instead of concentrating on whichever root's positions happen to sort first — the concern being a
-dataset that's nominally balanced by eval-bucket but is actually mostly one game because that game
-happened to visit that eval range the most.
-
-`quota.json`'s `"quotas"` map keys are exactly `balance`'s own bucket notion's string form (e.g.
-`"opening:black:-200:"`, including its trailing colon per enabled dimension) — reused verbatim, not
-re-derived, so the template's keys and a real run's computed keys can never drift apart. The file
-also records which dimensions (`by`) it was generated with, so `--quota` reconstructs the bucketing
-from the file alone; passing `--by` together with `--quota` is a hard error rather than a
-silently-ignored (and potentially mismatched) flag.
-
-Group-awareness works by giving each record a rank — how many positions from its own source root
-have already been seen in its bucket, in file order — and preferring lower ranks unconditionally:
-every root's first position in a bucket beats every root's second, across all roots, so one root
-can never take a whole bucket's quota while excluding another root present in it (hash-based
-tie-breaking, seeded by `--seed`, only decides ties *within* one rank). With only one distinct root
-in a bucket, this degrades to "keep the first N positions in file order" for that bucket — a real,
-documented behavior distinct from `balance`'s lexicographically-smallest-SFEN pick, since there's no
-root diversity to protect in that case.
-
-A bucket combination present in the input but absent from the quota file is dropped
-(`bucket_not_in_quota`), tracked separately from a bucket that's present but over its quota
-(`over_quota`) — a quota file is meant to describe the complete intended shape of the output, so an
-unmentioned combination is treated as unintended rather than passed through. `--manifest` (same
-`RunManifest` every other data-producing command uses) additionally reports
-`max_root_share_in_any_bucket` (the largest fraction any single root contributed to any output
-bucket with ≥2 kept records — singleton buckets are excluded, since they'd otherwise always read
-100% and say nothing about whether diversification actually happened) and `distinct_roots_kept`.
-
-### `select` — re-labeling candidates
-
-```bash
-shogiesa select \
-  --input observations.jsonl \
-  --strategy uncertain \
-  --count 100000 \
-  --seed 42 \
-  --out relabel_candidates.jsonl
-```
-
-`filter` decides what's good enough to train on; `select` picks what's worth a second, deeper
-label pass — re-labeling an entire dataset at higher depth costs the same whether 1% or 100% of
-it is actually weak, so `select` spends that budget on the positions most likely to need it.
-`--strategy`:
-
-- `uncertain` — weak or missing label signals: non-exact score, no computed `policy_margin_cp`,
-  `requested_depth` not reached, or engine disagreement. Ranks by `evaluate_quality`'s own
-  pass-fraction (the same gate logic `filter` uses, via `require-exact-score`/
-  `require-policy-margin`/`require-requested-depth-reached`/`require-engine-agreement` all
-  enabled at once) — worst first. `--min-policy-margin-cp N` optionally also weighs in a
-  too-small (rather than merely absent) margin, mirroring `filter`'s flag of the same name.
-- `hard` — large eval swings, bestmove disagreement, and blunder-adjacency (reusing `mine`'s
-  blunder-window detection via `--blunder-threshold`/`--blunder-window`) — worst first.
-- `coverage` — positions from the thinnest phase/side/eval-bucket combinations (reusing
-  `balance`'s bucket key) — thinnest first.
-
-Unlike `sample`/`balance`, output is in ranked order (most-worth-a-look first), not restored to
-input order — a re-labeling queue is more useful read top-to-bottom by priority. Ties within a
-rank break deterministically by `--seed`, the same mechanism `sample` uses.
-
-`--strategy uncertain`/`coverage` stream the input and keep a bounded top-`--count` heap instead
-of materializing the whole dataset, so memory scales with `--count`, not with dataset size
-(`coverage` reads its input twice — once to tally bucket sizes, once to rank — since a bucket's
-size can't be known until every position naming it has been seen). `--strategy hard` materializes
-the full dataset by default: its blunder-adjacency signal fundamentally needs a whole game's
-positions grouped together, which isn't safe to stream without assuming the input is contiguously
-grouped by source. Pass `--assume-grouped-by-source` when that assumption actually holds (e.g.
-straight `extract` output, or anything already run through `split`) to opt into the same
-one-game-at-a-time streaming bound `uncertain`/`coverage` already have — an incorrectly-set flag
-on genuinely ungrouped/interleaved input silently computes wrong blunder windows, so this stays
-off by default.
-
-### `split` / `sample` — dataset slicing
-
-```bash
-shogiesa split  --input positions.jsonl --by-source --out-dir by_game/
-shogiesa split \
-  --input positions.jsonl \
-  --train train.jsonl --valid valid.jsonl --test test.jsonl \
-  --valid-frac 0.1 --test-frac 0.1 --seed 42
-shogiesa sample --input positions.jsonl --count 10000 --seed 1 --out sample.jsonl
-```
-
-`split --by-source` writes one file per source game plus a `manifest.json` (input path, schema,
-blake3 input hash, per-file counts, and per-file output hashes). Keeps at most
-`--max-open-writers` (default 256) output files open at
-once — a corpus with more distinct source games than that reuses the least-recently-written file
-handle, closing (and, if that source is seen again, reopening in append mode) whichever source
-wrote longest ago, so FD usage stays bounded regardless of source-game count.
-`split --train/--valid/--test` does a seeded ratio split instead —
-every position from the same source game is assigned to exactly one of the three splits (no
-same-game leakage across train/valid/test — this includes a KIF `変化` variation's positions,
-which are assigned alongside their mainline rather than independently, since they share a parent
-position), grouped by `source.root_id` when present (falling back to stripping the `path`'s
-`#varN@ply` suffix for JSONL/extractors that never set `root_id`, e.g. CSA), and it writes a
-`manifest.json` with the blake3 input/output hashes, seed, requested fractions, source-root
-counts, and sorted `source_root_ids` for direct leakage checks. The *actual* per-split
-position/source counts naturally deviate from the requested fractions since games vary in length.
-`sample` deterministically selects N positions, streaming the input and keeping a bounded
-top-`--count` heap (by `seeded_hash`) instead of materializing the whole dataset, the same
-technique `select --strategy uncertain/coverage` uses.
-
-### `shuffle` — deterministic training order + provenance manifest
-
-```bash
-shogiesa shuffle \
-  --input positions.jsonl \
-  --out shuffled.jsonl \
-  --seed 42 \
-  --block-size 32 \
-  --order-manifest order.jsonl \
-  --split-id train \
-  --teacher-engine strong-engine --teacher-depth 14 \
-  --manifest manifest.json
-```
-
-The first command in this codebase that actually reorders output — every other seeded command
-(`sample`, `select`, `stratify`, `split`) preserves either input-line order or rank order.
-`shuffle` sorts records by `(seeded_hash(seed, sample_id), sample_id)`, so the same input + seed
-always produces byte-identical output order, regardless of Rust toolchain.
-
-**`sample_id`** is `blake3(sfen, source.path, source.ply)` — the same `(sfen, source.path,
-source.ply)` identity `merge-observations` already uses to mean "which real-world position is
-this." It is a *within-run join key*, not a portable formula: `source.path` is whatever string
-was passed to `--input` at extraction time, un-canonicalized, so it is **not** guaranteed to match
-across two independent re-extractions of "the same" corpus on a different machine or directory
-layout. Keep the `--order-manifest` file itself alongside the shuffled data as the durable,
-portable artifact — don't expect another tool to recompute a matching `sample_id` from scratch
-without it.
-
-**`--order-manifest PATH`** writes one JSONL line per output position — `training_position`
-(1-indexed), `sample_id`, `game_id` (same `group_key` used by `stratify`/`distribution`),
-`game_position_index` (`source.ply`), `outcome` (from `game_result.outcome`, `null` if
-unlabeled/unresolved), `teacher_cp`/`teacher_depth` (from the observation matching
-`--teacher-engine`/`--teacher-depth`, both `null` if the flags are omitted — raw side-to-move cp,
-not black-perspective normalized), `source_file` (`source.path`), `split_id` (passthrough of
-`--split-id`, `null` if omitted — `shuffle` doesn't detect which split a file is, since `split`
-doesn't stamp anything onto records today), `shuffle_seed`, and `block_id` (`(training_position -
-1) / block_size`, 0-indexed). `opening_id` is always `null` this round: the gate-opening SFEN a
-game started from isn't retained anywhere on `PositionRecord` today (used transiently during
-extraction, then discarded) — future work once extraction captures it. Every key is always
-present (unlike `RunManifest`'s sparse optional fields), since this file is meant to be loaded as
-a table.
-
-**`--manifest PATH`** (the usual run manifest, see below) gains `order_hash`: a blake3 digest over
-every output position's `sample_id` in final order. This is the actual answer to "did a later run
-— possibly after a code change — produce the identical training sequence": recompute it over a
-shuffled output's `sample_id` column and compare, rather than trusting that "same seed" alone
-implies "same order" (a shuffle-algorithm change under the same seed would defeat that argument,
-`order_hash` doesn't). `--experiment-id` is an opaque passthrough into the same manifest, for
-correlating a run with an external pipeline — shogiesa doesn't interpret it.
-
-### `pack` / `unpack` — binary format
-
-```bash
-shogiesa pack   --input observations.jsonl --out data.shgpk
-shogiesa unpack --input data.shgpk --out observations.jsonl
-```
-
-Compact binary encoding of the JSONL schema for faster loading by trainers.
-JSONL remains the canonical inspection and diff format; pack is a derived distribution format.
-The pack header is `SHOGIESA` plus a little-endian format version, and `unpack` restores records
-to inspectable JSONL. See [`docs/design/schema_compatibility.md`](docs/design/schema_compatibility.md)
-for the supported schema/pack boundary and migration policy.
-With `pack --manifest`, the manifest records the JSONL input hash, current schema/pack versions,
-record counts, and `output_sha256` for the exact binary artifact; it does not make pack the primary
-editing format.
-
-### Run manifests
-
-The JSONL and binary compatibility boundary is documented in
-[`docs/design/schema_compatibility.md`](docs/design/schema_compatibility.md). JSONL readers use
-defaults for additive fields from older schemas; the current binary pack reader accepts format 11
-only, so JSONL is the migration path for older pack data.
-
-`filter`/`balance`/`stratify`/`sample`/`pack`/`label`/`shuffle`/`make-gate-openings`/
-`calibrate`/`audit`/`tune` accept `--manifest PATH` to write a JSON provenance record alongside
-their normal output: shogiesa
-version, git sha (embedded at build time), schema/pack format version, the full command line, the
-input file's path and a content hash (`input_hash`, with `fingerprint_algorithm` naming the
-algorithm — `blake3`, chosen because its digest for a given input is stable across Rust toolchain
-versions, unlike the `std::collections::hash_map::DefaultHasher` used before; this is a "did the
-input change between runs" marker, not a verifiable integrity checksum), records read/kept/dropped,
-drop-reason counts, labeled/unlabeled record counts, MultiPV candidate coverage, `score_bound`
-distribution, requested-depth total/underreach counts, and (for `filter`) the resolved quality
-configuration or (for `label`) the engine name/depths-or-nodes/MultiPV/engine options/job count,
-engine-launch-failure count, `records_per_sec` (wall-clock, based on records durably written — not
-records read, which would inflate the rate with skipped/unparseable rows that never reached the
-engine), `average_engine_time_ms` (averaged from `Observation.time_ms` across each written record;
-under `--skip-existing`/`--replace-existing`/the default append policy this includes any
-observations inherited from a prior `label` run on the same file, not purely this invocation's own
-engine calls — use `records_per_sec` to judge this run's actual throughput), `preserve_order`,
-`resume_from`/`resumed_count` (when `--resume-from` is used — `resumed_count` distinguishes "resume
-wasn't requested" (`null`) from "resume was requested but matched nothing" (`0`)),
-`timeout_salvaged_count`, `protocol_violations_count`/`engine_restarts` (see the USI strict mode
-paragraph in the `label` section above), (for `stratify`) `max_root_share_in_any_bucket`/
-`distinct_roots_kept`, (for `make-gate-openings`) `selection_seed`/`canonical_valid_count`/
-`output_sha256`/`source_distribution`/`phase_distribution`/`material_distribution`/
-`selection_algorithm_version` (see the `make-gate-openings` section above), and (for
-`calibrate`/`audit`/`tune`) `source_root_distribution`/`engine_distribution`/
-`weight_distribution` over the input records/observations. Missing observation weight hashes are
-recorded as `unknown`; no engine or weight provenance is inferred. (When `--cache-dir` is used,)
-cache hit/miss counts, `cache_hit_rate`, and `engine_fingerprint_mode`.
-There's no separate `worker_count` field — `jobs` already is that value. It's opt-in and
-additive — no effect on the command's normal output when omitted. `split` doesn't have
-`--manifest`: it always writes its own tailored `manifest.json` (see above), because splitting
-creates multiple durable output files and needs one manifest to record per-split/per-source
-counts and the assignment seed. The generic run-manifest contract describes one command output
-and its input provenance, so adding a second optional manifest would duplicate or obscure the
-split topology.
-(For `shuffle`) `order_hash` and `experiment_id` — see the `shuffle` section above.
-
-**Experiment envelope** (`label` only, as of this writing — see the `label` section above for the
-individual flags): `experiment_id`/`candidate_id`/`baseline_id`/`lineage_id`/`dataset_sha256`/
-`split_sha256`/`teacher_manifest_sha256`/`binary_sha256`/`weight_sha256`/`init_seed`/
-`split_seed`/`shuffle_seed`/`validity` are a shared provenance vocabulary drafted for a wider
-4-repo pipeline. `shuffle_seed` is also populated on `shuffle --manifest`. This shape is a draft
-(see [`docs/design/experiment_envelope.md`](docs/design/experiment_envelope.md)) — not yet wired
-into every manifest-producing command, and not yet vendored into any sibling repo.
-
-### `recipe plan` — typed pipeline planning without execution
-
-```bash
-shogiesa recipe plan --recipe recipe.json --json-out plan.json
-```
-
-Recipe schema version 1 describes an ordered list of typed shogiesa commands, argv tokens, explicit
-inputs, and explicit outputs. `plan` validates the version, command names, stage IDs, duplicate or
-self-overwriting outputs, NUL bytes, and topological order. It hashes existing external inputs,
-links generated inputs to their producer stage, and derives a deterministic identity for every
-stage from the raw recipe definition, input content hashes, and upstream stage identities.
-Outputs must remain inside the recipe directory; absolute and `..` output paths are rejected.
-
-The planner never executes a stage (`executed: false`). Human-readable stdout shows ready,
-dependency-waiting, and blocked stages; `--json-out` retains the complete versioned plan. Relative
-paths are resolved from the recipe file's directory, while stage identities remain independent of
-where that directory is located. Arbitrary shell commands are not accepted: `command` must be one
-of the typed shogiesa command variants.
-
-### `recipe run` / `recipe verify` — atomic local recipe execution
-
-```bash
-shogiesa recipe run --recipe recipe.json --run-dir .shogiesa-run --json-out run.json
-shogiesa recipe run --recipe recipe.json --run-dir .shogiesa-run --resume
-shogiesa recipe verify --recipe recipe.json --run-dir .shogiesa-run
-```
-
-`run` invokes only the typed shogiesa command variants, never a shell. Declared outputs are written
-to a per-stage staging directory and all output files are checked and committed transactionally;
-existing output files are restored if a commit fails. `run.json` is replaced atomically and records
-each output hash and stage identity. A later run reuses a stage only when the recipe/input identity
-and every recorded output hash still match. `verify` checks those identities and hashes without
-executing commands. A failed or interrupted stage is not recorded as a successful artifact; remove
-stale staging files only after inspecting them. A stage-complete checkpoint is written after every
-stage; if the checkpoint says `running`, continuation requires the explicit `--resume` flag.
-`verify` also checks manifest version, stage order, exact declared output paths/counts, and the
-canonical 64-character hexadecimal output hashes before accepting a run.
-The normalized manifest contract is regression-tested against
-`tests/fixtures/recipe_run_manifest.golden`; machine-specific paths and hashes are intentionally
-kept out of that golden.
-If an interrupted checkpoint contains only a prefix of the stage list, `--resume` reuses that
-verified prefix and reruns the remaining stages in dependency order.
-
-### `conflict-report` — CP / game-outcome sign diagnostics
-
-```bash
-shogiesa conflict-report --input labeled.jsonl
-shogiesa conflict-report --input labeled.jsonl --min-abs-cp 100
-```
-
-This compares each engine/weight pair's deepest CP observation per position with a decisive
-`game_result`: positive Black-perspective CP is expected for a Black win and negative CP for a
-White win. Draws, unknown/missing outcomes, mate scores, and the optional CP deadband are
-excluded and reported separately. A conflict is a diagnostic disagreement, not proof that the
-teacher or game result is wrong.
-
-Mainline and variation records are evaluated with the same rule; their `source.root_id`,
-`variation_id`, and branch provenance remain in the input records and are not silently merged into
-an unrelated game. The fixture-backed CLI test uses `tests/fixtures/conflict_report_input.jsonl` and
-`conflict_report.golden` to golden-check the complete summary, including engine/weight groups; use
-these output counts together with source provenance when comparing subsets.
-
-### `block-report` — contiguous block diagnostics
-
-```bash
-shogiesa block-report --input labeled.jsonl
-shogiesa block-report --input labeled.jsonl --block-size 32
-```
-
-Groups input records into fixed-size blocks within each `source.root_id` (or its legacy path
-fallback), flushing a partial block when the root changes. Each line reports deepest
-black-perspective CP mean and population variance, game-outcome counts, in-check ratio, mean
-black-minus-white material points, king-in-enemy-camp ratio, and non-king pieces in the enemy camp.
-The last two are lightweight board-state proxies, not legal-mobility or NNUE-feature measurements.
-Keep each source root contiguous when comparing blocks; an interleaved root starts a new sequence.
-The fixture-backed CLI regression compares complete stdout for block sizes 1 and 2 using
-`tests/fixtures/block_report_input.jsonl` and the matching `.golden` files.
-Malformed JSON is skipped and counted.
-
-### `report` — dataset statistics
-
-```bash
-shogiesa report --input observations.jsonl
-```
-
-Outputs: position count, ply range, phase/side distribution, duplicate SFENs, tag mismatches,
-source dominance, balance warnings, and — once positions are labeled — cp/mate ratio, an
-observation-level `score_bound` (exact/lowerbound/upperbound) distribution (unconditional — this
-reflects `Observation.score_bound`, so it's meaningful even without MultiPV), average score swing
-(plus a histogram), average policy margin, an eval-bucket histogram plus eval-bucket × phase /
-eval-bucket × side cross-tabs (bucketed on Black-perspective cp, so the histogram/cross-tabs share
-one reference frame regardless of whose turn each position was), (for positions labeled by 2+
-distinct engines) an engine-disagreement rate, a special-bestmove rate (fraction of labeled
-positions with at least one `resign`/`win`/`none` observation — excluded from both disagreement
-rates above, not counted as either agreement or disagreement), (when `label --multipv N` (N≥2)
-was used) MultiPV-candidate coverage and a separate `score_bound` distribution scoped to those
-candidates, (when any observation has a recorded `requested_depth`) a requested-depth underreach
-rate, a mover-relative WDL distribution (from `game_result`, see the JSONL schema section), and a
-`game_result.result_source` breakdown (why each `unknown` outcome is unknown, not just that it is —
-see the JSONL schema section). Streams its input in a single pass and never materializes the record
-set; memory scales with distinct SFEN/source-file count, not total records.
-
-### `dataset-diff` — semantic dataset comparison
-
-```bash
-shogiesa dataset-diff \
-  --baseline previous.jsonl \
-  --candidate candidate.jsonl \
-  --json-out dataset-diff.json
-```
-
-Compares datasets independently of JSONL line order. The default `--match-by occurrence` identity
-is `(sfen, source.path, source.ply)`; use `--match-by position` to align the same SFEN after a path
-move and report source provenance as a changed field. The report separates unchanged, changed,
-added, and removed records, then records field-change counts and candidate-minus-baseline deltas
-for observations, source roots, phases, and evaluation buckets. Duplicate identities are matched
-deterministically, with byte-equivalent normalized records paired before changed records.
-
-Human-readable stdout is intended for review. `--json-out` writes the same result as a versioned,
-deterministically ordered JSON artifact, including both normalized input hashes and malformed-line
-counts. A semantic match does not make two byte-level input hashes equal, and position matching
-does not erase a changed source path from the field-change report.
-
-### `distribution` — bucket-coverage diagnostic
-
-```bash
-shogiesa distribution --input observations.jsonl
-```
-
-Complements `report` and `select --strategy coverage`: both of those already surface phase/side/
-eval-bucket distribution stats, but neither can ever report a fully missing (zero-record) bucket —
-both only ever populate their tallies from records actually seen, so a combination with zero
-records simply never appears in their output at all. `distribution` enumerates the *full* expected
-bucket space and prints every combination, including empty ones, so a gap is visible instead of
-silently absent. Not named `coverage` — that word is already used for `select --strategy coverage`
-(ranks existing records by thin-bucket membership, for re-labeling) and separately for MultiPV/
-quality-gate pass-rate coverage (`report`/`calibrate`/`audit`/`tune`); this command means neither.
-
-Five sections: **phase × side × eval-bucket coverage** (reuses the same `bucket_key` bucketing
-`balance`/`select --strategy coverage` already use, so the bucket notion can't drift — every 200cp
-bucket within the observed span is enumerated per phase/side pair, plus the `mate`/`unlabeled`
-sentinel cells crossed with every phase/side pair; a cp span wider than 50 buckets (±5000cp) falls
-back to showing only observed buckets, since enumerating past that would either print an enormous
-table or silently misrepresent an anomalous engine score range as fully covered); **ply distribution**
-(histogram, bucket width via `--ply-bucket-size`, same missing-bucket detection); **source-root
-distribution** (distinct-root count and dominance %, grouped via the same `root_id`-aware key
-`split --train/--valid/--test` uses for leakage safety — unlike `report`'s own source stat, which
-groups by raw file path and so counts a game's mainline and its variations as separate sources);
-**wdl distribution** (mover-relative count/percentage per `game_result` category — a simple 1-D
-tally, not a zero-count enumeration like the eval-bucket grid above, since WDL's
-win/loss/draw/unknown categories are inherently unbalanced rather than expected-uniform); and
-**game_result source distribution** (same 1-D-tally shape, keyed on `game_result.result_source`
-instead of `outcome` — surfaces *why* an outcome is `unknown`, e.g. a corpus dominated by
-`csa_no_terminal` points at truncated game records, while one dominated by
-`kif_terminal_undetermined` points at unrecognized KIF terminal phrasing; see the JSONL schema
-section for the full reason-code list). Present buckets are also flagged `UNDER`/`OVER` relative to
-the mean bucket count (`--under-ratio`/`--over-ratio`, defaults 0.5/2.0, not applied to the wdl or
-result-source tallies). Diagnostic only — `distribution` itself has no `--out`/`--manifest`, same
-shape as `report`; `block-report` and the calibration diagnostics have their own manifest options
-where documented above.
-
-The missing-bucket regression uses `tests/fixtures/distribution_missing_bucket_input.jsonl` and
-the full expected output in `distribution_missing_bucket.golden`; observed buckets must remain
-`OK` while gaps inside the observed range remain explicitly `MISSING`.
-
-Malformed JSONL is also fixture-backed: `distribution_malformed_input.jsonl` keeps the valid record,
-counts the broken line, and matches `distribution_malformed.golden` on stdout.
-
-The fixture-backed regression uses `tests/fixtures/block_report_input.jsonl` and compares the
-complete output with `tests/fixtures/distribution.golden`, keeping the bucket, root, WDL, and
-result-source diagnostics inspectable and reproducible.
-
-### `validate` — data integrity
-
-```bash
-shogiesa validate --input observations.jsonl          # warnings only, exit 0
-shogiesa validate --input observations.jsonl --strict  # exit 1 on any issue (CI)
-```
-
-Checks: broken JSON, invalid SFENs, duplicate SFENs, `side_to_move` tag vs SFEN mismatch.
-
-## JSONL Schema
+| Area | Commands | Purpose |
+|---|---|---|
+| Ingest | `extract`, `from-match` | Read CSA/KIF or match-runner kifu into JSONL positions. |
+| Label | `label`, `cache`, `merge-observations` | Run USI teachers, manage cached observations, or combine passes. |
+| Quality | `stability`, `filter`, `calibrate`, `audit`, `tune` | Attach and inspect instability/quality signals; choose gates from data. |
+| Select | `select`, `mine`, `balance`, `stratify`, `sample` | Find hard/underrepresented positions or make a bounded sample. |
+| Reproduce | `split`, `shuffle`, `recipe plan/run/verify`, `dataset-diff` | Keep source roots together, preserve deterministic order, and compare artifacts. |
+| Diagnose | `report`, `distribution`, `validate`, `conflict-report`, `block-report` | Summarize data, surface missing buckets, and report integrity or proxy diagnostics. |
+| Exchange | `pack`, `unpack`, `lineprior export`, `make-gate-openings` | Convert data or prepare inputs for external tools. |
+
+`recipe` accepts only typed shogiesa stages; it does not run arbitrary shell commands. `recipe run`
+writes stage output through staging and reuses only matching successful artifacts. See
+[`docs/design/dataset_recipe_template.md`](docs/design/dataset_recipe_template.md) for the
+experiment record to keep alongside a run.
+
+## Data contract
+
+JSONL is the canonical format because it is streamable and reviewable. Each position has a schema
+version, post-move SFEN, source information, tags, and optional observations/stability/result data.
 
 ```json
 {
   "schema_version": 11,
   "sfen": "lnsgkgsnl/1r5b1/p1ppppppp/1p7/9/2P6/PP1PPPPPP/1B5R1/LNSGKGSNL b - 2",
-  "source": {
-    "kind": "csa",
-    "path": "games/example.csa",
-    "ply": 24
-  },
-  "game_result": {
-    "outcome": "black_wins",
-    "result_source": "csa_terminal"
-  },
-  "tags": {
-    "phase": "middlegame",
-    "side_to_move": "black",
-    "in_check": false,
-    "has_capture": false
-  },
-  "observations": [
-    {
-      "engine": "myengine",
-      "engine_version": "0.1.0",
-      "depth": 8,
-      "requested_depth": 8,
-      "requested_nodes": null,
-      "search_limit_kind": "depth",
-      "score": { "kind": "cp", "value": 43 },
-      "score_perspective": "side_to_move",
-      "score_bound": "exact",
-      "bestmove": "7g7f",
-      "nodes": 123456,
-      "time_ms": 120,
-      "seldepth": 14,
-      "nps": 987654,
-      "hashfull": 321,
-      "pv": ["7g7f", "8h7g"],
-      "policy_margin_cp": 310,
-      "candidates": [
-        { "multipv": 1, "bestmove": "7g7f", "score": { "kind": "cp", "value": 43 }, "score_bound": "exact", "pv": ["7g7f", "8h7g"] },
-        { "multipv": 2, "bestmove": "2g2f", "score": { "kind": "cp", "value": -267 }, "score_bound": "exact", "pv": ["2g2f"] }
-      ],
-      "engine_options_hash": "a1b2c3...64 hex chars",
-      "weight_sha256": null,
-      "was_timeout_salvaged": false
-    }
-  ]
+  "source": { "kind": "csa", "path": "games/example.csa", "ply": 24 },
+  "tags": { "phase": "middlegame", "side_to_move": "black", "in_check": false, "has_capture": true },
+  "observations": []
 }
 ```
 
-Score is either `{"kind":"cp","value":N}` or `{"kind":"mate","moves":N}`. `score_perspective`
-(`side_to_move`/`black`) says which side a `cp` value's sign is relative to — USI's `info score
-cp` is side-to-move-relative by protocol convention and `label` never converts it, so this is
-always `side_to_move` on data `label` produces; it defaults to `side_to_move` on older JSONL that
-predates this field, which is exactly what that data always meant. `score_bound`
-(`exact`/`lowerbound`/`upperbound`) marks whether the bestmove's own score is a confirmed
-evaluation or a search bound, independent of MultiPV — it defaults to `exact` on older JSONL that
-predates this field. `requested_depth` is the depth `label` asked the engine to search to
-(`depth` is what it actually reached — they can differ, e.g. a forced mate found short of the
-request); it's absent/`null` on JSONL labeled before this field existed. `policy_margin_cp` and
-`candidates` are only present when `label --multipv 2` (or higher) was used. `bestmove_kind`
-(absent for an ordinary move) is `"resign"`/`"win"`/`"no_move"` when the engine's `bestmove` line
-is one of those literal USI tokens rather than an ordinary move string, so consumers can tell "the
-engine considers the position decided" apart from "the engine picked a normal move" without
-string-matching `bestmove` themselves. `was_timeout_salvaged` is `true` when `label --timeout-ms`
-elapsed before `bestmove` arrived and this observation is the degraded-but-real result salvaged
-from the last `info` line, rather than a full completion or the engine's own early stop; it
-defaults to `false` on older JSONL that predates this field. `filter --exclude-timeout-salvaged`
-drops any record with a salvaged observation; `--require-requested-depth-reached` no longer
-exempts a salvaged mate score from its usual depth check unless
-`--allow-timeout-salvaged-mate` is also given.
+Binary pack is a transport format with a magic header, version, endian definition, and unpack
+path. Inspect or diff JSONL; do not edit pack bytes as a primary format. Compatibility and error
+classes are in [`docs/design/schema_compatibility.md`](docs/design/schema_compatibility.md).
 
-`search_limit_kind` (`"depth"`/`"nodes"`, always present, defaulting to `"depth"` on older JSONL
-that predates it — which is exactly what that data always meant) says which of `requested_depth`/
-`requested_nodes` was the actual search limit for this call; the other is always `null`. `nodes`
-already records "actual nodes reached" regardless of mode, exactly parallel to how `depth` already
-records "actual depth reached" — there's no separate `actual_nodes` field. `seldepth`/`nps`/
-`hashfull` are parsed straight from the engine's own USI `info` line, `null` if it never reported
-them. `engine_options_hash` is a full blake3 hex digest of the resolved `--engine-option` pairs for
-this run (including a synthesized `MultiPV` entry, if used) — lets a consumer detect an
-engine-config change between two labeling runs without diffing the raw option list. `weight_sha256`
-is the SHA-256 of `label --weight-file`, `null` unless that flag was given. All 7 fields are
-`#[serde(default, ...)]` (or default-and-always-present for `search_limit_kind`), so older JSONL
-predating schema v11 still parses unchanged.
+## Reading diagnostics safely
 
-`source` also carries optional `root_id`/`variation_id`/`branch_from_ply` fields, e.g. for a KIF
-`変化` branch:
+`score.cp`, policy margin, stability, agreement, and `QualityDecision.score` are diagnostics—not
+probabilities, labels of move correctness, or evidence of engine strength. Thresholds must be
+calibrated against a fixed corpus and teacher configuration. See [`docs/THEORY.md`](docs/THEORY.md).
 
-```json
-"source": {
-  "kind": "kif",
-  "path": "games/example.kif#var1@12",
-  "ply": 13,
-  "root_id": "games/example.kif",
-  "variation_id": "var1",
-  "branch_from_ply": 12
-}
-```
+KIF variation moves are preserved as separate source paths and share a `root_id` with the mainline.
+An indented nested `変化` replays from its parent and keeps its full lineage (for example,
+`#var1@2#var2@3` and `variation_id: "var1.var2"`); equal-or-shallower markers are mainline-rooted
+siblings. KIF branch outcomes are `unknown` because a branch is not the played game.
 
-`root_id` is shared by the mainline and every variation branching from it (the mainline's own
-`path`); `variation_id`/`branch_from_ply` are `null` on the mainline itself. All three are absent
-on CSA-extracted positions (no variation concept) and on JSONL predating this field.
+## Documentation map
 
-`game_result` is game-level win/draw/loss provenance: `outcome`
-(`black_wins`/`white_wins`/`draw`/`unknown`) is always black-relative and absolute, *not*
-mover-relative — a consumer wanting mover-relative WDL (`success`/`failure`/`draw`/`unknown`, the
-same convention `lineprior export`'s `outcome` field already uses; see the outcome caveats below)
-derives it themselves via `for_mover(side_to_move)`, rather than shogiesa storing a second,
-derivable field that could drift from `tags.side_to_move`. `result_source` records not just where
-`outcome` came from but, when it's `unknown`, *why*: `csa_terminal`/`kif_marker`/`match_header` mean
-a real terminal resolved a decisive or draw result; `csa_interrupted`/`kif_interrupted` mean the
-game was explicitly aborted (`%CHUDAN`/`中断`); `csa_terminal_undetermined`/
-`kif_terminal_undetermined` mean a terminal marker was present but is itself ambiguous by spec
-(CSA `%MATTA`/`%FUZUMI`/`%ERROR`; an unrecognized KIF `まで`-suffix); `csa_no_terminal`/
-`kif_no_terminal` mean the walk never found any terminal marker at all; `csa_walk_error`/
-`kif_walk_error` mean outcome resolution itself failed and degraded; `kif_variation` marks a KIF
-variation-branch position, whose own terminal isn't the actual game's result. `game_result` is
-`null`/absent on JSONL predating this field and on any source `extract`/`from-match` couldn't
-resolve a terminal for.
+| Need | Document |
+|---|---|
+| Current work and explicit measurement gates | [`ROADMAP.md`](ROADMAP.md) |
+| Schema and pack compatibility | [`docs/design/schema_compatibility.md`](docs/design/schema_compatibility.md) |
+| Rust API boundary | [`docs/api_boundary.md`](docs/api_boundary.md) |
+| Metrics and quality-signal limits | [`docs/THEORY.md`](docs/THEORY.md) |
+| Interoperability claims and gaps | [`docs/interop_evidence.md`](docs/interop_evidence.md) |
+| Training-effect and gate protocols | [`docs/design/training_effect_measurement.md`](docs/design/training_effect_measurement.md), [`docs/SEKIREI_GATE_EVALUATION.md`](docs/SEKIREI_GATE_EVALUATION.md) |
+| External lineprior experiment | [`docs/LINEPRIOR_DOGFOOD.md`](docs/LINEPRIOR_DOGFOOD.md) |
+| Release evidence and checklist | [`docs/release_validation_2026-09-04.md`](docs/release_validation_2026-09-04.md), [`docs/release_checklist.md`](docs/release_checklist.md) |
+| Feature-fit comparison | [`docs/competitor_evidence.md`](docs/competitor_evidence.md) |
 
-## Pipeline
+## Limits and evidence boundary
+
+- SFEN checks syntax and conservative material constraints; it is not full legal-move generation.
+- Native interoperability with GenSfen, rshogi, cshogi, rsshogi, and python-shogi is unmeasured.
+- Throughput, RSS, training effect, match results, and Elo are unmeasured unless a dated result
+  records corpus, commit, hardware, engine/weight, and budget.
+- The cross-repository experiment envelope is a shogiesa-owned draft, not a shared standard.
+
+## Development
 
 ```bash
-shogiesa extract --input ./games --out positions.jsonl
-
-shogiesa label \
-  --input positions.jsonl \
-  --engine ./your-engine \
-  --depths 4,6,8 \
-  --out observations.jsonl
-
-shogiesa filter \
-  --input observations.jsonl \
-  --max-score-swing-cp 150 \
-  --out train.jsonl
-
-your-trainer --scored train.jsonl
+cargo fmt --all -- --check
+cargo test --workspace
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+bash scripts/check_repository_contract.sh
 ```
 
-shogiesa connects to engines via SFEN, JSONL, and USI — no engine-internal dependencies.
-
-## Limitations
-
-| Item | Status |
-|---|---|
-| KIF `変化` (variation/branch) moves | extracted as separate positions (`source.path` suffixed `#varN@ply`), but only relative to the mainline — a variation nested inside another variation is not supported |
-| `Sfen`/`Board` legality checking | syntactic only, no full legal-move generation (by design) |
-| `lineprior export` KIF outcome detection | text-marker-based (`まで…`/`投了`/`持将棋`/`千日手`/`中断`), not exhaustive; unrecognized endings and all `変化` variation-branch moves fall back to `outcome: "unknown"` — check `--manifest`'s `unknown_outcome_count` to see how much of a corpus this affects |
-| `shuffle`'s `sample_id` | a within-run join key (hashes `source.path`, which isn't canonicalized), not a formula portable across independent re-extractions on a different machine/layout — keep the `--order-manifest` file, don't recompute; `opening_id` is always `null` (origin SFEN isn't retained on `PositionRecord` today) |
-| Experiment envelope | a draft proposal (see [`docs/design/experiment_envelope.md`](docs/design/experiment_envelope.md)) — wired into `label`/`shuffle` only, not `pack`/`split`/`make-gate-openings`; not yet vendored into or reviewed by the sibling repos (quietset/lineprior/veridict) it's meant to be shared with |
-| `label --usi-strict`'s illegal-bestmove check | reuses the same SFEN-syntactic legality checker as `make-gate-openings --allow-unplayable` (`shogi_core`/`shogi_usi_parser`/`shogi_legality_lite`), not shogiesa's own move logic — same scope/caveats as that check |
+The contract check is lightweight. `scripts/release_readiness.sh` additionally runs the cargo
+checks and reports unavailable dependencies or network failures as failures, not success.
 
 ## License
 

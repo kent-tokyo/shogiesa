@@ -276,6 +276,117 @@ fn multiple_sibling_variations_get_distinct_paths() {
 }
 
 #[test]
+fn nested_variations_replay_from_their_parent_and_keep_full_provenance() {
+    let content = std::fs::read_to_string(fixture("nested_variation.kif")).unwrap();
+    let mut seen = HashSet::new();
+    let records =
+        extract_from_str(&content, "nested.kif", &ExtractConfig::default(), &mut seen).unwrap();
+
+    let parent_path = "nested.kif#var1@2";
+    let nested_path = "nested.kif#var1@2#var2@3";
+    let mainline: Vec<_> = records
+        .iter()
+        .filter(|record| record.source.path == "nested.kif")
+        .collect();
+    let parent: Vec<_> = records
+        .iter()
+        .filter(|record| record.source.path == parent_path)
+        .collect();
+    let nested: Vec<_> = records
+        .iter()
+        .filter(|record| record.source.path == nested_path)
+        .collect();
+
+    assert_eq!(mainline.len(), 3);
+    assert_eq!(parent.len(), 2);
+    assert_eq!(nested.len(), 1);
+    assert_eq!(nested[0].source.variation_id.as_deref(), Some("var1.var2"));
+    assert_eq!(nested[0].source.branch_from_ply, Some(3));
+    assert_eq!(nested[0].source.root_id.as_deref(), Some("nested.kif"));
+
+    // The nested branch's ply-3 state must come from the parent branch's ply-2 position
+    // (8c-8d), not the mainline's ply-2 position (3c-3d).
+    let standalone = "手合割：平手\n手数----指手\n\
+   1 ７六歩(77)\n   2 ８四歩(83)\n   3 ４八銀(39)\n";
+    let mut standalone_seen = HashSet::new();
+    let standalone_records = extract_from_str(
+        standalone,
+        "standalone.kif",
+        &ExtractConfig::default(),
+        &mut standalone_seen,
+    )
+    .unwrap();
+    assert_eq!(nested[0].sfen, standalone_records[2].sfen);
+    assert_ne!(nested[0].sfen, mainline[2].sfen);
+
+    let raw_moves = extract_moves_from_str(&content, "nested.kif").unwrap().0;
+    let nested_raw: Vec<_> = raw_moves
+        .iter()
+        .filter(|move_record| move_record.source.path == nested_path)
+        .collect();
+    let standalone_raw = extract_moves_from_str(standalone, "standalone.kif")
+        .unwrap()
+        .0;
+    assert_eq!(nested_raw.len(), 1);
+    assert_eq!(nested_raw[0].sfen_before, standalone_raw[2].sfen_before);
+    assert_eq!(
+        nested_raw[0].source.variation_id.as_deref(),
+        Some("var1.var2")
+    );
+
+    // A second parse has identical branch paths and positions, making lineage deterministic.
+    let mut seen_again = HashSet::new();
+    let records_again = extract_from_str(
+        &content,
+        "nested.kif",
+        &ExtractConfig::default(),
+        &mut seen_again,
+    )
+    .unwrap();
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| (&record.source.path, &record.sfen))
+            .collect::<Vec<_>>(),
+        records_again
+            .iter()
+            .map(|record| (&record.source.path, &record.sfen))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn malformed_nested_variation_is_skipped_without_remapping_to_mainline() {
+    let kif = "手合割：平手\n手数----指手\n\
+   1 ７六歩(77)\n   2 ３四歩(33)\n\
+\n変化：2手\n   2 ８四歩(83)\n\
+\n  変化：99手\n   99 ４八銀(39)\n";
+    let mut seen = HashSet::new();
+    let records =
+        extract_from_str(kif, "bad-nested.kif", &ExtractConfig::default(), &mut seen).unwrap();
+
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record.source.path == "bad-nested.kif")
+            .count(),
+        2
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record.source.path == "bad-nested.kif#var1@2")
+            .count(),
+        1
+    );
+    assert!(
+        records
+            .iter()
+            .all(|record| !record.source.path.contains("var2"))
+    );
+}
+
+#[test]
 fn malformed_variation_reference_is_skipped_not_fatal() {
     let kif = "手合割：平手\n手数----指手\n\
    1 ７六歩(77)   (0:01/0)\n   2 ３四歩(33)   (0:01/0)\n\

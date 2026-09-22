@@ -2,370 +2,132 @@
 
 > 将棋の餌。Shogi training-data feed for NNUE engines.
 
-このロードマップは、実装済みの機能と、次に検証すべき仮説を分けて管理する。
-shogiesa はデータ生成・品質診断のツールであり、将棋エンジン、NNUE トレーナー、
-GUI、対局大会基盤にはしない。
+## 現在地 — 2026-09-23
 
-## 現在地
+`v0.9.2` のsource/tag/GitHub pushは完了している。crates.io公開は認証403で未完了であり、
+公開済みとは扱わない。リリース時のローカル検証は
+[`docs/release_validation_2026-09-04.md`](docs/release_validation_2026-09-04.md)を正本とする。
 
-現在の基礎パイプラインは実装済みである。
-
-### 2026-09-04 status
-
-実装・fixture・回帰テスト・公開文書で確認できた項目には `[x]` を付けている。現在の
-チェック済み範囲は、入力異常系と USI lifecycle、再ラベル判定、品質診断、root-aware split、
-manifest provenance、JSONL/pack 境界（corruption fixture を含む）、recipe・API・release evidence である。未チェックの
-項目は、3 OS の反復、1M/10M 規模の性能・資源測定、閾値校正、学習効果、対局効果、外部
-ツールの native interoperability など、実測結果が必要なものに限定している。
-`0.9.2` を今回のリリース対象とする。Cargo version は `0.9.2` に固定し、外部測定を
-実施済みと扱わないまま、recipe実行・fixture・contract・ドキュメントの改善をリリース単位として記録する。
-GitHub `main` と `v0.9.2` tag は push 済みである。crates.io は package/verify 後の
-`shogiesa-core v0.9.2` upload が認証403で停止し、公開未完了である（検証ログ参照）。
+shogiesa は学習データの生成・診断・再現性を担う。将棋エンジン、NNUE trainer、GUI、対局基盤、
+分散学習サービスは対象外である。
 
 ```text
 CSA / KIF / match kifu
         ↓
-extract / from-match
+extract / from-match → label → stability / audit / calibrate / tune
         ↓
-label (USI, depth or nodes, MultiPV, cache, resume)
-        ↓
-stability / audit / calibrate / tune
-        ↓
-filter / select / mine / balance / stratify
-        ↓
-split / shuffle / pack
+filter / select / mine / balance / stratify → split / shuffle → pack
         ↓
 report / distribution / validate
 ```
 
-実装済みの主要な土台:
+### 記号
 
-- CSA・KIF 抽出、KIF 分岐、SFEN 検証、重複排除、`in_check`/`has_capture` タグ
-- USI エンジンの depth/node ラベル付け、MultiPV、bound、テレメトリ、タイムアウト、再起動、厳格モード
-- 安定性・教師間不一致・品質判定、`filter`、`calibrate`、`audit`、`tune`
-- hard/uncertain/coverage 選別、mine、balance、quota/group-aware `stratify`
-- source/game 単位の split、決定的 shuffle、JSONL と versioned binary pack
-- キャッシュの検査・検証・prune、resume、実行マニフェスト、SHA-256 provenance
-- report、distribution、validate、Sekirei match kifu/opening、lineprior export の補助機能
+- `[x]`: 実装・fixture/テスト・文書のいずれかでローカルに確認済み。
+- `[MEASURE]`: 固定条件での外部実測が必要。未実施を成功扱いしない。
+- `[GATE]`: 実測artifactが揃うまで完了しない判断条件。
 
-未実施の測定は、実装済みであるかのように扱わない。特に、フィルタの閾値が
-NNUE の学習結果を改善すること、処理速度・メモリ上限、Sekirei の強さへの寄与は、
-別途固定条件で測定する。
+## 完了済みの土台
 
-## 競合に勝つための定義
-
-ここでいう「勝つ」は棋力、Elo、エンジンの探索強度ではなく、学習データ生成と品質管理への
-適合度で上回ることである。比較は次の固定軸で行い、機能の有無、診断の説明可能性、再現性、
-大規模処理性能を分けて記録する。
-
-| 評価軸 | 配点 | shogiesa が取るべき勝ち筋 |
-|---|---:|---|
-| データ生成パイプライン適合度 | 25 | extract → label → quality → split → export を再現可能な recipe にする |
-| CSA/KIF/SFEN・局面処理 | 15 | 複数形式、分岐、異常入力、source root を保守的に処理する |
-| USI教師ラベル付け | 20 | depth/node、MultiPV、bound、telemetry、timeout、cache、resume を説明可能にする |
-| 品質診断・フィルタ | 15 | instability、teacher disagreement、CP/WDL conflict、drop reason を測定可能にする |
-| 再現性・provenance | 10 | dataset/engine/weight/options/seed/hash を manifest に残す |
-| 大規模処理性能 | 10 | 速度優位を仮定せず、RSS・中断復旧・再実行コストを実測して改善する |
-| API・エコシステム | 5 | Rust API、JSONL、pack、USI、外部ツールとの境界を安定させる |
-
-### 競合別の勝ち筋
-
-- **YaneuraOu ScriptCollection / GenSfen**: 大量生成・既存資産・速度では競争せず、品質診断、
-  filter 理由、manifest、resume、cross-engine 比較で差別化する。必要性を測った上で入出力 adapter を追加する。
-- **rshogi**: Rust/NNUE/教師生成の一体感に対して、engine 内部に依存しない USI/JSONL 境界と、
-  teacher weight・label provenance を強みにする。
-- **cshogi**: Python と低レベル速度に対して、壊れた入力を黙って通さない検証、source-aware split、
-  QualityDecision の説明可能性で勝つ。Python binding は需要が測れた場合だけ検討する。
-- **rsshogi**: 汎用 Rust/Python 局面ライブラリに対して、学習用 end-to-end pipeline と品質管理を提供する。
-  局面処理を重複実装せず、SFEN/JSONL を相互運用境界にする。
-- **python-shogi**: 教育・小規模用途とは競合せず、その入力を取り込める tolerant ingestion と、
-  規模が増えたときの streaming/USI labeling を提供する。
-
-競合の未確認機能を推測で減点しない。速度・RSS・再利用率は同一 fixture、同一 engine 条件、
-同一 hardware で測り、比較不能は未測定として残す。score は機能適合度・成熟度であり、Elo ではない。
+- `[x]` CSA/KIF/match kifu抽出（字下げによるnested KIF variationを含む）、保守的なSFEN検証、重複排除、source-root provenance。
+- `[x]` USI depth/nodeラベル、MultiPV/bound、timeout/restart、cache/resume、strict diagnostics。
+- `[x]` stability/quality、filter/calibrate/audit/tune、hard/uncertain/coverage選別。
+- `[x]` root-aware split、quota/group-aware stratify、決定的shuffle、JSONL/pack、manifest/hash。
+- `[x]` report/distribution/validate、conflict-report/block-report、recipe plan/run/verify。
+- `[x]` malformed input、pack corruption、recipe resume、主要CLI出力のfixture/golden回帰。
 
 ## 優先順位
 
-1. 壊れた入力や不安定なエンジンから、黙って誤ったデータを作らない
-2. 同じ入力・設定から同じ結果を再生成できる
-3. 品質ゲートを直感ではなくデータで選べる
-4. 大規模データセットを中断・再開可能なコストで処理できる
-5. 競合との差を、機能適合度と実測性能に分けて縮める
-6. Sekirei での改善を、shogiesa 自体の機能追加と混同せず評価する
+1. 壊れた入力・不安定な教師から、黙って誤ったデータを作らない。
+2. 同一入力・設定から同じ成果物を再生成できる。
+3. 品質gateを直感ではなく測定で選べる。
+4. 大規模実行を中断・再開可能なコストで扱う。
+5. Sekireiへの効果と、shogiesa自身の機能完成度を混同しない。
 
-## Phase 0 — 信頼性の仕上げ（次）
+## Phase 0 — 信頼性
 
-### 0.1 USI テストの非フレーキー化
+- `[x]` USI duplicate/delayed bestmove、timeout/restart、child cleanupの回帰を固定。
+- `[x]` labelの再実行キー（engine、limit、MultiPV、options、weight）とresume/cache境界を固定。
+- `[x]` malformed CSA/KIF/JSONL、CP932、flat/nested KIF variation、終端なし、pack corruptionをfixture化。
+- `[x]` SFENの過大hand/rankと`distribution`の極端な整数範囲を安全に拒否・処理する。
+- `[MEASURE]` Linux/macOS/Windowsでtest/lint/fixture hashを反復し、flaky率を記録する。
+- `[GATE]` OS差異はartifactとlimitationに記録し、成功の推測で埋めない。
 
-- `[x]` duplicate/delayed bestmove の検知を bounded wait と deterministic fixture で検証する。
-- `[MEASURE]` Linux/macOS/Windows と異なる runner 負荷で反復し、flaky rate を記録する。
-- `[x]` retry なしで CI が安定し、異常終了後に zombie process や成功扱い observation が残らない。
-  bounded wait、strict handshake、timeout/restart fixture と clean shutdown テストで固定する。
+## Phase 1 — 品質gateを測定可能にする
 
-### 0.2 ラベル再実行の同一性
+- `[x]` CP、policy margin、swing、agreement、bound、game resultの意味と限界を
+  [`docs/THEORY.md`](docs/THEORY.md)に固定。
+- `[x]` `report`/`validate`/`conflict-report`/`block-report`/`distribution`/`calibrate`の
+  fixture-backed goldenを保持。
+- `[x]` `tune --preset-out`と`filter --preset`で、診断したQualityConfigを再利用可能にする。
+- `[MEASURE]` depth/node、MultiPV、teacher数、閾値ごとのcoverage/agreementを深いteacherと比較する。
+- `[GATE]` 推奨閾値はdataset/engine固有の証拠を持ち、未校正の確率や単一scoreに依存しない。
 
-- `[x]` engine、limit kind、実測/requested limit、MultiPV、options、weight hash の判定キーを固定する。
-- `[MEASURE]` shallow → deep → MultiPV → weight変更を同じ入力に適用し、skip/replace/cache 件数を照合する。
-- `[x]` 古い observation の誤温存と意図しない重複がなく、判定キーが manifest/docs と一致する。
-  depth/node、実測 limit、MultiPV、engine/options/weight を含む判定と CLI 回帰テストで固定する。
+## Phase 2 — recipe / provenance
 
-### 0.3 入力形式と manifest の境界
-
-- `[x]` `split` 独自 manifest の理由と nested KIF `変化` の非対応を明記する。
-- `[x]` schema v1–v11/pack の互換性表を作る。
-- `[x]` malformed CSA/KIF、CP932、variation、終端なし、壊れた JSONL を fixture 化する。
-- `[x]` contract check が異常系 fixture の必須存在と代表 marker を検査し、fixture の差し替えや
- 空ファイル化を検出する。
-- `[x]` CLI の fixture-backed extract test が malformed/unterminated input の有効 prefix と
-  KIF variation provenance を end-to-end で検証する。
-- `[x]` CLI の `validate` が共有 broken JSONL fixture を通常モードでは警告付き成功、strict
-  モードでは非ゼロ終了として扱うことを固定する。
-- `[x]` 通常モードは診断付き skip、`validate --strict` は非ゼロ終了、pack round-trip の期待値が固定される。
-  malformed fixture、strict validation テスト、schema v1〜v11 の pack round-trip テストで固定する。
-
-### 0.4 クロスプラットフォーム回帰
-
-- `[MEASURE]` `cargo test`、`cargo fmt --check`、`cargo clippy --all-targets --all-features` を3 OSで実行する。
-- `[GATE]` fixture 件数、drop 理由、manifest schema、出力 hash が一致し、差異は limitation として記録される。
-
-## Phase 1 — 品質ゲートを測定可能にする
-
-### 1.1 指標の意味を固定
-
-- `[x]` CP、policy margin、score swing、bestmove/engine agreement、bound、mate、resign/win/none の定義を統一する。
-  `docs/THEORY.md` と README の定義を実装の型・診断出力に合わせる。
-- `[x]` `report`/`validate` と `docs/THEORY.md` の例を fixture で照合する。
-  `report` の full stdout golden、`validate` の broken JSONL full stdout golden、clean fixture の
-  normal/strict 回帰を `docs/THEORY.md` の fixture cross-check として参照する。
-- `[x]` 指標を未校正の確率や強さの証拠として表現せず、filter の各理由を独立再現できる。
-  指標の注意書きと理由別 filter 回帰テストを保持する。
-
-### 1.2 CP と WDL の矛盾診断
-
-- `[x]` teacher CP と game outcome/WDL target の符号相違を集計する `conflict-report` を実装する。
-- `[x]` 終端、mainline/variation、engine/weight 別の conflict rate を比較する。
-  小規模 fixture で decisive/non-decisive、mate 除外と engine/weight 別の evaluated/conflict
-  件数・率を固定し、`conflict_report_includes_mainline_and_variation_records_in_same_fixture_matrix`
-  で mainline / variation の両 provenance を同じ母数として確認する。
-- `[x]` conflict-report の fixture-backed CLI summary を `tests/fixtures/conflict_report.golden` の
-  full stdout golden として固定し、集計見出し・除外理由・engine/weight 別の率のフォーマット回帰を追加する。
-- `[x]` conflict-report の `--min-abs-cp` deadband 境界を golden 化し、閾値内 CP が conflict
-  母数から除外される件数と率の出力を固定する。
-- `[x]` unknown outcome を conflict と誤分類せず、対象母数と除外理由を表示する。
-  `conflict_report_excludes_unknown_draw_and_mate_and_counts_cp_sign_conflicts` で固定する。
-
-### 1.3 連続ブロック診断
-
-- `[x]` 32局面などを集計する `block-report` を実装する。outcome、CP平均/分散、王手率、駒得/駒損、入玉、軽量な駒活性を対象にする。
-- `[x]` block size、game boundary、variation boundary による統計差を比較する。
-  fixture で block size 2/1 の件数差と、同じ `root_id` を持つ KIF variation の連続性を固定する。
-- `[x]` block-report の block size 1/2 出力を `tests/fixtures/block_report_size1.golden` /
-  `block_report_size2.golden` として外部 fixture 化し、full stdout の統計値を固定する。
-- `[x]` distribution の bucket/root/WDL/result-source 出力を `tests/fixtures/distribution.golden`
-  として外部 fixture 化し、full stdout の診断値を固定する。
-- `[x]` distribution の missing eval bucket 異常系を `distribution_missing_bucket.golden` に固定し、
-  観測済み bucket の `OK` と未観測 gap の `MISSING` を full stdout で回帰する。
-- `[x]` distribution の malformed JSONL 混在入力を fixture 化し、有効レコードを保持しながら
-  `broken lines` を報告する full stdout golden を追加する。
-- `[x]` source root をまたいで混ざらず、NNUE の実 feature index ではない代替指標だと明記する。
-  block boundary のテストと README の proxy 明記で固定する。
-
-### 1.4 閾値 calibration の採用
-
-- `[x]` `tune --preset-out` で `calibrate`/`audit` 統合結果を full `QualityConfig` 付き recipe/preset として保存し、`filter --preset` へ再投入できるようにする。
-- `[MEASURE]` depth/node、MultiPV、teacher 数、filter 閾値の coverage/agreement/bound率を深い teacher と比較する。
-- `[x]` `calibrate` の policy-margin threshold sweep を固定 fixture / golden CSV で検証し、coverage と
-  drop reason の出力境界を再現可能にした（深い teacher との性能・品質比較は未測定）。
-- `[GATE]` 推奨閾値に dataset/engine 固有の根拠があり、単一 score や未校正 probability に依存しない。
-
-## Phase 2 — recipe / provenance の固定
-
-### 2.1 dataset identity
-
-- `[x]` `calibrate`/`audit`/`tune` の診断出力に input/output hash、schema、実行引数、件数を manifest として保存する。
-- `[x]` 診断 manifest に source root、engine、weight hash の入力分布を保存し、欠落 weight は `unknown` として扱う。
-- `[x]` input/output hash、schema、args、seed、source root、engine/weight provenance を manifest で追跡する。
-  command-specific manifest と欠落 weight の `unknown` 表現を実装する。
-- `[x]` `dataset-diff` で入力順に依存せず、追加・削除・変更、field、source root、phase、
-  eval bucket、observation 数の差を human-readable summary と versioned JSON artifact に保存する。
-  occurrence identity と path 移動を許容する position identity を明示的に分離する。
-- `[x]` `dataset-diff` の fixture/golden 回帰を local measurement smoke と repository contract に
-  組み込み、同一SFENの重複照合を二乗探索にしない。
-- `[MEASURE]` 異なる path、入力順、worker 数で再実行し、dataset identity と order hash を比較する。
-- `[GATE]` 再現に必要な情報が欠落せず、null の `opening_id` を推測で補わない。
-
-### 2.2 split / stratify / shuffle recipe
-
-- `[x]` source root 単位の train/valid/test split、quota、shuffle を recipe 化する。split manifest は input/output hash と source-root counts、quota は input/axis/targets、shuffle は seed/order hash を保持する。
-- `[MEASURE]` split 間の source root 重複、phase/side/eval bucket、duplicate rate を確認する。
-- `[x]` mainline と KIF variation が漏れず、同じ入力・seed から再生成できる。
-  `split_train_valid_test_keeps_variation_with_mainline` と
-  `split_train_valid_test_deterministic_with_seed` がこの境界を固定する。
-
-### 2.3 experiment envelope の採用判断
-
-- `[x]` draft v1 を pack/split/opening に広げる前に、shogiesa-owned `RunManifest` と cross-repo draft envelope の利用フィールド・所有境界を決める。
-- `[x]` 利用可能な `veridict` checkout の schema/manifest 実装を確認し、flat 14-field 契約と shogiesa の nested draft の差分を記録した。`quietset` / `lineprior` は checkout 不在のため未測定。
-- `[x]` draft schema を無条件に canonical contract とせず、採用 repo と版を明記する。
-  shogiesa-local proposal は `shogiesa/schema/experiment_envelope.schema.json` の
-  `envelope_version: 1` / `$id`末尾 `:1` とし、cross-repository canonical adoption は未決定と
-  明記する。
-
-### 2.4 typed recipe orchestration
-
-- `[x]` recipe schema v1 と `recipe plan` を追加し、既知 command、stage ID、明示 input/output、
-  出力衝突、自己上書き、forward dependency、不足 external input を実行前に検証する。
-- `[x]` external input の content hash と upstream stage identity から移動可能な stage identity を
-  生成し、ready/waiting/blocked を versioned JSON plan と human-readable summary に保存する。
-- `[x]` planner は arbitrary shell command を受け付けず、`executed: false` の dry-run 専用として
-  fixture/golden と local measurement smoke で境界を固定する。
-
-次候補は、このplanをatomic run bundleとして実行し、成功済みstageをidentity一致時だけ再利用する
-`recipe run` / `recipe verify` である。実行・resumeはplannerと分離し、途中出力を成功artifactとして
-扱わない。
-
-- `[x]` `recipe run` が typed command のみを直接起動し、stageごとの staging output と atomic
-  run manifest を使う。
-- `[x]` recipe hash、stage identity、output hash が一致する成功済みstageだけを再利用し、
-  `recipe verify` が実行なしで全stageの成果物を検査する。
-- `[x]` 複数outputのstageも全成果物を先に検査し、commit途中の失敗では既存成果物を復元する。
-- `[x]` stage完了ごとのatomic checkpointと明示的な`--resume`を追加し、未完了stageを成功artifact
-  として扱わない。
-- `[x]` run manifest のversion、stage順、output path/count、hash形式を検証し、改変manifestを
-  再利用根拠として受け入れない。
-- `[x]` machine-specific path/hashを除いたrun manifestのnormalized golden fixtureを追加し、
-  schemaの主要フィールドを回帰固定する。
-- `[x]` stage prefixだけがcheckpointされた中断状態で、`--resume`がprefixを再利用し後続stageを
-  再実行するfixture回帰を追加する。
-- `[x]` run/verify の正常、reuse、改変検知を local fixture で確認し、0.9.2 のバージョンを
-  固定したまま README/CHANGELOG に運用境界を記録する。
+- `[x]` input/output hash、schema、args、seed、source root、engine/weight provenanceをmanifestへ記録。
+- `[x]` `dataset-diff`が順序非依存で追加・削除・変更とsource/phase/eval差分を出力。
+- `[x]` split/stratify/shuffleがsource rootをまたぐleakを防ぎ、seedで再現する。
+- `[x]` typed `recipe plan/run/verify`がstage identity、staging、atomic checkpoint、explicit resume、
+  output hash検証を提供する。
+- `[MEASURE]` path、入力順、worker数を変えた再実行でidentity/order hashを比較する。
+- `[GATE]` 必要なprovenanceが欠けず、`unknown`を推測で補わない。
 
 ## Phase 3 — 大規模実行と配布
 
-### 3.1 ストリーミング境界
+- `[x]` streaming境界、resume/cache、JSONL canonical・pack transportの役割を文書化・回帰固定。
+- `[x]` `scripts/run_local_measurement_smoke.sh`とmeasurement matrixを用意。
+- `[MEASURE]` 1M/10M局面でjobs、limit、cache、出力順ごとのwall time/RSS/output size/FD/diskを記録。
+- `[GATE]` corpus、commit、engine/weight/options、seed、hardwareを同じresult artifactに残す。
 
-- `[x]` label/filter/report/select/balance の入力全体 materialize を増やさない。`select --strategy hard` は source-contiguous を明示した場合だけ grouped streaming を使い、既定の非連続入力は correctness 優先で materialize する。
-- `[MEASURE]` 10万局面で RSS と wall time の基準値を取得し、100万局面へ拡張する。
-- `[GATE]` streaming コマンドの RSS が dataset size に比例して増えない。
+## Phase 4 — Sekireiでの効果検証
 
-### 3.2 中断・再開・cache
+- `[x]` fixed split、recipe arm、必要artifactを
+  [`docs/design/dataset_recipe_template.md`](docs/design/dataset_recipe_template.md)に定義。
+- `[x]` loss/WDL、ラベル計算費、再現性の記録形式を
+  [`docs/design/training_effect_measurement.md`](docs/design/training_effect_measurement.md)に定義。
+- `[MEASURE]` baseline/filtered/mined/balancedを固定teacher・budget・複数seedで比較する。
+- `[GATE]` 改善は固定splitと複数seedで再現し、data qualityとtraining/search効果を分離する。
 
-- `[x]` partial output、resume alignment key、atomic cache write、worker restart の failure fixture を追加する。
-- `[MEASURE]`途中 kill 後の再開率、再計算件数、cache 再利用率、unordered/preserve-order の差を測る。
-- `[x]` durable output と manifest から安全に再開できる。
-  `--resume-from` の alignment index、`resumed_count`、atomic cache write、engine restart
-  の回帰テストと README の運用手順で境界を固定する。
+## Phase 5 — 相互運用・公開
 
-### 3.3 throughput / resource envelope
+- `[x]` CSA/KIF/SFEN/JSONL/pack/USIのローカル証拠と未測定境界を
+  [`docs/interop_evidence.md`](docs/interop_evidence.md)に整理。
+- `[x]` API、schema、feature-fit、release evidenceを目的別の短い文書に分離。
+- `[MEASURE]` GenSfen/rshogi/cshogi/rsshogi/python-shogiとのnative import/exportを同一fixtureで測る。
+- `[GATE]` 「対応」「高速」「学習効果」「Elo改善」は、それぞれ対応する再現可能な測定なしに主張しない。
 
-- `[x]` 残存する性能・再現性・学習・相互運用測定を、固定条件・記録項目・完了 artifact に
-  分解した measurement matrix を追加する。
-- `[x]` 外部 engine を使わない fixture-backed local measurement smoke script を追加する。
-  dependency cache が不足する場合は未検証として停止理由を表示し、測定ゲートを成功扱いにしない。
-- `[x]` local smoke の PASS/BLOCKED 結果を日付付き validation log に保存し、release checklist
-  から最新結果を参照できるようにする。
-- `[MEASURE]` 100万/1000万局面で `--jobs`、search limit、cache、出力順の wall time/RSS/output size、FD数、disk headroom を記録する。
-- `[GATE]` corpus、commit、engine/weight hash、options、seed、hardware を結果に添付し、目標値を運用手順に明記する。
+## 競合に対する立ち位置
 
-### 3.4 JSONL / pack 配布境界
+評価するのは棋力ではなく、学習データ生成・品質管理への適合度である。
 
-- `[x]` JSONL を canonical な検査・差分形式として維持し、pack は magic/version/endian/compatibility test/unpack 経路を維持する。
-- `[x]` pack を直接編集する一次形式と誤解させず、JSONLへ戻して検査できる。README と
-  `docs/design/schema_compatibility.md` に境界を明記し、schema v1〜v11 と current pack の
-  round-trip fixture/test を保持する。
-- `[x]` pack fixture の round-trip/manifest test を local measurement smoke に組み込み、
-  interop evidence から参照する。
-- `[x]` malformed JSONL、pack bad magic、truncated header の corruption fixture と CLI failure/
-  manifest-count test を追加する。
-- `[x]` pack の正常データ末尾に余分な byte が付いた場合も clean EOF と扱わないことを
-  library 単体テストで固定し、CLI corruption fixture と同じ `UnexpectedEof` 境界を確認する。
-- `[x]` unsupported future pack version の corruption fixture と明示拒否テストを追加し、
-  current format 11 以外を成功扱いしない境界を固定する。
-- `[x]` pack の trailing bytes を corruption として拒否する fixture/test を追加し、空 EOF と
-  truncated record を区別する。
-- `[x]` pack version の little-endian 境界を wrong-endian fixture/test で固定し、外部依存なしの
-  header 解釈回帰を追加する。
-- `[x]` pack header 後の record-level truncation fixture/test を追加し、途中レコードを EOF として
-  成功扱いしない境界を固定する。
-- `[x]` pack corruption fixture ごとの CLI エラー文言（magic、version、header/record truncation）を
-  回帰チェックし、失敗理由の可観測性を固定する。
-- `[x]` shogiesa-pack の library 単体テストでエラー種別・文言と clean EOF を固定し、batch
-  `decode` が途中レコードを成功扱いしない strict boundary を実装する。
-- `[x]` pack API のエラー分類（magic、header/version、record truncation、clean EOF）を公開 API
-  boundary / schema compatibility docs に整理し、単体テストへの導線を追加する。
-- `[x]` repository contract check が pack の trailing-byte library regression test の存在も検査し、
-  fixture と library 境界の回帰を同時に保護する。
+| 軸 | 狙い |
+|---|---|
+| Pipeline | extract → label → quality → split → exportを再現可能にする。 |
+| Input | 異常入力、分岐、source rootを保守的に扱う。 |
+| Teacher | USI条件と観測値を説明可能に残す。 |
+| Quality | instability、teacher disagreement、CP/WDL矛盾、drop理由を可視化する。 |
+| Provenance | dataset/engine/weight/options/seed/hashを残す。 |
+| Scale | 速度優位を仮定せず、RSS・復旧コストを測る。 |
+| Ecosystem | Rust API、JSONL、pack、USIの安定した境界を保つ。 |
 
-## Phase 4 — Sekirei での効果検証
-
-これは shogiesa の機能完成度ではなく、生成データが downstream の学習に有効かを測る段階である。
-
-### 4.1 固定データセットと学習条件
-
-- `[x]` 固定 train/valid/test split、dataset manifest、baseline/filtered/mined/balanced recipe、同じ teacher/weight/学習予算の手順を保存するための recipe template を追加する。
-- `[x]` 各 recipe が input hash、split seed、label config、filter config から再生成できる。
-  `docs/design/dataset_recipe_template.md` の固定コマンド、arm 別 artifact、manifest hash
-  要件で再生成の入力を固定する。
-
-### 4.2 学習指標
-
-- `[x]` validation loss/WDL、データ量、ラベル計算コスト、再現性を recipe ごとに記録する測定 protocol を追加する。
-- `[MEASURE]` validation loss/WDL、データ量、ラベル計算コスト、再現性を recipe ごとに比較し、shuffle の seed 数も増やして再確認する。
-- `[GATE]` 改善が固定 split と複数 seed で再現し、data quality と training/search の改善を分離して報告する。
-
-### 4.3 実戦への転写
-
-- `[MEASURE]` 必要な recipe だけ固定 opening suite と反復対局で評価する。対局数、seed、SPRT/信頼区間、比較対象を記録する。
-- `[GATE]` 一回の対局結果を Elo や一般的な強さの証拠にせず、dataset recipe の効果として報告する。
-
-## Phase 5 — 競合適合度の再評価と公開
-
-### 5.1 相互運用 fixture
-
-- `[x]` 既存の CSA/KIF/SFEN/JSONL/pack/USI fixture を相互運用 evidence table に整理し、外部ツール固有の互換性は未測定として分離する。
-- `[MEASURE]` import/export の欠落、合法性、source provenance、処理時間をツールごとに比較する。
-- `[x]` 「対応している」と言える形式は round-trip または明示的な loss report がある。
-  `docs/interop_evidence.md` で shogiesa-side round-trip と外部互換性未測定を分離する。
-
-### 5.2 7軸スコアの更新
-
-- `[x]` 配点（25/15/20/15/10/10/5）ごとの implementation-fit evidence table を `docs/` に保存する。性能未測定分は点数に混ぜない。
-- `[MEASURE]` 機能適合度と、同一条件で測った wall time/RSS/cache 再利用率を別表にする。
-- `[x]` shogiesa の点数は現在実装に対する評価として更新し、未測定の速度・学習効果を点数に混ぜない。
-  `docs/competitor_evidence.md` の 76/100 は implementation-fit のみとし、性能を 0 点にする。
-
-### 5.3 API・エコシステムの仕上げ
-
-- `[x]` Rust API の最小利用例、JSONL schema、pack/unpack、USI boundary を versioned docs にする。
-- `[MEASURE]` clean checkout から quick start、主要 CLI help、fixture pipeline を再実行する。
-- `[x]` 外部利用者が engine 内部依存なしに extract → label → filter → export を再現できる。
-  Rust API、JSONL、pack/unpack、USI の境界と quick-start を `docs/api_boundary.md` と README
-  に分離して記載する。
-
-### 5.4 リリース判断
-
-- `[x]` release checklist に test、format、clippy、manifest、fixture、docs、互換性を追加する。
-- `[x]` 競合比較表、制限事項、未測定項目、代表 dataset の再現手順を公開前に確認する。
-  `docs/competitor_evidence.md`、`docs/release_checklist.md`、recipe template、validation log
-  を相互参照できる状態にする。
-- `[x]` 「学習データ品質管理に強い」という主張は証拠付きで行い、「最速」「最強」「最高 Elo」とは主張しない。
-  implementation-fit evidence、制限事項、未測定項目を release checklist と docs に分離する。
+機能適合度の根拠は[`docs/competitor_evidence.md`](docs/competitor_evidence.md)にある。速度・RSS・
+training effect・Eloは別の実測であり、同じ点数に混ぜない。
 
 ## 保留・非目標
 
-以下は現時点で優先しない。
+- 字下げを使わない独自nested KIF variation方言の対応（入力実態の測定待ち）
+- shogiesa内でのNNUE学習、対局tournament、GUI、分散学習
+- quietset/lineprior/veridictとのdraft envelopeの無条件な共通化
+- 単発または小規模な結果をabsolute Eloや一般的な強さに一般化すること
 
-- nested KIF variations の完全対応（必要性と入力実態の測定待ち）
-- shogiesa 内への NNUE 学習、対局 tournament、GUI、分散学習サービスの実装
-- `quietset`、`lineprior`、`veridict` との draft envelope の無条件な共通化
-- absolute Elo や competitor ranking として解釈できない、未完了または小規模な測定結果の一般化
+## 実行前の確認
 
-## 完了条件
+```bash
+bash scripts/check_repository_contract.sh
+cargo fmt --all -- --check
+cargo test --workspace
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+```
 
-各フェーズは、コードが存在するだけでなく、該当する `[BUILD]`・`[MEASURE]`・`[GATE]`
-の証拠が揃った時点で完了とする。重い測定が未実施の場合は「未検証」と記録し、
-実装済みという理由だけで性能・品質・強さを保証しない。
-
-軽量な文書・fixture・schema の整合性は `bash scripts/check_repository_contract.sh` で確認し、
-依存取得を伴う test/clippy と大規模測定は `bash scripts/release_readiness.sh` および
-個別の測定記録で別管理する。
+軽量なcontract checkと、依存取得を伴うcargo検証・大規模測定は別管理する。

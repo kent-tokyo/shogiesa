@@ -101,6 +101,35 @@ struct KifMove {
     from_rank: u8,
 }
 
+type Checkpoint = (Board, Option<(u8, u8)>);
+type BranchCheckpoint = (Board, Option<(u8, u8)>, Vec<Checkpoint>);
+
+/// State retained for an active `変化` branch.
+///
+/// Its checkpoints contain the branch's inherited prefix as well as moves played in the
+/// branch itself.  That makes an indented later `変化` marker unambiguously relative to this
+/// branch rather than to the mainline.
+#[derive(Clone)]
+struct VariationContext {
+    checkpoints: Vec<Checkpoint>,
+    path: String,
+    variation_id: String,
+    branch_from_ply: u32,
+    marker_indent: usize,
+}
+
+/// Return the state before move `n` and the complete path leading to it.
+///
+/// `checkpoints[k]` is the board after `k` moves, so a `変化：N手` marker starts from
+/// `checkpoints[N - 1]`.  The returned prefix deliberately excludes later moves: descendants
+/// must not be able to branch from a move outside their parent's history.
+fn branch_checkpoint(checkpoints: &[Checkpoint], n: u32) -> Option<BranchCheckpoint> {
+    let checkpoint_index = usize::try_from(n.checked_sub(1)?).ok()?;
+    let (board, prev_dest) = checkpoints.get(checkpoint_index)?.clone();
+    let prefix_len = checkpoint_index.checked_add(1)?;
+    Some((board, prev_dest, checkpoints[..prefix_len].to_vec()))
+}
+
 /// Parse a single KIF move token (the part after the ply number).
 /// Returns `None` for non-move lines (resign, interrupt, etc.).
 ///
@@ -253,10 +282,10 @@ pub fn extract_from_str(
     let mut in_moves = false;
     let mut prev_dest: Option<(u8, u8)> = None;
 
-    // Mainline board/prev_dest snapshot after `k` mainline moves, indexed by `k`. A `変化：N手`
-    // marker branches from `checkpoints[N-1]`; branches never extend this (they only ever
-    // resolve against the mainline, not against each other — nested variations are out of scope).
-    let mut checkpoints: Vec<(Board, Option<(u8, u8)>)> = Vec::new();
+    // Mainline board/prev_dest snapshot after `k` moves, indexed by `k`. Top-level `変化：N手`
+    // markers branch from `checkpoints[N-1]`. Each variation carries its own inherited prefix
+    // and extends it, so an indented marker can branch from its active parent.
+    let mut checkpoints: Vec<Checkpoint> = Vec::new();
     let mut current_path = source_path.to_string();
     let mut variation_count: u32 = 0;
     // Set together with current_path at each 変化 marker; None while still on the mainline.
@@ -264,14 +293,19 @@ pub fn extract_from_str(
     // parsing the '#varN@ply' suffix back out of `path`.
     let mut current_variation_id: Option<String> = None;
     let mut current_branch_from_ply: Option<u32> = None;
+    // Marker indentation is the structural signal KIF provides for nested variations. Contexts
+    // form the currently known ancestry; a deeper marker branches from the nearest shallower
+    // context, while an equal-or-shallower marker starts a top-level sibling.
+    let mut variation_contexts: Vec<VariationContext> = Vec::new();
     // Whether the current block (mainline or a variation) is still accepting move lines. Only
     // mainline parsing may `break` the outer loop; every stop condition inside a variation
     // (terminal marker, parse error, max-ply) just ends that block so scanning can find the
     // next `変化` marker instead of abandoning the rest of the file.
     let mut accepting = false;
 
-    for line in content.lines() {
-        let line = line.trim();
+    for raw_line in content.lines() {
+        let marker_indent = raw_line.len() - raw_line.trim_start().len();
+        let line = raw_line.trim();
 
         // Skip comments and empty lines
         if line.is_empty() || line.starts_with('#') || line.starts_with('*') {
@@ -306,41 +340,68 @@ pub fn extract_from_str(
             continue;
         }
 
-        // Variation/branch marker: jump back to the mainline checkpoint at ply N-1 and start
-        // extracting the branch's moves under a distinct source path.
+        // A top-level marker branches from the mainline. A deeper-indented marker branches from
+        // the nearest active shallower variation, preserving its actual predecessor position.
         if line.starts_with("変化") {
-            if current_path != source_path && accepting {
+            let Some(n) = parse_henka_ply(line) else {
+                warn!(path = source_path, line, "malformed 変化 marker, skipping");
+                accepting = false;
+                continue;
+            };
+
+            let parent_index = variation_contexts
+                .iter()
+                .rposition(|context| marker_indent > context.marker_indent);
+            let parent = parent_index.map(|index| variation_contexts[index].clone());
+            let branch = if let Some(parent) = &parent {
+                if n <= parent.branch_from_ply {
+                    None
+                } else {
+                    branch_checkpoint(&parent.checkpoints, n)
+                }
+            } else {
+                branch_checkpoint(&checkpoints, n)
+            };
+
+            let Some((cp_board, cp_prev_dest, branch_checkpoints)) = branch else {
                 warn!(
                     path = source_path,
-                    line,
-                    "another 変化 marker appeared inside an active variation; treating it as a new mainline-rooted sibling (nested variations are unsupported)"
+                    line, marker_indent, "malformed or out-of-range nested 変化 marker, skipping"
                 );
-            }
-            let branch = parse_henka_ply(line).and_then(|n| {
-                if n == 0 {
-                    return None;
-                }
-                checkpoints.get((n - 1) as usize).map(|cp| (n, cp.clone()))
+                accepting = false;
+                continue;
+            };
+
+            variation_count += 1;
+            let local_id = format!("var{variation_count}");
+            let (path, variation_id) = if let Some(parent) = parent {
+                let parent_index = parent_index.expect("nested variation has parent index");
+                variation_contexts.truncate(parent_index + 1);
+                (
+                    format!("{}#{local_id}@{n}", parent.path),
+                    format!("{}.{}", parent.variation_id, local_id),
+                )
+            } else {
+                // Equal-or-shallower markers are top-level siblings. This preserves existing
+                // flat KIF files, including those that indent every marker uniformly.
+                variation_contexts.clear();
+                (format!("{source_path}#{local_id}@{n}"), local_id)
+            };
+
+            board = cp_board;
+            prev_dest = cp_prev_dest;
+            ply = n - 1;
+            current_path = path.clone();
+            current_variation_id = Some(variation_id.clone());
+            current_branch_from_ply = Some(n);
+            variation_contexts.push(VariationContext {
+                checkpoints: branch_checkpoints,
+                path,
+                variation_id,
+                branch_from_ply: n,
+                marker_indent,
             });
-            match branch {
-                Some((n, (cp_board, cp_prev_dest))) => {
-                    variation_count += 1;
-                    board = cp_board;
-                    prev_dest = cp_prev_dest;
-                    ply = n - 1;
-                    current_path = format!("{source_path}#var{variation_count}@{n}");
-                    current_variation_id = Some(format!("var{variation_count}"));
-                    current_branch_from_ply = Some(n);
-                    accepting = true;
-                }
-                None => {
-                    warn!(
-                        path = source_path,
-                        line, "malformed or out-of-range 変化 marker, skipping"
-                    );
-                    accepting = false;
-                }
-            }
+            accepting = true;
             continue;
         }
 
@@ -426,6 +487,8 @@ pub fn extract_from_str(
 
         if is_mainline {
             checkpoints.push((board.clone(), prev_dest));
+        } else if let Some(context) = variation_contexts.last_mut() {
+            context.checkpoints.push((board.clone(), prev_dest));
         }
 
         if config.max_ply.is_some_and(|max| ply > max) {
@@ -612,11 +675,12 @@ pub fn extract_moves_from_str(
     let mut in_moves = false;
     let mut prev_dest: Option<(u8, u8)> = None;
 
-    let mut checkpoints: Vec<(Board, Option<(u8, u8)>)> = Vec::new();
+    let mut checkpoints: Vec<Checkpoint> = Vec::new();
     let mut current_path = source_path.to_string();
     let mut variation_count: u32 = 0;
     let mut current_variation_id: Option<String> = None;
     let mut current_branch_from_ply: Option<u32> = None;
+    let mut variation_contexts: Vec<VariationContext> = Vec::new();
     let mut accepting = false;
     // Mainline `RawMove`s are always pushed before any variation's (the format never resumes
     // extending the mainline after a `変化` marker), so this stays a valid prefix bound.
@@ -627,8 +691,9 @@ pub fn extract_moves_from_str(
     // 後手 in the summary line name move order, not a fixed color.
     let mut first_mover = SideToMove::Black;
 
-    for line in content.lines() {
-        let line = line.trim();
+    for raw_line in content.lines() {
+        let marker_indent = raw_line.len() - raw_line.trim_start().len();
+        let line = raw_line.trim();
 
         if line.is_empty() || line.starts_with('#') || line.starts_with('*') {
             continue;
@@ -664,38 +729,63 @@ pub fn extract_moves_from_str(
         let is_mainline = current_path == source_path;
 
         if line.starts_with("変化") {
-            if !is_mainline && accepting {
+            let Some(n) = parse_henka_ply(line) else {
+                warn!(path = source_path, line, "malformed 変化 marker, skipping");
+                accepting = false;
+                continue;
+            };
+
+            let parent_index = variation_contexts
+                .iter()
+                .rposition(|context| marker_indent > context.marker_indent);
+            let parent = parent_index.map(|index| variation_contexts[index].clone());
+            let branch = if let Some(parent) = &parent {
+                if n <= parent.branch_from_ply {
+                    None
+                } else {
+                    branch_checkpoint(&parent.checkpoints, n)
+                }
+            } else {
+                branch_checkpoint(&checkpoints, n)
+            };
+
+            let Some((cp_board, cp_prev_dest, branch_checkpoints)) = branch else {
                 warn!(
                     path = source_path,
-                    line,
-                    "another 変化 marker appeared inside an active variation; treating it as a new mainline-rooted sibling (nested variations are unsupported)"
+                    line, marker_indent, "malformed or out-of-range nested 変化 marker, skipping"
                 );
-            }
-            let branch = parse_henka_ply(line).and_then(|n| {
-                if n == 0 {
-                    return None;
-                }
-                checkpoints.get((n - 1) as usize).map(|cp| (n, cp.clone()))
+                accepting = false;
+                continue;
+            };
+
+            variation_count += 1;
+            let local_id = format!("var{variation_count}");
+            let (path, variation_id) = if let Some(parent) = parent {
+                let parent_index = parent_index.expect("nested variation has parent index");
+                variation_contexts.truncate(parent_index + 1);
+                (
+                    format!("{}#{local_id}@{n}", parent.path),
+                    format!("{}.{}", parent.variation_id, local_id),
+                )
+            } else {
+                variation_contexts.clear();
+                (format!("{source_path}#{local_id}@{n}"), local_id)
+            };
+
+            board = cp_board;
+            prev_dest = cp_prev_dest;
+            ply = n - 1;
+            current_path = path.clone();
+            current_variation_id = Some(variation_id.clone());
+            current_branch_from_ply = Some(n);
+            variation_contexts.push(VariationContext {
+                checkpoints: branch_checkpoints,
+                path,
+                variation_id,
+                branch_from_ply: n,
+                marker_indent,
             });
-            match branch {
-                Some((n, (cp_board, cp_prev_dest))) => {
-                    variation_count += 1;
-                    board = cp_board;
-                    prev_dest = cp_prev_dest;
-                    ply = n - 1;
-                    current_path = format!("{source_path}#var{variation_count}@{n}");
-                    current_variation_id = Some(format!("var{variation_count}"));
-                    current_branch_from_ply = Some(n);
-                    accepting = true;
-                }
-                None => {
-                    warn!(
-                        path = source_path,
-                        line, "malformed or out-of-range 変化 marker, skipping"
-                    );
-                    accepting = false;
-                }
-            }
+            accepting = true;
             continue;
         }
 
@@ -798,6 +888,8 @@ pub fn extract_moves_from_str(
 
         if is_mainline {
             checkpoints.push((board.clone(), prev_dest));
+        } else if let Some(context) = variation_contexts.last_mut() {
+            context.checkpoints.push((board.clone(), prev_dest));
         }
 
         out.push(RawMove {

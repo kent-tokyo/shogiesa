@@ -1,2 +1,2 @@
-# Golden CLI reports are text contracts; keep their bytes stable across Windows and Unix.
+# Golden CLI reports are text contracts; keep bytes stable across Windows and Unix.
 tests/fixtures/*.golden text eol=lf

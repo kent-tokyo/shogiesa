@@ -56,6 +56,10 @@ shogiesa recipe run --help
 
 ## 処理の流れ
 
+KIFの`変化`は本譜と同じ`root_id`を共有する別系列として抽出されます。親より深い字下げの入れ子分岐は
+親局面から再生し、`#var1@2#var2@3`・`variation_id: "var1.var2"`のように完全な系列を残します。
+同じ深さか浅い`変化`は本譜からのsiblingです。分岐の結果は対局結果ではないため`unknown`になります。
+
 ```text
 CSA / KIF / match kifu
         ↓

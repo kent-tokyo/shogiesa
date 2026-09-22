@@ -114,8 +114,9 @@ probabilities, labels of move correctness, or evidence of engine strength. Thres
 calibrated against a fixed corpus and teacher configuration. See [`docs/THEORY.md`](docs/THEORY.md).
 
 KIF variation moves are preserved as separate source paths and share a `root_id` with the mainline.
-Only flat, mainline-rooted `変化` blocks are supported in this release; nested variation dialects
-remain unsupported. KIF branch outcomes are `unknown` because a branch is not the played game.
+An indented nested `変化` replays from its parent and keeps its full lineage (for example,
+`#var1@2#var2@3` and `variation_id: "var1.var2"`); equal-or-shallower markers are mainline-rooted
+siblings. KIF branch outcomes are `unknown` because a branch is not the played game.
 
 ## Documentation map
 

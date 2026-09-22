@@ -29,7 +29,7 @@ report / distribution / validate
 
 ## 完了済みの土台
 
-- `[x]` CSA/KIF/match kifu抽出、保守的なSFEN検証、重複排除、source-root provenance。
+- `[x]` CSA/KIF/match kifu抽出（字下げによるnested KIF variationを含む）、保守的なSFEN検証、重複排除、source-root provenance。
 - `[x]` USI depth/nodeラベル、MultiPV/bound、timeout/restart、cache/resume、strict diagnostics。
 - `[x]` stability/quality、filter/calibrate/audit/tune、hard/uncertain/coverage選別。
 - `[x]` root-aware split、quota/group-aware stratify、決定的shuffle、JSONL/pack、manifest/hash。
@@ -48,7 +48,7 @@ report / distribution / validate
 
 - `[x]` USI duplicate/delayed bestmove、timeout/restart、child cleanupの回帰を固定。
 - `[x]` labelの再実行キー（engine、limit、MultiPV、options、weight）とresume/cache境界を固定。
-- `[x]` malformed CSA/KIF/JSONL、CP932、flat KIF variation、終端なし、pack corruptionをfixture化。
+- `[x]` malformed CSA/KIF/JSONL、CP932、flat/nested KIF variation、終端なし、pack corruptionをfixture化。
 - `[x]` SFENの過大hand/rankと`distribution`の極端な整数範囲を安全に拒否・処理する。
 - `[MEASURE]` Linux/macOS/Windowsでtest/lint/fixture hashを反復し、flaky率を記録する。
 - `[GATE]` OS差異はartifactとlimitationに記録し、成功の推測で埋めない。
@@ -116,7 +116,7 @@ training effect・Eloは別の実測であり、同じ点数に混ぜない。
 
 ## 保留・非目標
 
-- nested KIF variationの完全対応（入力方言と必要性の測定待ち）
+- 字下げを使わない独自nested KIF variation方言の対応（入力実態の測定待ち）
 - shogiesa内でのNNUE学習、対局tournament、GUI、分散学習
 - quietset/lineprior/veridictとのdraft envelopeの無条件な共通化
 - 単発または小規模な結果をabsolute Eloや一般的な強さに一般化すること

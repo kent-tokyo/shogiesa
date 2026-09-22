@@ -4,6 +4,7 @@ tasks/
 
 # generated datasets (extract/label/filter output)
 *.jsonl
+!tests/fixtures/broken.jsonl
 
 # macOS
 .DS_Store

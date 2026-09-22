@@ -68,15 +68,17 @@ fn validate_board(board: &str) -> Result<(), SfenError> {
 }
 
 fn rank_width(rank: &str, ri: usize) -> Result<u8, SfenError> {
-    let mut width: u8 = 0;
+    // Keep the accumulator wider than the returned diagnostic type. A malformed rank can
+    // contain enough digit cells to overflow `u8` before we reject it.
+    let mut width: u16 = 0;
     let mut chars = rank.chars().peekable();
     while let Some(ch) = chars.next() {
         if ch.is_ascii_digit() {
-            width += ch as u8 - b'0';
+            width = width.saturating_add(u16::from(ch as u8 - b'0'));
         } else if ch == '+' {
             // promoted piece — next char is the piece letter
             match chars.next() {
-                Some(p) if is_piece(p) => width += 1,
+                Some(p) if is_piece(p) => width = width.saturating_add(1),
                 Some(p) => {
                     return Err(SfenError::UnknownPiece {
                         rank: ri + 1,
@@ -91,12 +93,12 @@ fn rank_width(rank: &str, ri: usize) -> Result<u8, SfenError> {
                 }
             }
         } else if is_piece(ch) {
-            width += 1;
+            width = width.saturating_add(1);
         } else {
             return Err(SfenError::UnknownPiece { rank: ri + 1, ch });
         }
     }
-    Ok(width)
+    Ok(width.min(u16::from(u8::MAX)) as u8)
 }
 
 fn is_piece(ch: char) -> bool {
@@ -133,28 +135,52 @@ fn validate_hand(s: &str) -> Result<(), SfenError> {
         return Ok(());
     }
     let mut chars = s.chars().peekable();
+    let mut counts = [0u16; 7];
+    let mut pending_count = 0u16;
+    let mut has_pending_count = false;
     let mut saw_piece = false;
     while let Some(ch) = chars.next() {
         if ch.is_ascii_digit() {
-            // optional count before a piece
-            if !chars
-                .peek()
-                .is_some_and(|p| is_piece(*p) && !p.eq_ignore_ascii_case(&'k'))
-            {
-                return Err(SfenError::InvalidHand { got: s.to_string() });
-            }
+            has_pending_count = true;
+            pending_count = pending_count
+                .checked_mul(10)
+                .and_then(|count| count.checked_add(u16::from(ch as u8 - b'0')))
+                .ok_or_else(|| SfenError::InvalidHand { got: s.to_string() })?;
         } else if ch.eq_ignore_ascii_case(&'k') {
             // A king can never legitimately be captured/held in hand -- reject here so
             // `Board::from_sfen` can assume a well-formed hand string (its piece-index lookup
             // has no entry for King and would otherwise panic on this).
             return Err(SfenError::InvalidHand { got: s.to_string() });
         } else if is_piece(ch) {
+            let index = match ch.to_ascii_uppercase() {
+                'R' => 0,
+                'B' => 1,
+                'G' => 2,
+                'S' => 3,
+                'N' => 4,
+                'L' => 5,
+                'P' => 6,
+                _ => unreachable!("king was rejected above"),
+            };
+            let amount = if has_pending_count { pending_count } else { 1 };
+            // Board stores hand counts as u8. Reject zero and aggregate overflow here so
+            // Board::from_sfen never wraps or panics while constructing its compact array.
+            if amount == 0
+                || counts[index]
+                    .checked_add(amount)
+                    .map_or(true, |total| total > u16::from(u8::MAX))
+            {
+                return Err(SfenError::InvalidHand { got: s.to_string() });
+            }
+            counts[index] += amount;
+            pending_count = 0;
+            has_pending_count = false;
             saw_piece = true;
         } else {
             return Err(SfenError::InvalidHand { got: s.to_string() });
         }
     }
-    if !saw_piece {
+    if !saw_piece || has_pending_count {
         return Err(SfenError::InvalidHand { got: s.to_string() });
     }
     Ok(())
@@ -253,6 +279,33 @@ mod tests {
         assert!(matches!(
             Sfen::parse(bad),
             Err(SfenError::InvalidMoveCount { .. })
+        ));
+    }
+
+    #[test]
+    fn reject_hand_count_overflow_and_zero() {
+        let base = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b";
+        assert!(matches!(
+            Sfen::parse(&format!("{base} 256P 10")),
+            Err(SfenError::InvalidHand { .. })
+        ));
+        assert!(matches!(
+            Sfen::parse(&format!("{base} 0P 10")),
+            Err(SfenError::InvalidHand { .. })
+        ));
+        assert!(matches!(
+            Sfen::parse(&format!("{base} 200P60P 10")),
+            Err(SfenError::InvalidHand { .. })
+        ));
+    }
+
+    #[test]
+    fn reject_rank_width_without_overflowing() {
+        let huge_rank = "9".repeat(300);
+        let bad = format!("{huge_rank}/9/9/9/9/9/9/9/9 b - 1");
+        assert!(matches!(
+            Sfen::parse(&bad),
+            Err(SfenError::RankWidth { .. })
         ));
     }
 }

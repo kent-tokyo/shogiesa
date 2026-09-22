@@ -8,7 +8,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ## [Unreleased]
 
-No changes yet.
+- Documentation maintenance: made the English/Japanese READMEs concise entry points, moved
+  option-level authority to CLI `--help`, condensed the roadmap and experiment-envelope draft,
+  and kept one `2026-09-04` release-validation record as the evidence source. Version remains
+  `0.9.2`.
+- Hardened SFEN parsing against oversized hand counts and excessively wide ranks, and hardened
+  `distribution` bucket iteration against extreme integer ranges. Added regression tests; version
+  remains `0.9.2`.
 
 ## [0.9.2] — 2026-09-04
 

@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
 use std::fmt::Write as _; // writeln! into a String, for cmd_tune's Markdown report
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, BufWriter, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -1986,7 +1986,16 @@ fn hash_file_sha256(path: &Path) -> Result<String> {
     use sha2::{Digest, Sha256};
     let mut file = File::open(path).with_context(|| format!("cannot open {path:?}"))?;
     let mut hasher = Sha256::new();
-    std::io::copy(&mut file, &mut hasher).with_context(|| format!("cannot hash {path:?}"))?;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let bytes_read = file
+            .read(&mut buffer)
+            .with_context(|| format!("cannot hash {path:?}"))?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
     Ok(hasher
         .finalize()
         .iter()
@@ -8349,7 +8358,10 @@ fn print_eval_coverage(
     );
 
     let span_ok = match (eval_cp_min, eval_cp_max) {
-        (Some(lo), Some(hi)) => (hi - lo) / 200 < MAX_EVAL_CP_SPAN_BUCKETS,
+        // Widen before subtraction: JSONL can carry any i32 score, including opposite extremes.
+        (Some(lo), Some(hi)) => {
+            (i64::from(hi) - i64::from(lo)) / 200 < i64::from(MAX_EVAL_CP_SPAN_BUCKETS)
+        }
         _ => true, // no cp observations at all -- nothing to enumerate, trivially "ok"
     };
 
@@ -8385,7 +8397,10 @@ fn print_eval_coverage(
                         cp_cells_missing += 1;
                     }
                     print_coverage_row(phase, side, eb, count, status);
-                    v += 200;
+                    let Some(next) = v.checked_add(200) else {
+                        break;
+                    };
+                    v = next;
                 }
             }
         }
@@ -8436,8 +8451,14 @@ fn print_ply_histogram(
         if flag == BucketStatus::Missing {
             missing += 1;
         }
-        println!("  {b:>4}..{:<4}{count:>6}  {flag}", b + bucket_size - 1);
-        b += bucket_size;
+        println!(
+            "  {b:>4}..{:<4}{count:>6}  {flag}",
+            b.saturating_add(bucket_size.saturating_sub(1))
+        );
+        let Some(next) = b.checked_add(bucket_size) else {
+            break;
+        };
+        b = next;
     }
     println!("  ({total} buckets enumerated, {missing} missing)");
 }

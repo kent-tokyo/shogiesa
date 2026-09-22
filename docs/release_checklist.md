@@ -7,10 +7,10 @@ The lightweight repository contract check is `bash scripts/check_repository_cont
 before the full wrapper. The repeatable local check wrapper is `bash scripts/release_readiness.sh`.
 It reports every check and returns non-zero if any check fails, including dependency/network failures in `cargo test` or
 `cargo clippy`.
-The latest local run for `v0.9.2` is recorded in
-[`docs/release_validation_2026-09-04.md`](release_validation_2026-09-04.md); fixture tests remain
-available after the dependency cache was completed. The earlier full-wrapper result remains in
-[`docs/release_validation_2026-09-01.md`](release_validation_2026-09-01.md).
+The authoritative local run for `v0.9.2` is recorded in
+[`docs/release_validation_2026-09-04.md`](release_validation_2026-09-04.md). Older dated logs are
+not retained here; this checklist keeps the current release evidence and its unresolved
+publication blocker.
 
 For this release, workspace compilation, metadata, tests, and all-target clippy passed locally.
 The unchecked publication items below are not release evidence until their separate operations

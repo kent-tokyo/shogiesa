@@ -18,7 +18,6 @@ required_files=(
   docs/competitor_evidence.md
   docs/api_boundary.md
   docs/release_checklist.md
-  docs/release_validation_2026-09-03.md
   docs/release_validation_2026-09-04.md
   scripts/release_readiness.sh
   scripts/run_local_measurement_smoke.sh

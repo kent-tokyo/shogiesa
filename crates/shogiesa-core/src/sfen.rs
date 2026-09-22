@@ -134,12 +134,12 @@ fn validate_hand(s: &str) -> Result<(), SfenError> {
     if s == "-" {
         return Ok(());
     }
-    let mut chars = s.chars().peekable();
+    let chars = s.chars();
     let mut counts = [0u16; 7];
     let mut pending_count = 0u16;
     let mut has_pending_count = false;
     let mut saw_piece = false;
-    while let Some(ch) = chars.next() {
+    for ch in chars {
         if ch.is_ascii_digit() {
             has_pending_count = true;
             pending_count = pending_count
@@ -165,11 +165,11 @@ fn validate_hand(s: &str) -> Result<(), SfenError> {
             let amount = if has_pending_count { pending_count } else { 1 };
             // Board stores hand counts as u8. Reject zero and aggregate overflow here so
             // Board::from_sfen never wraps or panics while constructing its compact array.
-            if amount == 0
-                || counts[index]
-                    .checked_add(amount)
-                    .map_or(true, |total| total > u16::from(u8::MAX))
-            {
+            let exceeds_storage = match counts[index].checked_add(amount) {
+                Some(total) => total > u16::from(u8::MAX),
+                None => true,
+            };
+            if amount == 0 || exceeds_storage {
                 return Err(SfenError::InvalidHand { got: s.to_string() });
             }
             counts[index] += amount;

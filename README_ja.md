@@ -69,8 +69,10 @@ shogiesa extract \
 
 KIF の `変化`（分岐）ブロックも抽出されます。それぞれ独立した局面群として扱われ、
 `source.path` に `#varN@ply` サフィックス（例: `game.kif#var1@2`）が付くため、本譜の局面や
-他の変化と衝突しません — `split --by-source` では別ファイルに分かれます。変化は常に本譜から
-分岐する前提で、変化の中にさらに変化がある入れ子構造には対応していません。こうしたレコードは
+他の変化と衝突しません — `split --by-source` では別ファイルに分かれます。`変化` 行を親より深く
+字下げすると入れ子分岐として親の局面から再生され、パスは
+`game.kif#var1@2#var2@3`、`source.variation_id` は `"var1.var2"` のように完全な祖先関係を残します。
+同じ深さか浅い `変化` 行は本譜からの sibling として扱われます。こうしたレコードは
 `source.root_id`（本譜と共有）、`source.variation_id`（例: `"var1"`）、
 `source.branch_from_ply` も持ちます — 詳細は後述の「JSONLスキーマ」を参照。
 `split --train/--valid/--test` は `root_id`（無ければ `path` サフィックスにフォールバック）を

@@ -111,13 +111,13 @@ NNUE の学習結果を改善すること、処理速度・メモリ上限、Sek
 
 ### 0.3 入力形式と manifest の境界
 
-- `[x]` `split` 独自 manifest の理由と nested KIF `変化` の非対応を明記する。
+- `[x]` `split` 独自 manifest の理由と、字下げによる nested KIF `変化` の親局面・完全 provenance を明記する。
 - `[x]` schema v1–v11/pack の互換性表を作る。
-- `[x]` malformed CSA/KIF、CP932、variation、終端なし、壊れた JSONL を fixture 化する。
+- `[x]` malformed CSA/KIF、CP932、flat/nested variation、終端なし、壊れた JSONL を fixture 化する。
 - `[x]` contract check が異常系 fixture の必須存在と代表 marker を検査し、fixture の差し替えや
  空ファイル化を検出する。
-- `[x]` CLI の fixture-backed extract test が malformed/unterminated input の有効 prefix と
-  KIF variation provenance を end-to-end で検証する。
+- `[x]` fixture-backed extract test が malformed/unterminated input の有効 prefix と
+  KIF の flat/nested variation provenance・親局面 replay を検証する。
 - `[x]` CLI の `validate` が共有 broken JSONL fixture を通常モードでは警告付き成功、strict
   モードでは非ゼロ終了として扱うことを固定する。
 - `[x]` 通常モードは診断付き skip、`validate --strict` は非ゼロ終了、pack round-trip の期待値が固定される。
@@ -355,7 +355,7 @@ NNUE の学習結果を改善すること、処理速度・メモリ上限、Sek
 
 以下は現時点で優先しない。
 
-- nested KIF variations の完全対応（必要性と入力実態の測定待ち）
+- 字下げを使わない独自 nested KIF 方言の対応（入力実態の測定待ち）
 - shogiesa 内への NNUE 学習、対局 tournament、GUI、分散学習サービスの実装
 - `quietset`、`lineprior`、`veridict` との draft envelope の無条件な共通化
 - absolute Elo や competitor ranking として解釈できない、未完了または小規模な測定結果の一般化

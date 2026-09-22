@@ -8,7 +8,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ## [Unreleased]
 
-No changes yet.
+### Fixed
+
+- KIF: an indented nested `変化：N手` marker now replays from its active parent variation rather
+  than silently remapping to the mainline. Nested source paths and variation IDs retain the full
+  deterministic lineage (for example, `#var1@2#var2@3` and `var1.var2`); malformed nested markers
+  emit a diagnostic and are skipped without changing parentage.
 
 ## [0.9.2] — 2026-09-04
 

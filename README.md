@@ -1250,7 +1250,7 @@ shogiesa connects to engines via SFEN, JSONL, and USI — no engine-internal dep
 
 | Item | Status |
 |---|---|
-| KIF `変化` (variation/branch) moves | extracted as separate positions (`source.path` suffixed `#varN@ply`), but only relative to the mainline — a variation nested inside another variation is not supported |
+| KIF `変化` (variation/branch) moves | extracted as separate positions (`source.path` suffixed `#varN@ply`). A marker indented more deeply than its parent replays from that parent and extends the path/`variation_id` (`#var1@2#var2@3` / `var1.var2`); equal-or-shallower markers are mainline-rooted siblings. |
 | `Sfen`/`Board` legality checking | syntactic only, no full legal-move generation (by design) |
 | `lineprior export` KIF outcome detection | text-marker-based (`まで…`/`投了`/`持将棋`/`千日手`/`中断`), not exhaustive; unrecognized endings and all `変化` variation-branch moves fall back to `outcome: "unknown"` — check `--manifest`'s `unknown_outcome_count` to see how much of a corpus this affects |
 | `shuffle`'s `sample_id` | a within-run join key (hashes `source.path`, which isn't canonicalized), not a formula portable across independent re-extractions on a different machine/layout — keep the `--order-manifest` file, don't recompute; `opening_id` is always `null` (origin SFEN isn't retained on `PositionRecord` today) |

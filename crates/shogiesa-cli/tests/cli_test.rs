@@ -7503,10 +7503,10 @@ fn write_hex_fixture(name: &str) -> NamedTempFile {
         .unwrap()
         .split_whitespace()
         .flat_map(|chunk| {
-            chunk
-                .as_bytes()
-                .chunks_exact(2)
-                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            chunk.as_bytes().chunks(2).map(|pair| {
+                assert_eq!(pair.len(), 2, "hex fixture contains an incomplete byte");
+                u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap()
+            })
         })
         .collect();
     let mut out = NamedTempFile::new().unwrap();

@@ -4,9 +4,11 @@
 
 ## 現在地 — 2026-09-23
 
-`v0.9.2` のsource/tag/GitHub pushは完了している。crates.io公開は認証403で未完了であり、
-公開済みとは扱わない。リリース時のローカル検証は
-[`docs/release_validation_2026-09-04.md`](docs/release_validation_2026-09-04.md)を正本とする。
+`v0.10.0` はnested KIF variation、入力境界、cross-platform fixture、依存更新をまとめた
+リリース候補である。ローカル検証の正本は
+[`docs/release_validation_2026-09-23.md`](docs/release_validation_2026-09-23.md)とし、tag、GitHub
+Release、crates.io公開は個別の外部操作として確認する。過去の0.9.2 crates.io公開は認証403で未完了であり、
+今回もregistryの実結果なしに公開済みとは扱わない。
 
 shogiesa は学習データの生成・診断・再現性を担う。将棋エンジン、NNUE trainer、GUI、対局基盤、
 分散学習サービスは対象外である。

@@ -11,4 +11,4 @@ keywords = ["shogi", "nnue", "binary", "training-data"]
 categories = ["encoding", "game-engines"]
 
 [dependencies]
-shogiesa-core = { path = "../shogiesa-core", version = "0.9" }
+shogiesa-core = { path = "../shogiesa-core", version = "0.10" }

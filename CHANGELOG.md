@@ -8,19 +8,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ## [Unreleased]
 
+No changes yet.
+
+## [0.10.0] — 2026-09-23
+
 ### Fixed
 
 - Documentation maintenance: made the English/Japanese READMEs concise entry points, moved
   option-level authority to CLI `--help`, condensed the roadmap and experiment-envelope draft,
-  and kept one `2026-09-04` release-validation record as the evidence source. Version remains
-  `0.9.2`.
+  and retained concise release evidence.
 - Hardened SFEN parsing against oversized hand counts and excessively wide ranks, and hardened
-  `distribution` bucket iteration against extreme integer ranges. Added regression tests; version
-  remains `0.9.2`.
+  `distribution` bucket iteration against extreme integer ranges. Added regression tests.
 - KIF: an indented nested `変化：N手` marker now replays from its active parent variation rather
   than silently remapping to the mainline. Nested source paths and variation IDs retain the full
   deterministic lineage (for example, `#var1@2#var2@3` and `var1.var2`); malformed nested markers
   emit a diagnostic and are skipped without changing parentage.
+- Made CLI golden comparisons independent of checkout line endings, tracked the shared malformed
+  JSONL fixture, and updated fixture decoding for current Clippy.
+- Updated `sha2` to 0.11.0, `clap` to 4.6.7, `thiserror` to 2.0.20, `blake3` to 1.8.7, and
+  `encoding_rs` to 0.8.40.
 
 ## [0.9.2] — 2026-09-04
 
@@ -291,7 +297,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 - CLI integration tests (`assert_cmd` / `predicates` / `tempfile`)
 - `LICENSE-MIT` and `LICENSE-APACHE`
 
-[Unreleased]: https://github.com/kent-tokyo/shogiesa/compare/v0.9.2...HEAD
+[Unreleased]: https://github.com/kent-tokyo/shogiesa/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/kent-tokyo/shogiesa/compare/v0.9.2...v0.10.0
 [0.9.2]: https://github.com/kent-tokyo/shogiesa/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/kent-tokyo/shogiesa/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/kent-tokyo/shogiesa/compare/v0.8.0...v0.9.0

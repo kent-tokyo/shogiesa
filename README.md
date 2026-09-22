@@ -6,9 +6,9 @@ shogiesa turns game records into inspectable, reproducible training data. It ext
 positions, labels them through USI, records quality/provenance signals, and prepares datasets for
 an external trainer such as Sekirei.
 
-Current source version: `0.9.2`. The `v0.9.2` tag and GitHub commit are published; crates.io
-publication is still blocked by authentication. The authoritative local validation record is
-[`docs/release_validation_2026-09-04.md`](docs/release_validation_2026-09-04.md).
+Current source version: `0.10.0`. The authoritative local validation record is
+[`docs/release_validation_2026-09-23.md`](docs/release_validation_2026-09-23.md); tag, GitHub
+Release, and crates.io publication are separately verified release operations.
 
 ## Scope
 
@@ -129,7 +129,7 @@ siblings. KIF branch outcomes are `unknown` because a branch is not the played g
 | Interoperability claims and gaps | [`docs/interop_evidence.md`](docs/interop_evidence.md) |
 | Training-effect and gate protocols | [`docs/design/training_effect_measurement.md`](docs/design/training_effect_measurement.md), [`docs/SEKIREI_GATE_EVALUATION.md`](docs/SEKIREI_GATE_EVALUATION.md) |
 | External lineprior experiment | [`docs/LINEPRIOR_DOGFOOD.md`](docs/LINEPRIOR_DOGFOOD.md) |
-| Release evidence and checklist | [`docs/release_validation_2026-09-04.md`](docs/release_validation_2026-09-04.md), [`docs/release_checklist.md`](docs/release_checklist.md) |
+| Release evidence and checklist | [`docs/release_validation_2026-09-23.md`](docs/release_validation_2026-09-23.md), [`docs/release_checklist.md`](docs/release_checklist.md) |
 | Feature-fit comparison | [`docs/competitor_evidence.md`](docs/competitor_evidence.md) |
 
 ## Limits and evidence boundary

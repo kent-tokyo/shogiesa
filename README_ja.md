@@ -5,9 +5,9 @@
 shogiesa は棋譜から検査可能で再現できる学習データを作ります。SFEN局面の抽出、USI教師による
 ラベル付け、品質・provenanceの記録、外部トレーナー（Sekireiなど）向けデータセットの準備を行います。
 
-現在のソース版は `0.9.2` です。`v0.9.2` のtagとGitHub commitは公開済みですが、crates.io公開は
-認証エラーで未完了です。ローカル検証の正本は
-[`docs/release_validation_2026-09-04.md`](docs/release_validation_2026-09-04.md)です。
+現在のソース版は `0.10.0` です。ローカル検証の正本は
+[`docs/release_validation_2026-09-23.md`](docs/release_validation_2026-09-23.md)です。tag、GitHub
+Release、crates.io公開は別々に検証するリリース操作です。
 
 ## 役割
 
@@ -130,7 +130,7 @@ outcomeは`unknown`です。
 | 相互運用の根拠と未測定範囲 | [`docs/interop_evidence.md`](docs/interop_evidence.md) |
 | 学習効果・gate評価手順 | [`docs/design/training_effect_measurement.md`](docs/design/training_effect_measurement.md)、[`docs/SEKIREI_GATE_EVALUATION.md`](docs/SEKIREI_GATE_EVALUATION.md) |
 | lineprior実験 | [`docs/LINEPRIOR_DOGFOOD.md`](docs/LINEPRIOR_DOGFOOD.md) |
-| リリース証跡と確認項目 | [`docs/release_validation_2026-09-04.md`](docs/release_validation_2026-09-04.md)、[`docs/release_checklist.md`](docs/release_checklist.md) |
+| リリース証跡と確認項目 | [`docs/release_validation_2026-09-23.md`](docs/release_validation_2026-09-23.md)、[`docs/release_checklist.md`](docs/release_checklist.md) |
 | feature-fit比較 | [`docs/competitor_evidence.md`](docs/competitor_evidence.md) |
 
 ## 制限と証拠の境界

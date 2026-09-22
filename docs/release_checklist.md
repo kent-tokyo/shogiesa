@@ -1,26 +1,26 @@
 # Release checklist
 
-Use this checklist for publishing shogiesa `v0.9.2`. Mark each item with a command, artifact,
+Use this checklist for publishing shogiesa `v0.10.0`. Mark each item with a command, artifact,
 or explicit `blocked` reason; never convert an unavailable check into a success claim.
 
 The lightweight repository contract check is `bash scripts/check_repository_contract.sh`; run it
 before the full wrapper. The repeatable local check wrapper is `bash scripts/release_readiness.sh`.
 It reports every check and returns non-zero if any check fails, including dependency/network failures in `cargo test` or
 `cargo clippy`.
-The authoritative local run for `v0.9.2` is recorded in
-[`docs/release_validation_2026-09-04.md`](release_validation_2026-09-04.md). Older dated logs are
-not retained here; this checklist keeps the current release evidence and its unresolved
-publication blocker.
+The authoritative local run for `v0.10.0` is recorded in
+[`docs/release_validation_2026-09-23.md`](release_validation_2026-09-23.md). This checklist keeps
+local evidence separate from tag, GitHub Release, and registry publication results.
 
-For this release, workspace compilation, metadata, tests, and all-target clippy passed locally.
-The unchecked publication items below are not release evidence until their separate operations
-complete.
+For this release, workspace compilation, metadata, tests, all-target clippy, and cross-platform
+GitHub CI passed. Publication is not evidence until each external operation completes.
 
 ## Code and tests
 
 - [x] `cargo test` passes on the release checkout and all fixture counts are recorded.
 - [x] `cargo fmt --check` passes.
 - [x] `cargo clippy --all-targets --all-features -- -D warnings` passes.
+- [x] `cargo package --workspace --locked` packages and verifies every workspace crate in an
+      isolated temporary registry.
 - [x] malformed CSA/KIF/JSONL behavior is checked in normal and strict modes; contract and
       fixture inventories cover the release boundary.
 - [x] pack magic/version/endian and JSONL round-trip fixtures are present and contract-checked.
@@ -45,11 +45,11 @@ complete.
 
 ## Publication status
 
-- [x] `v0.9.2` release commit `94f2a412afe08cbd2eccc1d585d2c5ec3438afdf` is tagged and pushed
-      to GitHub as `v0.9.2`.
-- [ ] crates.io publication: BLOCKED by HTTP 403 authentication failure on
-      `shogiesa-core v0.9.2`; no workspace crate was published. Retry after configuring a valid
-      crates.io token.
+- [ ] annotated `v0.10.0` tag pushed to GitHub and verified to name the release commit.
+- [ ] GitHub Release created from `v0.10.0` with these release notes.
+- [ ] crates.io publication verified for every publishable workspace crate. The previous 0.9.2
+      attempt failed with authentication HTTP 403; record any new registry result rather than
+      inferring success.
 
 ## Release gate
 

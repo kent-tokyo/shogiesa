@@ -122,7 +122,6 @@ siblings. KIF branch outcomes are `unknown` because a branch is not the played g
 
 | Need | Document |
 |---|---|
-| Current work and explicit measurement gates | [`ROADMAP.md`](ROADMAP.md) |
 | Schema and pack compatibility | [`docs/design/schema_compatibility.md`](docs/design/schema_compatibility.md) |
 | Rust API boundary | [`docs/api_boundary.md`](docs/api_boundary.md) |
 | Metrics and quality-signal limits | [`docs/THEORY.md`](docs/THEORY.md) |

@@ -123,7 +123,6 @@ outcomeは`unknown`です。
 
 | 知りたいこと | 文書 |
 |---|---|
-| 現在地と測定gate | [`ROADMAP.md`](ROADMAP.md) |
 | schema/packの互換性 | [`docs/design/schema_compatibility.md`](docs/design/schema_compatibility.md) |
 | Rust API境界 | [`docs/api_boundary.md`](docs/api_boundary.md) |
 | 指標と品質signalの限界 | [`docs/THEORY.md`](docs/THEORY.md) |

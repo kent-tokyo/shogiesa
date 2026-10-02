@@ -1,7 +1,7 @@
 # Measurement matrix for remaining roadmap gates
 
-This is an execution plan, not benchmark evidence. A row becomes `[x]` in `ROADMAP.md` only
-after its listed artifact contains the measured result and the environment is recorded.
+This is an execution plan, not benchmark evidence. A row is complete only after its listed
+artifact contains the measured result and the environment is recorded.
 
 For changes that do not require external engines, start with
 `bash scripts/run_local_measurement_smoke.sh`. It validates the repository contract, formatting,

@@ -6,7 +6,6 @@ cd "$ROOT_DIR"
 
 required_files=(
   README.md
-  ROADMAP.md
   docs/design/schema_compatibility.md
   docs/THEORY.md
   schema/experiment_envelope.schema.json
@@ -140,18 +139,11 @@ else
   missing=1
 fi
 
-if rg -q '未測定|unmeasured|unverified|not.*measured' ROADMAP.md README.md docs/release_checklist.md; then
+if rg -q '未測定|unmeasured|unverified|not.*measured' README.md docs/release_checklist.md; then
   printf 'PASS unmeasured-claims boundary\n'
 else
   printf 'FAIL unmeasured-claims boundary missing\n'
   missing=1
-fi
-
-if rg -q '^[-*] `\[BUILD\]`' ROADMAP.md; then
-  printf 'FAIL unchecked BUILD items remain\n'
-  missing=1
-else
-  printf 'PASS roadmap BUILD items checked\n'
 fi
 
 exit "$missing"

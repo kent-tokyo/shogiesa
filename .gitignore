@@ -1,6 +1,7 @@
 /target/
 .claude/
 tasks/
+ROADMAP.md
 
 # generated datasets (extract/label/filter output)
 *.jsonl

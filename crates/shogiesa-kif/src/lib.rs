@@ -572,10 +572,23 @@ pub fn extract_from_path(
     config: &ExtractConfig,
     seen: &mut HashSet<String>,
 ) -> Result<Vec<PositionRecord>, KifError> {
+    let source = path.to_string_lossy().into_owned();
+    extract_from_path_with_source(path, &source, config, seen)
+}
+
+/// Extract a physical KIF/KI2 file while recording a caller-selected provenance path.
+///
+/// The separate source path keeps recursively discovered datasets portable without changing the
+/// existing encoding detection or the path used to open the file.
+pub fn extract_from_path_with_source(
+    path: &Path,
+    source_path: &str,
+    config: &ExtractConfig,
+    seen: &mut HashSet<String>,
+) -> Result<Vec<PositionRecord>, KifError> {
     let bytes = fs::read(path)?;
     let content = decode_kif_bytes(&bytes);
-    let source = path.to_string_lossy().into_owned();
-    extract_from_str(&content, &source, config, seen)
+    extract_from_str(&content, source_path, config, seen)
 }
 
 fn opponent(color: SideToMove) -> SideToMove {

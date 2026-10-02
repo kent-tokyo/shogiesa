@@ -47,6 +47,11 @@ shogiesa report --input labeled.jsonl
 shogiesa filter --input labeled.jsonl --min-stability 0.85 --out train.jsonl
 ```
 
+Directory extraction is shallow by default. Add `--recursive` to discover `.csa`, `.kif`, and
+`.ki2` below nested directories in deterministic relative-path order. Recursive extraction records
+portable relative source paths and never follows symlinks.
+An input root that is itself a symlink is rejected in recursive mode.
+
 Every option is defined by the executable:
 
 ```bash

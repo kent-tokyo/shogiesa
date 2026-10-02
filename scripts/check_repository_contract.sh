@@ -27,6 +27,11 @@ required_files=(
   tests/fixtures/no-terminal.kif
   tests/fixtures/variation.kif
   tests/fixtures/nested_variation.kif
+  tests/fixtures/recursive_extract/a/game.csa
+  tests/fixtures/recursive_extract/b/game.csa
+  tests/fixtures/recursive_extract/b/nested/game.kif
+  tests/fixtures/recursive_extract/c/game.ki2
+  tests/fixtures/recursive_extract/ignored.txt
   tests/fixtures/broken.jsonl
   tests/fixtures/pack_input.jsonl
   tests/fixtures/malformed_mixed.jsonl
@@ -93,6 +98,11 @@ check_marker tests/fixtures/malformed.kif 'これは指し手ではない' 'malf
 check_marker tests/fixtures/no-terminal.kif '^   1 ７六歩' 'KIF without terminal result'
 check_marker tests/fixtures/variation.kif '^変化：2手' 'KIF variation marker'
 check_marker tests/fixtures/nested_variation.kif '^  変化：3手' 'nested KIF variation marker'
+check_marker tests/fixtures/recursive_extract/a/game.csa '^N\+Sente$' 'recursive CSA source A'
+check_marker tests/fixtures/recursive_extract/b/game.csa '^N\+Sente$' 'recursive duplicate basename CSA source B'
+check_marker tests/fixtures/recursive_extract/b/nested/game.kif '^手合割：平手$' 'recursive nested KIF source'
+check_marker tests/fixtures/recursive_extract/c/game.ki2 '^手合割：平手$' 'recursive KI2 source'
+check_marker tests/fixtures/recursive_extract/ignored.txt '^This non-game file' 'recursive skipped-file diagnostic input'
 check_marker tests/fixtures/broken.jsonl '^not json$' 'broken JSONL line'
 check_marker tests/fixtures/pack_input.jsonl '"schema_version":11' 'pack input schema'
 check_marker tests/fixtures/malformed_mixed.jsonl '^not json$' 'mixed JSONL malformed suffix'

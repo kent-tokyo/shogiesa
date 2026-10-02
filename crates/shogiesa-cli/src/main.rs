@@ -42,7 +42,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Extract positions from CSA game records
+    /// Extract positions from CSA, KIF, or KI2 game records
     Extract(ExtractArgs),
     /// Label positions with engine evaluations
     Label(Box<LabelArgs>),
@@ -129,7 +129,7 @@ enum Commands {
 
 #[derive(clap::Args)]
 struct ExtractArgs {
-    /// Input file or directory of CSA files
+    /// Input game-record file or directory (directory traversal is shallow by default)
     #[arg(short, long)]
     input: PathBuf,
     /// Output JSONL file
@@ -150,6 +150,9 @@ struct ExtractArgs {
     /// Deduplicate using Zobrist hash (faster/less memory; ~1/2^64 collision chance)
     #[arg(long)]
     dedup_zobrist: bool,
+    /// Recursively discover .csa, .kif, and .ki2 files; symlinks are not followed
+    #[arg(long)]
+    recursive: bool,
 }
 
 #[derive(clap::Args)]
@@ -1159,9 +1162,54 @@ fn cmd_extract(args: ExtractArgs) -> Result<()> {
         dedup: args.dedup,
     };
 
-    let paths = collect_game_paths(&args.input)?;
+    let recursive_discovery = if args.recursive {
+        let metadata = fs::symlink_metadata(&args.input)
+            .with_context(|| format!("cannot inspect input {:?}", args.input))?;
+        if metadata.file_type().is_symlink() {
+            anyhow::bail!(
+                "recursive input root must not be a symlink: {:?}",
+                args.input
+            );
+        }
+        metadata.is_dir()
+    } else {
+        false
+    };
+    let (paths, discovery): (Vec<GameInput>, Option<RecursiveDiscovery>) = if recursive_discovery {
+        let discovery = collect_game_paths_recursive(&args.input)?;
+        let paths = discovery
+            .paths
+            .iter()
+            .map(|entry| GameInput {
+                path: entry.path.clone(),
+                source_path: Some(entry.source_path.clone()),
+            })
+            .collect();
+        (paths, Some(discovery))
+    } else {
+        (
+            collect_game_paths(&args.input)?
+                .into_iter()
+                .map(|path| GameInput {
+                    path,
+                    source_path: None,
+                })
+                .collect(),
+            None,
+        )
+    };
     if paths.is_empty() {
-        anyhow::bail!("no .csa or .kif files found in {:?}", args.input);
+        anyhow::bail!("no .csa, .kif, or .ki2 files found in {:?}", args.input);
+    }
+    if let Some(discovery) = &discovery {
+        eprintln!(
+            "discovery: {} game files, {} non-game files skipped, {} symlinks skipped, {} unreadable directories, {} unreadable entries",
+            discovery.paths.len(),
+            discovery.skipped_files,
+            discovery.skipped_symlinks,
+            discovery.unreadable_directories,
+            discovery.unreadable_entries,
+        );
     }
 
     let out_file =
@@ -1184,13 +1232,30 @@ fn cmd_extract(args: ExtractArgs) -> Result<()> {
     let mut total_positions = 0usize;
     let mut skipped = 0usize;
 
-    for path in &paths {
+    for input in &paths {
         total_games += 1;
+        let path = &input.path;
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        let result = match ext {
-            "kif" | "ki2" => shogiesa_kif::extract_from_path(path, &extract_config, &mut seen)
-                .map_err(|e| e.to_string()),
-            _ => shogiesa_csa::extract_from_path(path, &extract_config, &mut seen)
+        let result = match (ext, input.source_path.as_deref()) {
+            ("kif" | "ki2", Some(source_path)) => shogiesa_kif::extract_from_path_with_source(
+                path,
+                source_path,
+                &extract_config,
+                &mut seen,
+            )
+            .map_err(|e| e.to_string()),
+            ("kif" | "ki2", None) => {
+                shogiesa_kif::extract_from_path(path, &extract_config, &mut seen)
+                    .map_err(|e| e.to_string())
+            }
+            (_, Some(source_path)) => shogiesa_csa::extract_from_path_with_source(
+                path,
+                source_path,
+                &extract_config,
+                &mut seen,
+            )
+            .map_err(|e| e.to_string()),
+            (_, None) => shogiesa_csa::extract_from_path(path, &extract_config, &mut seen)
                 .map_err(|e| e.to_string()),
         };
         match result {
@@ -7079,6 +7144,116 @@ fn collect_game_paths(input: &PathBuf) -> Result<Vec<PathBuf>> {
     }
     paths.sort();
     Ok(paths)
+}
+
+#[derive(Debug)]
+struct GameInput {
+    path: PathBuf,
+    /// Portable provenance used only for recursively discovered directory inputs.
+    source_path: Option<String>,
+}
+
+#[derive(Debug)]
+struct RecursiveGamePath {
+    path: PathBuf,
+    source_path: String,
+}
+
+#[derive(Debug, Default)]
+struct RecursiveDiscovery {
+    paths: Vec<RecursiveGamePath>,
+    skipped_files: usize,
+    skipped_symlinks: usize,
+    unreadable_directories: usize,
+    unreadable_entries: usize,
+}
+
+fn normalized_relative_path(root: &Path, path: &Path) -> Result<String> {
+    let relative = path
+        .strip_prefix(root)
+        .with_context(|| format!("cannot make {:?} relative to {:?}", path, root))?;
+    Ok(relative
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/"))
+}
+
+fn collect_game_paths_recursive(root: &Path) -> Result<RecursiveDiscovery> {
+    let mut discovery = RecursiveDiscovery::default();
+    collect_game_paths_recursive_from(root, root, true, &mut discovery)?;
+    discovery
+        .paths
+        .sort_by(|left, right| left.source_path.cmp(&right.source_path));
+    Ok(discovery)
+}
+
+fn collect_game_paths_recursive_from(
+    root: &Path,
+    directory: &Path,
+    is_root: bool,
+    discovery: &mut RecursiveDiscovery,
+) -> Result<()> {
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if !is_root => {
+            tracing::warn!(path = %directory.display(), "unreadable directory skipped: {error}");
+            discovery.unreadable_directories += 1;
+            return Ok(());
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("cannot read directory {:?}", directory));
+        }
+    };
+
+    let mut readable_entries = Vec::new();
+    for entry in entries {
+        match entry {
+            Ok(entry) => readable_entries.push(entry),
+            Err(error) => {
+                tracing::warn!(path = %directory.display(), "unreadable directory entry skipped: {error}");
+                discovery.unreadable_entries += 1;
+            }
+        }
+    }
+    readable_entries.sort_by_key(|entry| entry.file_name());
+
+    for entry in readable_entries {
+        let path = entry.path();
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(error) => {
+                tracing::warn!(path = %path.display(), "unreadable directory entry skipped: {error}");
+                discovery.unreadable_entries += 1;
+                continue;
+            }
+        };
+
+        if file_type.is_symlink() {
+            tracing::warn!(path = %path.display(), "symlink skipped during recursive discovery");
+            discovery.skipped_symlinks += 1;
+        } else if file_type.is_dir() {
+            collect_game_paths_recursive_from(root, &path, false, discovery)?;
+        } else if file_type.is_file()
+            && matches!(
+                path.extension().and_then(|extension| extension.to_str()),
+                Some("csa" | "kif" | "ki2")
+            )
+        {
+            discovery.paths.push(RecursiveGamePath {
+                source_path: normalized_relative_path(root, &path)?,
+                path,
+            });
+        } else if file_type.is_file() {
+            tracing::warn!(path = %path.display(), "non-game file skipped during recursive discovery");
+            discovery.skipped_files += 1;
+        } else {
+            tracing::warn!(path = %path.display(), "non-regular entry skipped during recursive discovery");
+            discovery.unreadable_entries += 1;
+        }
+    }
+
+    Ok(())
 }
 
 fn load_records(path: &PathBuf) -> Result<(Vec<PositionRecord>, usize)> {

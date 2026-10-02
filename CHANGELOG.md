@@ -8,7 +8,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ## [Unreleased]
 
-No changes yet.
+### Added
+
+- `extract --recursive` discovers nested `.csa`, `.kif`, and `.ki2` inputs in deterministic
+  relative-path order, records portable relative source paths, deduplicates across the complete
+  tree, skips symlinks to avoid cycles, and reports skipped or unreadable entries. The existing
+  shallow directory behavior remains the default.
 
 ## [0.10.0] — 2026-09-23
 

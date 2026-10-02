@@ -229,9 +229,22 @@ pub fn extract_from_path(
     config: &ExtractConfig,
     seen: &mut HashSet<String>,
 ) -> Result<Vec<PositionRecord>, ExtractError> {
-    let content = fs::read_to_string(path)?;
     let source = path.to_string_lossy().into_owned();
-    extract_from_str(&content, &source, config, seen)
+    extract_from_path_with_source(path, &source, config, seen)
+}
+
+/// Extract a physical CSA file while recording a caller-selected provenance path.
+///
+/// This is useful for directory ingestion, where an absolute checkout path would make otherwise
+/// identical datasets differ across machines. The file is still opened directly via `path`.
+pub fn extract_from_path_with_source(
+    path: &Path,
+    source_path: &str,
+    config: &ExtractConfig,
+    seen: &mut HashSet<String>,
+) -> Result<Vec<PositionRecord>, ExtractError> {
+    let content = fs::read_to_string(path)?;
+    extract_from_str(&content, source_path, config, seen)
 }
 
 pub fn extract_from_reader(

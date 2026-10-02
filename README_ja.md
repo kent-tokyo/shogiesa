@@ -46,6 +46,10 @@ shogiesa report --input labeled.jsonl
 shogiesa filter --input labeled.jsonl --min-stability 0.85 --out train.jsonl
 ```
 
+ディレクトリの抽出は既定では直下だけです。`--recursive`を付けると、配下の`.csa`、`.kif`、
+`.ki2`を相対パス順で決定的に探索します。provenanceには持ち運べる相対パスを記録し、symlinkは
+追跡しません。入力ルート自体がsymlinkの場合も、再帰モードでは拒否します。
+
 全オプションの正本は実行バイナリです。
 
 ```bash

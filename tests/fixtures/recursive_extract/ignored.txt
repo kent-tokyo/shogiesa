@@ -1,0 +1,1 @@
+This non-game file verifies explicit recursive-discovery diagnostics.

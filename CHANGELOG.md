@@ -5,6 +5,8 @@ Compare links at the end provide the complete commit history.
 
 ## [Unreleased]
 
+## [0.10.1] — 2026-10-03
+
 ### Added
 
 - `extract --recursive` discovers nested `.csa`, `.kif`, and `.ki2` files in deterministic
@@ -17,6 +19,10 @@ Compare links at the end provide the complete commit history.
 
 - The experiment-envelope consumer audit now records the incompatible quietset, lineprior, and
   veridict contracts and keeps nested v1 emission deferred until consumers agree.
+
+### Changed
+
+- Updated `encoding_rs` to 0.8.42 and `thiserror` to 2.0.21.
 
 ## [0.10.0] — 2026-09-23
 
@@ -176,7 +182,8 @@ Compare links at the end provide the complete commit history.
 - CSA extraction, USI labeling, validation/reporting, shared domain types, CI, fixtures, and dual
   MIT/Apache-2.0 licensing.
 
-[Unreleased]: https://github.com/kent-tokyo/shogiesa/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/kent-tokyo/shogiesa/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/kent-tokyo/shogiesa/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/kent-tokyo/shogiesa/compare/v0.9.2...v0.10.0
 [0.9.2]: https://github.com/kent-tokyo/shogiesa/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/kent-tokyo/shogiesa/compare/v0.9.0...v0.9.1

@@ -18,6 +18,7 @@ required_files=(
   docs/api_boundary.md
   docs/release_checklist.md
   docs/release_validation_2026-09-04.md
+  docs/release_validation_2026-10-03.md
   scripts/release_readiness.sh
   scripts/run_local_measurement_smoke.sh
   scripts/run_reproducibility_matrix.sh

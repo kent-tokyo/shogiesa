@@ -6,8 +6,9 @@ shogiesa turns CSA, KIF, KI2, and match-runner records into inspectable training
 extracts SFEN positions, labels them through USI engines, filters unstable samples, and writes
 reproducible JSONL or binary-pack artifacts for external trainers such as Sekirei.
 
-The workspace version is `0.11.0`. The latest verified published release remains `0.10.1` until
-the release workflow completes. See the [changelog](CHANGELOG.md) and
+The workspace version and latest verified published release are `0.11.0`. See the
+[GitHub Release](https://github.com/kent-tokyo/shogiesa/releases/tag/v0.11.0), the
+[changelog](CHANGELOG.md), and
 [the v0.11.0 validation log](docs/release_validation_2026-10-03_v0.11.0.md).
 
 ## Scope

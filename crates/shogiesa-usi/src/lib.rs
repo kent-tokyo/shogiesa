@@ -224,6 +224,10 @@ pub struct UsiEngine {
     /// last `info` line without a real `bestmove` ever arriving -- one is still owed. Checked at
     /// the top of the next `analyse()` call.
     awaiting_late_bestmove: bool,
+    /// True after a real `bestmove` completed the previous search. Strict mode puts an
+    /// `isready`/`readyok` barrier in front of the next search so output written immediately
+    /// after that bestmove cannot race the non-blocking stale-output drain.
+    previous_search_completed: bool,
     pending_handshake_bestmoves: Vec<String>,
     /// `--transcript-on-error`: capture raw USI lines (both directions) for the current exchange.
     capture_transcript: bool,
@@ -276,6 +280,7 @@ impl UsiEngine {
             strict: false,
             go_ever_sent: false,
             awaiting_late_bestmove: false,
+            previous_search_completed: false,
             pending_handshake_bestmoves: Vec::new(),
             capture_transcript: false,
             transcript: Vec::new(),
@@ -468,6 +473,7 @@ impl UsiEngine {
                     let mut result =
                         Self::build_analysis_result(bestmove, candidates_by_rank, depth_fallback)?;
                     result.timed_out = true;
+                    self.previous_search_completed = true;
                     return Ok(result);
                 }
                 Ok(line) if line.starts_with("info ") => {
@@ -519,6 +525,25 @@ impl UsiEngine {
             }
         }
 
+        // A duplicate can be written immediately after the first bestmove but reach the reader
+        // thread only after this call's initial try_recv(). `isready` is processed in command
+        // order, so seeing `readyok` proves all output from the preceding search has crossed the
+        // channel boundary before a new `go` is sent.
+        if self.strict && self.previous_search_completed {
+            self.write_line("isready")?;
+            let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+            loop {
+                let line = self.recv_until(deadline)?;
+                if line == "readyok" {
+                    self.previous_search_completed = false;
+                    break;
+                }
+                if line.starts_with("bestmove ") {
+                    return Err(UsiError::DuplicateBestmove);
+                }
+            }
+        }
+
         // Discard anything a previous call's engine emitted after that call already returned
         // (e.g. a stray line landing just after a salvage's grace period expired) -- the same
         // engine process is reused across every position a worker thread picks up, so leftover
@@ -566,11 +591,13 @@ impl UsiEngine {
                             .and_then(|s| s.split_whitespace().next())
                             .ok_or(UsiError::InvalidResponse)?
                             .to_string();
-                        return Self::build_analysis_result(
+                        let result = Self::build_analysis_result(
                             bestmove,
                             &candidates_by_rank,
                             depth_fallback,
-                        );
+                        )?;
+                        self.previous_search_completed = true;
+                        return Ok(result);
                     } else if line.starts_with("info ")
                         && let Some(info) = parse_info(&line)
                     {

@@ -18,6 +18,11 @@ Compare links at the end provide the complete commit history.
 
 - Routed CLI position-record readers through the version-checked schema parser.
 
+### Fixed
+
+- Strict USI mode now uses a command-order barrier between searches so an immediately delayed
+  duplicate `bestmove` cannot race the next position.
+
 ## [0.10.1] — 2026-10-03
 
 ### Added

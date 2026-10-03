@@ -5,6 +5,8 @@ Compare links at the end provide the complete commit history.
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-10-03
+
 ### Added
 
 - Added the consumer-facing `shogiesa_core::schema` boundary with typed JSONL parsing,
@@ -193,7 +195,8 @@ Compare links at the end provide the complete commit history.
 - CSA extraction, USI labeling, validation/reporting, shared domain types, CI, fixtures, and dual
   MIT/Apache-2.0 licensing.
 
-[Unreleased]: https://github.com/kent-tokyo/shogiesa/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/kent-tokyo/shogiesa/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/kent-tokyo/shogiesa/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/kent-tokyo/shogiesa/compare/v0.9.2...v0.10.0
 [0.9.2]: https://github.com/kent-tokyo/shogiesa/compare/v0.9.1...v0.9.2

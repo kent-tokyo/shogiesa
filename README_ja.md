@@ -6,10 +6,9 @@ shogiesaはCSA、KIF、KI2、match-runner棋譜を、点検可能な学習デー
 抽出、USI教師によるラベル付け、不安定な局面の除外、外部トレーナー向けJSONL・binary packの
 作成を担当します。
 
-ワークスペースのバージョンと検証済みの最新公開版は`0.10.1`です。
-[GitHub Release](https://github.com/kent-tokyo/shogiesa/releases/tag/v0.10.1)、
-[CHANGELOG](CHANGELOG.md)、検証結果は
-[v0.10.1 validation log](docs/release_validation_2026-10-03.md)を参照してください。
+ワークスペースのバージョンは`0.11.0`です。公開workflowが完了するまで、検証済みの最新公開版は
+`0.10.1`です。[CHANGELOG](CHANGELOG.md)と
+[v0.11.0 validation log](docs/release_validation_2026-10-03_v0.11.0.md)を参照してください。
 
 ## 役割
 
@@ -123,7 +122,7 @@ binary packはversion付きの転送形式です。点検やdiffではJSONLへ�
 | scale・学習効果の測定 | [measurement_matrix.md](docs/design/measurement_matrix.md)、[training_effect_measurement.md](docs/design/training_effect_measurement.md) |
 | 完了した測定artifact | [再現性matrix](docs/measurements/reproducibility_matrix_2026-10-03.json) |
 | Sekirei・lineprior runbook | [SEKIREI_GATE_EVALUATION.md](docs/SEKIREI_GATE_EVALUATION.md)、[LINEPRIOR_DOGFOOD.md](docs/LINEPRIOR_DOGFOOD.md) |
-| release確認と証跡 | [release_checklist.md](docs/release_checklist.md)、[v0.10.1 validation](docs/release_validation_2026-10-03.md) |
+| release確認と証跡 | [release_checklist.md](docs/release_checklist.md)、[v0.11.0 validation](docs/release_validation_2026-10-03_v0.11.0.md) |
 
 ## 証拠の境界
 

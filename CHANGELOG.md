@@ -5,6 +5,17 @@ Compare links at the end provide the complete commit history.
 
 ## [Unreleased]
 
+### Added
+
+- Added the consumer-facing `shogiesa_core::schema` boundary with typed JSONL parsing,
+  explicit schema-version validation, and actionable unsupported-version diagnostics.
+- Added canonical schema 11 and legacy schema 1 JSONL fixtures covering cp and mate scores,
+  score perspective and bounds, stability, game-result provenance, and KIF variation metadata.
+
+### Changed
+
+- Routed CLI position-record readers through the version-checked schema parser.
+
 ## [0.10.1] — 2026-10-03
 
 ### Added

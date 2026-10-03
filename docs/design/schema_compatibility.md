@@ -22,6 +22,31 @@ normalized in memory, but a command that rewrites them emits the current schema.
 make an old record equivalent to a newly labeled record: absent request, telemetry, weight, or
 game-result evidence remains absent and must not be treated as measured evidence.
 
+## Typed consumer contract
+
+Rust consumers should use `shogiesa_core::schema::parse_json_line`. It returns a typed
+`PositionRecord`, accepts the documented range `1..=SCHEMA_VERSION`, and rejects version 0 or an
+unknown future version with the supported range and upgrade/conversion guidance. Direct
+`serde_json::from_str::<PositionRecord>` remains possible for source compatibility, but it only
+performs structural deserialization and is not the supported version gate.
+
+Compatibility rules are:
+
+- Existing fields do not change meaning within a schema version.
+- Additive optional fields require explicit Serde defaults so historical fixtures continue to
+  deserialize without consumer-side guessed values.
+- Removing or renaming a field, changing an enum representation, or changing field meaning
+  requires a new schema version and an explicit migration path.
+- Unknown future schema versions are not accepted merely because Serde can ignore their fields.
+- Consumers depend on `shogiesa-core`; shogiesa does not depend on a consumer's engine, search,
+  trainer, or board-state types.
+
+The canonical fixtures are
+[`schema_contract_v11.jsonl`](../../crates/shogiesa-core/tests/fixtures/schema_contract_v11.jsonl)
+and [`schema_contract_v1.jsonl`](../../crates/shogiesa-core/tests/fixtures/schema_contract_v1.jsonl).
+Their contract tests cover round-trip preservation, legacy defaults, cp and mate observations,
+score perspective and bounds, stability, game-result provenance, and source variation metadata.
+
 ## Binary pack
 
 The pack header is `SHOGIESA` plus a little-endian `u16` format version. The current format is

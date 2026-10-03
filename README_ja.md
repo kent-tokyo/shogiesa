@@ -104,6 +104,10 @@ observation、stability、resultを持ちます。
 }
 ```
 
+Rust consumerは`shogiesa-core`へ一方向に依存し、
+`shogiesa_core::schema::parse_json_line`で読み込みます。旧schemaの既定値を型として適用し、
+未対応versionは明示的に拒否します。shogiesaからengineやtrainerへの依存は追加しません。
+
 binary packはversion付きの転送形式です。点検やdiffではJSONLへ戻してください。詳細は
 [schema/pack compatibility](docs/design/schema_compatibility.md)にあります。
 

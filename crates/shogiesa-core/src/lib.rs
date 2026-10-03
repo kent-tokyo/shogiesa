@@ -850,6 +850,8 @@ pub use board::{
     Board, BoardError, PieceType, UsiMove, UsiMoveError, parse_usi_move, zobrist_from_sfen,
 };
 
+pub mod schema;
+
 pub mod sfen;
 
 /// Shared configuration for position extraction (used by shogiesa-csa and shogiesa-kif).

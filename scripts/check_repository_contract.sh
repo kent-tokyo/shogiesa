@@ -36,6 +36,8 @@ required_files=(
   tests/fixtures/recursive_extract/c/game.ki2
   tests/fixtures/recursive_extract/ignored.txt
   tests/fixtures/broken.jsonl
+  crates/shogiesa-core/tests/fixtures/schema_contract_v11.jsonl
+  crates/shogiesa-core/tests/fixtures/schema_contract_v1.jsonl
   tests/fixtures/pack_input.jsonl
   tests/fixtures/malformed_mixed.jsonl
   tests/fixtures/conflict_report_input.jsonl
@@ -107,6 +109,9 @@ check_marker tests/fixtures/recursive_extract/b/nested/game.kif '^手合割：�
 check_marker tests/fixtures/recursive_extract/c/game.ki2 '^手合割：平手$' 'recursive KI2 source'
 check_marker tests/fixtures/recursive_extract/ignored.txt '^This non-game file' 'recursive skipped-file diagnostic input'
 check_marker tests/fixtures/broken.jsonl '^not json$' 'broken JSONL line'
+check_marker crates/shogiesa-core/tests/fixtures/schema_contract_v11.jsonl '"variation_id":"var1"' 'schema v11 variation metadata'
+check_marker crates/shogiesa-core/tests/fixtures/schema_contract_v11.jsonl '"kind":"mate"' 'schema v11 mate observation'
+check_marker crates/shogiesa-core/tests/fixtures/schema_contract_v1.jsonl '"schema_version":1' 'schema v1 compatibility input'
 check_marker tests/fixtures/pack_input.jsonl '"schema_version":11' 'pack input schema'
 check_marker tests/fixtures/malformed_mixed.jsonl '^not json$' 'mixed JSONL malformed suffix'
 check_marker tests/fixtures/conflict_report_input.jsonl '"variation_id":"var1"' 'conflict report variation input'

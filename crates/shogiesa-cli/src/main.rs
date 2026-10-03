@@ -16,7 +16,8 @@ use shogiesa_core::{
     SearchLimitKind, SideToMove, SourceInfo, UsiMove, bestmove_agreement,
     cp_from_black_perspective, effective_bestmove_kind, engine_bestmove_agreement,
     evaluate_quality, has_special_bestmove, parse_usi_move, phase_from_ply,
-    requested_depth_underreached, score_swing, sfen::Sfen, zobrist_from_sfen,
+    requested_depth_underreached, schema::parse_json_line, score_swing, sfen::Sfen,
+    zobrist_from_sfen,
 };
 use shogiesa_pack as pack;
 use shogiesa_stratify::{EvalBucket, bucket_key, eval_bucket_of};
@@ -2853,7 +2854,7 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
             if line.trim().is_empty() {
                 continue;
             }
-            match serde_json::from_str::<PositionRecord>(&line) {
+            match parse_json_line(&line) {
                 Ok(mut record) if Sfen::parse(&record.sfen).is_ok() => {
                     if let Some((index, file)) = resume_source.as_mut()
                         && let Some(&offset) = index.get(&merge_alignment_key(&record))
@@ -3966,7 +3967,7 @@ fn cmd_sample(args: SampleArgs) -> Result<()> {
         .enumerate()
         .filter_map(|(i, line)| match line {
             Ok(line) if line.trim().is_empty() => None,
-            Ok(line) => match serde_json::from_str::<PositionRecord>(&line) {
+            Ok(line) => match parse_json_line(&line) {
                 Ok(r) => Some(r),
                 Err(e) => {
                     tracing::warn!(line = i + 1, "parse error: {e}");
@@ -4300,7 +4301,7 @@ fn cmd_balance(args: BalanceArgs) -> Result<()> {
             continue;
         }
         // parse errors are warned once, in pass 2 below -- not duplicated here
-        if let Ok(record) = serde_json::from_str::<PositionRecord>(&line) {
+        if let Ok(record) = parse_json_line(&line) {
             *bucket_sizes
                 .entry(bucket_key(&record, by_phase, by_side, by_eval, by_wdl))
                 .or_default() += 1;
@@ -4425,7 +4426,7 @@ fn cmd_stratify_write_template(args: &StratifyArgs, template_path: &Path) -> Res
         if line.trim().is_empty() {
             continue;
         }
-        if let Ok(record) = serde_json::from_str::<PositionRecord>(&line) {
+        if let Ok(record) = parse_json_line(&line) {
             *bucket_sizes
                 .entry(bucket_key(&record, by_phase, by_side, by_eval, by_wdl))
                 .or_default() += 1;
@@ -4465,7 +4466,7 @@ fn cmd_stratify_apply(args: &StratifyArgs, quota_path: &Path, out: &Path) -> Res
         .enumerate()
         .filter_map(|(i, line)| match line {
             Ok(line) if line.trim().is_empty() => None,
-            Ok(line) => match serde_json::from_str::<PositionRecord>(&line) {
+            Ok(line) => match parse_json_line(&line) {
                 Ok(r) => Some(r),
                 Err(e) => {
                     tracing::warn!(line = i + 1, "parse error: {e}");
@@ -4954,7 +4955,7 @@ fn select_coverage_streaming(args: &SelectArgs) -> Result<(usize, Vec<PositionRe
             continue;
         }
         // parse errors are warned once, in pass 2 below -- not duplicated here
-        if let Ok(record) = serde_json::from_str::<PositionRecord>(&line) {
+        if let Ok(record) = parse_json_line(&line) {
             *bucket_counts
                 .entry(bucket_key(&record, true, true, true, false))
                 .or_default() += 1;
@@ -5417,7 +5418,7 @@ fn cmd_pack(args: PackArgs) -> Result<()> {
         if line.trim().is_empty() {
             continue;
         }
-        match serde_json::from_str::<PositionRecord>(&line) {
+        match parse_json_line(&line) {
             Ok(rec) => {
                 pack::encode_record(&rec, &mut writer)?;
                 total += 1;
@@ -7263,16 +7264,14 @@ fn load_records(path: &PathBuf) -> Result<(Vec<PositionRecord>, usize)> {
         .lines()
         .filter(|l| !l.trim().is_empty())
         .enumerate()
-        .filter_map(
-            |(i, line)| match serde_json::from_str::<PositionRecord>(line) {
-                Ok(rec) => Some(rec),
-                Err(e) => {
-                    tracing::warn!(line = i + 1, "parse error: {e}");
-                    broken += 1;
-                    None
-                }
-            },
-        )
+        .filter_map(|(i, line)| match parse_json_line(line) {
+            Ok(rec) => Some(rec),
+            Err(e) => {
+                tracing::warn!(line = i + 1, "parse error: {e}");
+                broken += 1;
+                None
+            }
+        })
         .collect();
     Ok((records, broken))
 }
@@ -8701,12 +8700,12 @@ fn cmd_validate(args: ValidateArgs) -> Result<()> {
         }
         total_lines += 1;
 
-        let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) else {
+        if serde_json::from_str::<serde_json::Value>(&line).is_err() {
             continue;
-        };
+        }
         valid_json += 1;
 
-        let Ok(rec) = serde_json::from_value::<PositionRecord>(val) else {
+        let Ok(rec) = parse_json_line(&line) else {
             continue;
         };
         valid_records += 1;

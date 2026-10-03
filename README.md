@@ -104,6 +104,11 @@ tags, and optional observations, stability, and result data.
 }
 ```
 
+Rust consumers should depend one-way on `shogiesa-core` and call
+`shogiesa_core::schema::parse_json_line`. This preserves the typed record contract, applies
+documented legacy defaults, and rejects unsupported schema versions without coupling shogiesa to
+an engine or trainer.
+
 Binary pack is a versioned transport format. Convert it back to JSONL for inspection or diffing.
 See [schema and pack compatibility](docs/design/schema_compatibility.md).
 

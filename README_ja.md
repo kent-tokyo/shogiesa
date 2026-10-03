@@ -6,8 +6,9 @@ shogiesaはCSA、KIF、KI2、match-runner棋譜を、点検可能な学習デー
 抽出、USI教師によるラベル付け、不安定な局面の除外、外部トレーナー向けJSONL・binary packの
 作成を担当します。
 
-ワークスペースのバージョンは`0.10.1`です。公開workflowが完了するまでは、検証済みの最新公開版を
-`0.10.0`として扱います。変更内容は[CHANGELOG](CHANGELOG.md)、検証結果は
+ワークスペースのバージョンと検証済みの最新公開版は`0.10.1`です。
+[GitHub Release](https://github.com/kent-tokyo/shogiesa/releases/tag/v0.10.1)、
+[CHANGELOG](CHANGELOG.md)、検証結果は
 [v0.10.1 validation log](docs/release_validation_2026-10-03.md)を参照してください。
 
 ## 役割

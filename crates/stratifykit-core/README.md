@@ -1,43 +1,23 @@
 # stratifykit-core
 
-Domain-agnostic distribution-control primitives: bounded top-K sampling, group-aware quota
-fill, and coverage classification. No knowledge of any particular record type — every function
-takes a plain generic record `R` and caller-supplied closures (`bucket_key_fn`, `group_key_fn`,
-`key_fn`) to map that record onto this crate's generic `FeatureKey`/`BucketKey`/`GroupKey`
-(all plain `String` newtypes) concepts.
+Domain-neutral primitives for bounded sampling, group-aware quota filling, deterministic hashing,
+and coverage classification.
 
-This is the boundary rule the crate exists to enforce: nothing shogi-specific — no `sfen`, no
-`PositionRecord`, no phase/side/eval-bucket vocabulary — may appear in this crate's source or in
-`Cargo.toml`'s dependencies. `shogiesa-stratify` is the adapter crate that supplies shogi's own
-closures; `stratifykit-core` never depends on it or on any other `shogiesa-*` crate. A test
-(`cargo_toml_has_no_shogiesa_dependency` in `src/lib.rs`) enforces the `Cargo.toml` half of this
-mechanically, so drift here fails the build rather than needing to be caught by inspection.
+The crate accepts generic records and caller-provided bucket/group/key closures. Shogi concepts
+such as SFEN, `PositionRecord`, phase, side, and evaluation buckets belong in
+`shogiesa-stratify`, not here. The `cargo_toml_has_no_shogiesa_dependency` test enforces that this
+crate has no `shogiesa-*` dependency.
 
 ## Modules
 
-- `heap` — `HeapEntry<K, R>` and `push_bounded`: a bounded top-K `BinaryHeap` that reproduces
-  full-materialize-then-`sort_by`'s exact ordering (including index-based tie-break stability) at
-  O(k) memory instead of O(n).
-- `hash` — `seeded_hash(seed, s)`: the deterministic tie-break/spreading hash every sampling
-  function above uses to pick "which items" reproducibly given the same seed.
-- `coverage` — `bucket_floor`, `mean_of`, `classify_bucket` (→ `BucketStatus`:
-  `Missing`/`Under`/`Ok`/`Over`): the generic "is this bucket's observed count reasonable
-  relative to the mean" classification a coverage/distribution report needs.
-- `quota` — `QuotaSpec`: a hand-editable quota file shape (`by`, `quotas: BTreeMap<BucketKey,
-  usize>`), self-describing so a caller reconstructs its own bucketing dimensions from the file
-  itself rather than from separately-passed flags.
-- `sampling` — `reservoir_sample` (bounded top-K reservoir sample) and `group_aware_fill` (quota
-  fill that keeps one group — e.g. one source game — from consuming an entire bucket's quota via
-  a rank + hash tie-break key, so every group's first occurrence in a bucket outranks every
-  group's second occurrence, across all groups).
+- `heap`: bounded top-K `HeapEntry` and `push_bounded`
+- `hash`: deterministic `seeded_hash`
+- `coverage`: bucket flooring, means, and `Missing`/`Under`/`Ok`/`Over` classification
+- `quota`: the editable `QuotaSpec` format
+- `sampling`: deterministic reservoir sampling and root-diverse quota filling
 
 ## Status
 
-Published on crates.io (required for `shogiesa-cli` itself to be installable — it's one of
-`shogiesa-cli`'s own dependencies), but **not yet an independent repo**: it still lives inside
-this workspace, versioned and released in lockstep with every other shogiesa crate rather than on
-its own release cadence. It's grown here since being extracted from `shogiesa-cli`'s inline
-quota/bucket/sampling logic, and stays inside this workspace until a real second consumer (e.g. a
-masstrust/quietset-style product) actually depends on it independently — moving it to its own repo
-on spec, before that need is concrete, would just be guessing at a release/versioning boundary
-nobody has stress-tested yet.
+`stratifykit-core` is published on crates.io because `shogiesa-cli` depends on it. It remains in
+this workspace and follows the shogiesa release cadence. A separate repository is deferred until
+an independent consumer requires its own compatibility and release boundary.

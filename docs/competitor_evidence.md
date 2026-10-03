@@ -1,7 +1,7 @@
 # Seven-axis fit evidence
 
-This is a current implementation-fit assessment, not Elo, speed, or training-effect data. Scores
-are provisional and must not be read as measured competitor rankings.
+This is an implementation-fit assessment of `main` at `cafe567` (workspace version `0.10.0`), not
+Elo, speed, or training-effect data. Scores are provisional and are not competitor rankings.
 
 | axis | points | score | evidence | limitation |
 |---|---:|---:|---|---|

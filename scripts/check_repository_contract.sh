@@ -20,6 +20,8 @@ required_files=(
   docs/release_validation_2026-09-04.md
   scripts/release_readiness.sh
   scripts/run_local_measurement_smoke.sh
+  scripts/run_reproducibility_matrix.sh
+  docs/measurements/reproducibility_matrix_2026-10-03.json
   tests/fixtures/sample.csa
   tests/fixtures/sample.kif
   tests/fixtures/malformed.csa
@@ -128,6 +130,8 @@ check_marker tests/fixtures/recipe_run_manifest.golden '"run_version": 1' 'recip
 check_marker tests/fixtures/recipe_forward_dependency.json '"id": "consume"' 'recipe forward dependency rejection input'
 check_marker tests/fixtures/recipe_output_escape.json '"../outside.shgpk"' 'recipe output escape rejection input'
 check_marker crates/shogiesa-cli/tests/cli_test.rs 'fn recipe_run_verify_and_reuse_stage_outputs' 'recipe run verify reuse regression'
+check_marker docs/measurements/reproducibility_matrix_2026-10-03.json '"overall": "pass"' 'reproducibility matrix result'
+check_marker docs/measurements/reproducibility_matrix_2026-10-03.json '"axis": "worker_count"' 'reproducibility worker-count axis'
 check_marker tests/fixtures/pack_bad_magic.hex '^00000000000000000b00$' 'pack bad magic bytes'
 check_marker tests/fixtures/pack_truncated_header.hex '^53484f4749455341$' 'pack truncated header bytes'
 check_marker tests/fixtures/pack_unsupported_version.hex '^53484f4749455341ffff$' 'pack unsupported version bytes'

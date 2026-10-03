@@ -1,59 +1,49 @@
 # Release checklist
 
-Use this checklist for publishing shogiesa `v0.10.0`. Mark each item with a command, artifact,
-or explicit `blocked` reason; never convert an unavailable check into a success claim.
+Use this checklist for each release candidate. Record commands and artifacts from the same clean
+checkout. A blocked or unavailable check remains blocked; it is not a pass.
 
-The lightweight repository contract check is `bash scripts/check_repository_contract.sh`; run it
-before the full wrapper. The repeatable local check wrapper is `bash scripts/release_readiness.sh`.
-It reports every check and returns non-zero if any check fails, including dependency/network failures in `cargo test` or
-`cargo clippy`.
-The authoritative local run for `v0.10.0` is recorded in
-[`docs/release_validation_2026-09-23.md`](release_validation_2026-09-23.md). This checklist keeps
-local evidence separate from tag, GitHub Release, and registry publication results.
+The local wrapper is:
 
-For this release, workspace compilation, metadata, tests, all-target clippy, and cross-platform
-GitHub CI passed. Publication is not evidence until each external operation completes.
+```bash
+bash scripts/release_readiness.sh
+```
 
-## Code and tests
+## Candidate validation
 
-- [x] `cargo test` passes on the release checkout and all fixture counts are recorded.
-- [x] `cargo fmt --check` passes.
-- [x] `cargo clippy --all-targets --all-features -- -D warnings` passes.
-- [x] `cargo package --workspace --locked` packages and verifies every workspace crate in an
-      isolated temporary registry.
-- [x] malformed CSA/KIF/JSONL behavior is checked in normal and strict modes; contract and
-      fixture inventories cover the release boundary.
-- [x] pack magic/version/endian and JSONL round-trip fixtures are present and contract-checked.
-- [x] USI timeout, protocol violation, restart, and child-process cleanup coverage is present in
-      the repository test suite and passed in the release validation run.
+- [ ] workspace and publishable crate versions match the intended tag
+- [ ] `bash scripts/check_repository_contract.sh`
+- [ ] `cargo fmt --all -- --check`
+- [ ] `cargo test --workspace`
+- [ ] `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+- [ ] `cargo package --workspace --locked`
+- [ ] `git diff --check` and the release checkout is clean
+- [ ] malformed CSA/KIF/JSONL and pack-corruption fixtures pass
+- [ ] Linux, macOS, Windows, audit, and CodeQL checks pass for the release commit
 
-## Provenance and recipes
+## Contract and claims
 
-- [x] label/filter/split/stratify/shuffle manifests contain the required input, output, seed,
-      source-root, engine, weight, and option provenance, or explicit `unknown` values.
-- [x] representative dataset recipe and fixed train/valid/test split are retained.
-- [x] recipe artifacts have hashes and exact command lines.
+- [ ] README examples match current CLI help
+- [ ] JSONL schema and pack format match code and fixtures
+- [ ] CHANGELOG covers user-visible changes and compatibility breaks
+- [ ] manifests preserve the available input/output, seed, engine, weight, and option identities
+- [ ] throughput, RSS, training effect, interoperability, and Elo are labeled unmeasured unless a
+      dated artifact records the setup and result
 
-## Documentation and claims
+## Publication
 
-- [x] README examples match current command/output paths and release evidence links.
-- [x] schema/pack compatibility table is current.
-- [x] interoperability evidence and loss reports are present for every claimed external format.
-- [x] competitor table separates feature fit from measured performance.
-- [x] unmeasured RSS, speed, training effect, and Elo claims remain labeled unverified.
-- [x] release notes state the exact validation environment and blocked checks.
+- [ ] annotated tag points to the validated commit and is pushed
+- [ ] GitHub Release is published from that tag
+- [ ] every publishable workspace crate is present on crates.io at the same version and is not
+      yanked
+- [ ] release links and the dated validation log are updated after publication
 
-## Publication status
+## Current published release
 
-- [ ] annotated `v0.10.0` tag pushed to GitHub and verified to name the release commit.
-- [ ] GitHub Release created from `v0.10.0` with these release notes.
-- [ ] crates.io publication verified for every publishable workspace crate. The previous 0.9.2
-      attempt failed with authentication HTTP 403; record any new registry result rather than
-      inferring success.
+The corresponding checks for `v0.10.0` are complete. Evidence is in the
+[2026-09-23 validation log](release_validation_2026-09-23.md), the
+[GitHub Release](https://github.com/kent-tokyo/shogiesa/releases/tag/v0.10.0), and the nine
+crates.io package records. `main` may contain later unreleased changes.
 
-## Release gate
-
-Release only when required checks have evidence from the same clean checkout. A release may be
-described as feature-complete for a scope, but “fastest”, “strongest”, “highest Elo”, or universal
-training-quality improvement requires separate reproducible evidence and is not implied by this
-checklist.
+Release validation proves build, test, packaging, and publication status. It does not prove that
+shogiesa is fastest, improves training, or changes engine strength.

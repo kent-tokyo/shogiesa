@@ -5,9 +5,9 @@ artifact contains the measured result and the environment is recorded.
 
 For changes that do not require external engines, start with
 `bash scripts/run_local_measurement_smoke.sh`. It validates the repository contract, formatting,
-and six deterministic fixture-backed regression points (streaming report output, conflict
-exclusions, semantic dataset diff, typed recipe planning, split reproducibility, and pack manifest
-hashes). A PASS here is local regression evidence only; it does not
+and eight deterministic fixture-backed regression points (streaming report output, conflict
+exclusions, semantic dataset diff, recipe planning/run verification, split reproducibility, pack
+manifest hashes, and the path/order/worker matrix). A PASS here is local regression evidence only; it does not
 complete any scale, cross-platform, training, or external-interoperability row below.
 
 | area | fixed input/control | record | completion artifact |
@@ -20,6 +20,10 @@ complete any scale, cross-platform, training, or external-interoperability row b
 | training effect | fixed split, teacher/weight, trainer, budget, at least 3 seeds | validation loss/WDL, data size, label cost, variance | recipe comparison report |
 | match transfer | fixed opening suite, opponent, games, seed and SPRT/interval rule | game count, result, confidence interval, comparison setup | match report |
 | external interoperability | named tool/version and fixture | import/export result, loss report, legality, provenance, time | per-tool evidence row |
+
+The fixture-backed path/order/worker comparison was completed on 2026-10-03. Its machine-readable
+artifact is [`../measurements/reproducibility_matrix_2026-10-03.json`](../measurements/reproducibility_matrix_2026-10-03.json),
+and `scripts/run_reproducibility_matrix.sh` regenerates it.
 
 Every run must retain the exact command line, repository commit, input/output hashes, engine and
 weight identity, options, seed, hardware/OS, and any blocked dependency or network reason. Missing

@@ -10,6 +10,7 @@ manifests beside the corresponding JSONL files.
 ```text
 corpus_input: <absolute-or-pinned-relative-path>
 corpus_input_hash: <split-manifest.input_hash>
+extraction_command: <exact extract/from-match command>
 split_seed: <u64>
 valid_frac: <f64>
 test_frac: <f64>
@@ -20,6 +21,10 @@ teacher_options: <exact --engine-option list>
 label_limit: <depths or nodes>
 label_multipv: <u32>
 ```
+
+For nested directory corpora, prefer `extract --recursive`: it records stable relative source
+paths. Record whether extraction was shallow or recursive because source paths participate in
+record identity and grouping.
 
 The source-root split is created once and reused by every arm:
 

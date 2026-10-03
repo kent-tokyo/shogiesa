@@ -11,6 +11,10 @@
 | `shogiesa-pack` | derived binary encoding | `FORMAT_VERSION = 11` |
 | `shogiesa-cli` | user-facing extract/label/filter/export commands | CLI `--version` |
 
+`shogiesa-csa` and `shogiesa-kif` expose `extract_from_path` for normal file provenance and
+`extract_from_path_with_source` when a caller needs to open one physical path while recording a
+different stable source path. The CLI uses the latter for recursive directory extraction.
+
 ## Minimal Rust flow
 
 ```rust

@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-03T00:07:25Z",
+  "source_commit": "cafe567b8ff3ae7af134468c875c3c3976cb0ce8",
+  "worktree_clean": false,
+  "harness_sha256": "162844fd9cbf704591de9a8c7c0549428018b9e8f0a1e7131c6023d79b6f5573",
+  "shogiesa_version": "0.10.0",
+  "fixture": "tests/fixtures/recursive_extract",
+  "record_count": 20,
+  "axes": [
+    {
+      "axis": "input_path",
+      "variants": [
+        "independent absolute root A",
+        "independent absolute root B"
+      ],
+      "dataset_sha256": "7af6abd5186df79ef97c805ecfaac50144c1b2c6fab69f0179f62cf3c1aa9523",
+      "identity_hash": "e15b79400b07c3a6c12606c9867a0d9ee9539f50c25cdc1406b84c770bdd629c",
+      "order_hash": "befe402c7bf865a9661f9932f32c908e52344133e82c5a76e6e827ce191629c5",
+      "result": "pass",
+      "difference_reason": "absolute fixture roots differ; recursive extraction records portable relative source paths"
+    },
+    {
+      "axis": "input_order",
+      "variants": [
+        "fixture order",
+        "reversed JSONL order"
+      ],
+      "input_sha256": [
+        "7af6abd5186df79ef97c805ecfaac50144c1b2c6fab69f0179f62cf3c1aa9523",
+        "4faefaac24eeba6596f36eb8ee1fedfe0114f85305e83155bdf4f7452a708470"
+      ],
+      "identity_hash": "e15b79400b07c3a6c12606c9867a0d9ee9539f50c25cdc1406b84c770bdd629c",
+      "shuffled_dataset_sha256": "bc2d6c725ad1a15ec7178b2eb02e69a3d4c6840a6432fba85c0ed862efa55dd3",
+      "order_hash": "befe402c7bf865a9661f9932f32c908e52344133e82c5a76e6e827ce191629c5",
+      "result": "pass",
+      "difference_reason": "raw input byte order differs; seeded shuffle canonicalizes by stable sample identity"
+    },
+    {
+      "axis": "worker_count",
+      "variants": [
+        1,
+        2
+      ],
+      "labeled_dataset_sha256": "55c62f593a0691fa0a2ea77682e525d68264d6535282046aceb38fe8e82f0bcf",
+      "identity_hash": "e15b79400b07c3a6c12606c9867a0d9ee9539f50c25cdc1406b84c770bdd629c",
+      "order_hash": "befe402c7bf865a9661f9932f32c908e52344133e82c5a76e6e827ce191629c5",
+      "result": "pass",
+      "difference_reason": "jobs and runtime throughput diagnostics differ; preserve-order keeps dataset content and order identical"
+    }
+  ],
+  "overall": "pass"
+}

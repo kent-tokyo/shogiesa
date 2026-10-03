@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:kent-tokyo:schema:experiment-envelope:1",
   "title": "Experiment envelope v1 (draft)",
-  "description": "Shared provenance object for the shogiesa -> quietset -> lineprior -> veridict pipeline (shogiesa generates teacher observations, quietset scores stability/reliability, lineprior predicts gate-evaluation priority, veridict makes the final judgment). DRAFT, canonical source = shogiesa (schema/experiment_envelope.schema.json) until a dedicated schema repo exists -- see docs/design/experiment_envelope.md for the sync mechanism, the full field compatibility matrix, and the migration plan from shogiesa's current (pre-v1, flat, unnested) manifest output. NOT YET VENDORED into quietset/lineprior/veridict as of this writing -- confirm no sibling repo already depends on the pre-v1 shape before copying. This schema describes the CONTENTS of an `experiment_envelope` object that a producer nests inside its own run manifest under that key (e.g. `{\"schema_version\": 11, ..., \"experiment_envelope\": {\"envelope_version\": 1, ...}}`) -- never at the manifest's own top level, so this object's `envelope_version` (the shared envelope's own version) can never collide with a producer's unrelated top-level `schema_version` (that producer's own internal data-schema version). All fields are optional except `envelope_version`: a producer only populates the subset relevant to what it itself produces or passes through.",
+  "description": "DRAFT shogiesa-owned provenance object for a possible shogiesa -> quietset -> lineprior -> veridict pipeline. The 2026-10-03 consumer audit found no compatible shared contract: quietset has no run envelope, lineprior stores opaque provenance strings, and veridict validates a separately maintained flat schema. This schema is therefore not canonical and must not be emitted or vendored before consumer agreement. It describes the contents of a future nested `experiment_envelope` object; all fields are optional except `envelope_version`.",
   "type": "object",
   "required": ["envelope_version"],
   "properties": {
@@ -49,7 +49,7 @@
     "output_dataset_sha256": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$",
-      "description": "SHA-256 of the raw bytes of the dataset file this stage PRODUCED as output. New in v1 (v0 only had the ambiguous combined `dataset_sha256`). NOT YET populated by shogiesa's current implementation (as of commit 4ab5230) -- future work, see docs/design/experiment_envelope.md."
+      "description": "SHA-256 of the raw bytes of the dataset file this stage produced. New in v1 and not emitted by the current flat manifest contract."
     },
     "split_sha256": {
       "type": "string",
@@ -69,7 +69,7 @@
     "tool_binary_sha256": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$",
-      "description": "SHA-256 of the producer's OWN tool/CLI binary that generated this manifest (e.g. quietset's own binary, if quietset never spawns a separate shogi engine at all and this is the only binary identity relevant to its stage). New in v1, split out of v0's single ambiguous `binary_sha256` specifically so a producer that only has a tool binary (no separate evaluated engine) and a producer that has both (shogiesa: its own `shogiesa` binary vs. the USI engine it spawns) can express that distinction instead of colliding on one field. NOT YET populated by shogiesa's current implementation -- future work."
+      "description": "SHA-256 of the producer's own tool/CLI binary. New in v1, split from v0's ambiguous `binary_sha256`, and not emitted by the current flat manifest contract."
     },
     "weight_sha256": {
       "type": "string",
@@ -92,7 +92,7 @@
       "description": "Seed governing this dataset's shuffle/permutation order (shogiesa's `shuffle --seed`)."
     },
     "validity": {
-      "description": "OPAQUE ADVISORY FIELD ONLY -- pending a cross-repo semantic review with quietset/lineprior/veridict, no gating/promotion/pass-fail decision anywhere may branch on this field's value. Kept as a plain string (unchanged from v0's type) since no repo in this pipeline has agreed on a closed vocabulary yet, and premature structure here would just be guessed. A future, semantically-reviewed version may restructure this as an object carrying its own producer/reason-codes (e.g. `{\"status\": ..., \"producer\": ..., \"reason_codes\": [...]}`, so a reader of `validity` can tell which repo asserted it and why) -- not implemented in v1 pending that review. veridict in particular is expected to be this field's primary intended producer (final-judgment stage), per the pipeline's stated roles; unconfirmed against veridict's actual code.",
+      "description": "OPAQUE ADVISORY FIELD ONLY. The 2026-10-03 audit found no shared vocabulary: veridict accepts `valid`/`invalid` as passthrough provenance but computes its own validity separately; quietset and lineprior do not validate this field. No shogiesa gate may branch on it.",
       "type": "string"
     }
   },

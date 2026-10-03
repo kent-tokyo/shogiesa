@@ -23,4 +23,10 @@ do
   cargo test --offline -p shogiesa-cli --test cli_test "$test_name" -- --exact
 done
 
+printf '%s\n' '== reproducibility matrix =='
+MATRIX_TMP="$(mktemp "${TMPDIR:-/tmp}/shogiesa-repro-matrix-artifact.XXXXXX")"
+trap 'rm -f "$MATRIX_TMP"' EXIT
+bash scripts/run_reproducibility_matrix.sh --out "$MATRIX_TMP"
+jq -e '.overall == "pass" and (.axes | length) == 3' "$MATRIX_TMP" >/dev/null
+
 printf '%s\n' 'local measurement smoke: PASS'

@@ -2,27 +2,26 @@
 
 > Shogi training-data feed for NNUE engines.
 
-shogiesa turns game records into inspectable, reproducible training data. It extracts SFEN
-positions, labels them through USI, records quality/provenance signals, and prepares datasets for
-an external trainer such as Sekirei.
+shogiesa turns CSA, KIF, KI2, and match-runner records into inspectable training datasets. It
+extracts SFEN positions, labels them through USI engines, filters unstable samples, and writes
+reproducible JSONL or binary-pack artifacts for external trainers such as Sekirei.
 
-Current source version: `0.10.0`. The authoritative local validation record is
-[`docs/release_validation_2026-09-23.md`](docs/release_validation_2026-09-23.md); tag, GitHub
-Release, and crates.io publication are separately verified release operations.
+The workspace version and latest published release are `0.10.0`. `main` may contain unreleased
+changes; see the [changelog](CHANGELOG.md). Release evidence is recorded in
+[the v0.10.0 validation log](docs/release_validation_2026-09-23.md).
 
 ## Scope
 
-shogiesa is a data forge, not a Shogi engine, NNUE trainer, GUI, tournament manager, or cloud
-service. Its outputs are JSONL, SFEN, USI moves, manifests, and an optional binary pack—not a
-claim that a dataset improves playing strength.
+shogiesa creates and inspects data. It is not a Shogi engine, NNUE trainer, GUI, tournament
+manager, or cloud service. Dataset diagnostics are not evidence of training gain or Elo.
 
-It provides:
+Main capabilities:
 
-- CSA/KIF and match-runner record ingestion;
-- conservative SFEN validation, deduplication, source-root provenance, and diagnostics;
-- USI teacher labeling with timeouts, restart handling, cache, and resume support;
-- stability, quality, conflict, block, distribution, and integrity diagnostics; and
-- deterministic split, quota sampling, shuffle, recipe, JSONL, and pack workflows.
+- CSA/KIF/KI2 and match-runner ingestion;
+- SFEN validation, deduplication, variation-aware provenance, and diagnostics;
+- USI labeling with MultiPV, timeouts, restart handling, cache, and resume;
+- stability, quality, conflict, distribution, and integrity reports; and
+- deterministic split, sampling, shuffle, recipe, JSONL, and pack workflows.
 
 ## Install
 
@@ -30,32 +29,32 @@ It provides:
 git clone https://github.com/kent-tokyo/shogiesa.git
 cd shogiesa
 cargo build --release
-# binary: target/release/shogiesa
 ```
+
+The CLI binary is `target/release/shogiesa`.
 
 ## Quick start
 
 ```bash
-# 1. Extract post-move positions from CSA or KIF records.
-shogiesa extract --input ./games --out positions.jsonl --min-ply 20 --every-n-plies 2
+shogiesa extract --input ./games --recursive --out positions.jsonl \
+  --min-ply 20 --every-n-plies 2
 
-# 2. Label them with a USI engine.
-shogiesa label --input positions.jsonl --engine ./sekirei --depths 4,6,8 --out labeled.jsonl
+shogiesa label --input positions.jsonl --engine ./sekirei \
+  --depths 4,6,8 --out labeled.jsonl
 
-# 3. Inspect and filter without guessing what the signals mean.
 shogiesa report --input labeled.jsonl
-shogiesa filter --input labeled.jsonl --min-stability 0.85 --out train.jsonl
+shogiesa filter --input labeled.jsonl --max-score-swing-cp 150 --out train.jsonl
 ```
 
-Directory extraction is shallow by default. Add `--recursive` to discover `.csa`, `.kif`, and
-`.ki2` below nested directories in deterministic relative-path order. Recursive extraction records
-portable relative source paths and never follows symlinks.
-An input root that is itself a symlink is rejected in recursive mode.
+Directory extraction is shallow unless `--recursive` is specified. Recursive mode reads `.csa`,
+`.kif`, and `.ki2` files in deterministic relative-path order, records relative source paths,
+and does not follow symlinks. An input root that is itself a symlink is rejected.
 
-Every option is defined by the executable:
+The executable is the option-level authority:
 
 ```bash
 shogiesa --help
+shogiesa extract --help
 shogiesa label --help
 shogiesa recipe run --help
 ```
@@ -63,40 +62,36 @@ shogiesa recipe run --help
 ## Workflow
 
 ```text
-CSA / KIF / match kifu
+CSA / KIF / KI2 / match kifu
         ↓
 extract / from-match → label → stability / audit / calibrate / tune
         ↓
 filter / select / mine / balance / stratify → split / shuffle → pack
         ↓
-report / distribution / validate
+report / distribution / validate / dataset-diff
 ```
 
-Use a fixed input, engine binary/options, weight, seed, and command line for any result you need
-to reproduce. Commands that write manifests record the available identities and hashes; a missing
-value remains `unknown`, not inferred.
+For reproducible runs, retain the input hash, command line, seed, engine binary/options, weight,
+and generated manifests. Missing identities remain `unknown`; they are never inferred.
 
 ## Commands
 
 | Area | Commands | Purpose |
 |---|---|---|
-| Ingest | `extract`, `from-match` | Read CSA/KIF or match-runner kifu into JSONL positions. |
-| Label | `label`, `cache`, `merge-observations` | Run USI teachers, manage cached observations, or combine passes. |
-| Quality | `stability`, `filter`, `calibrate`, `audit`, `tune` | Attach and inspect instability/quality signals; choose gates from data. |
-| Select | `select`, `mine`, `balance`, `stratify`, `sample` | Find hard/underrepresented positions or make a bounded sample. |
-| Reproduce | `split`, `shuffle`, `recipe plan/run/verify`, `dataset-diff` | Keep source roots together, preserve deterministic order, and compare artifacts. |
-| Diagnose | `report`, `distribution`, `validate`, `conflict-report`, `block-report` | Summarize data, surface missing buckets, and report integrity or proxy diagnostics. |
-| Exchange | `pack`, `unpack`, `lineprior export`, `make-gate-openings` | Convert data or prepare inputs for external tools. |
+| Ingest | `extract`, `from-match` | Convert game records to JSONL positions. |
+| Label | `label`, `cache`, `merge-observations` | Run USI teachers and manage observations. |
+| Quality | `stability`, `filter`, `calibrate`, `audit`, `tune` | Attach, inspect, and calibrate quality signals. |
+| Select | `select`, `mine`, `balance`, `stratify`, `sample` | Select hard or underrepresented positions. |
+| Reproduce | `split`, `shuffle`, `recipe`, `dataset-diff` | Preserve roots, order, and artifact identity. |
+| Diagnose | `report`, `distribution`, `validate`, `conflict-report`, `block-report` | Report statistics and integrity problems. |
+| Exchange | `pack`, `unpack`, `lineprior export`, `make-gate-openings` | Convert data or prepare external-tool inputs. |
 
-`recipe` accepts only typed shogiesa stages; it does not run arbitrary shell commands. `recipe run`
-writes stage output through staging and reuses only matching successful artifacts. See
-[`docs/design/dataset_recipe_template.md`](docs/design/dataset_recipe_template.md) for the
-experiment record to keep alongside a run.
+`recipe` runs typed shogiesa stages only; it does not execute arbitrary shell commands.
 
 ## Data contract
 
-JSONL is the canonical format because it is streamable and reviewable. Each position has a schema
-version, post-move SFEN, source information, tags, and optional observations/stability/result data.
+JSONL is the canonical format. Each record contains a schema version, post-move SFEN, source,
+tags, and optional observations, stability, and result data.
 
 ```json
 {
@@ -108,53 +103,39 @@ version, post-move SFEN, source information, tags, and optional observations/sta
 }
 ```
 
-Binary pack is a transport format with a magic header, version, endian definition, and unpack
-path. Inspect or diff JSONL; do not edit pack bytes as a primary format. Compatibility and error
-classes are in [`docs/design/schema_compatibility.md`](docs/design/schema_compatibility.md).
+Binary pack is a versioned transport format. Convert it back to JSONL for inspection or diffing.
+See [schema and pack compatibility](docs/design/schema_compatibility.md).
 
-## Reading diagnostics safely
-
-`score.cp`, policy margin, stability, agreement, and `QualityDecision.score` are diagnostics—not
-probabilities, labels of move correctness, or evidence of engine strength. Thresholds must be
-calibrated against a fixed corpus and teacher configuration. See [`docs/THEORY.md`](docs/THEORY.md).
-
-KIF variation moves are preserved as separate source paths and share a `root_id` with the mainline.
-An indented nested `変化` replays from its parent and keeps its full lineage (for example,
-`#var1@2#var2@3` and `variation_id: "var1.var2"`); equal-or-shallower markers are mainline-rooted
-siblings. KIF branch outcomes are `unknown` because a branch is not the played game.
-
-## Documentation map
+## Documentation
 
 | Need | Document |
 |---|---|
-| Schema and pack compatibility | [`docs/design/schema_compatibility.md`](docs/design/schema_compatibility.md) |
-| Rust API boundary | [`docs/api_boundary.md`](docs/api_boundary.md) |
-| Metrics and quality-signal limits | [`docs/THEORY.md`](docs/THEORY.md) |
-| Interoperability claims and gaps | [`docs/interop_evidence.md`](docs/interop_evidence.md) |
-| Training-effect and gate protocols | [`docs/design/training_effect_measurement.md`](docs/design/training_effect_measurement.md), [`docs/SEKIREI_GATE_EVALUATION.md`](docs/SEKIREI_GATE_EVALUATION.md) |
-| External lineprior experiment | [`docs/LINEPRIOR_DOGFOOD.md`](docs/LINEPRIOR_DOGFOOD.md) |
-| Release evidence and checklist | [`docs/release_validation_2026-09-23.md`](docs/release_validation_2026-09-23.md), [`docs/release_checklist.md`](docs/release_checklist.md) |
-| Feature-fit comparison | [`docs/competitor_evidence.md`](docs/competitor_evidence.md) |
+| Signal definitions and limits | [THEORY.md](docs/THEORY.md) |
+| JSONL and pack compatibility | [schema_compatibility.md](docs/design/schema_compatibility.md) |
+| Rust API boundary | [api_boundary.md](docs/api_boundary.md) |
+| Local interoperability evidence | [interop_evidence.md](docs/interop_evidence.md) |
+| Reproducible recipe record | [dataset_recipe_template.md](docs/design/dataset_recipe_template.md) |
+| Scale and training measurements | [measurement_matrix.md](docs/design/measurement_matrix.md), [training_effect_measurement.md](docs/design/training_effect_measurement.md) |
+| Completed measurement artifacts | [reproducibility matrix](docs/measurements/reproducibility_matrix_2026-10-03.json) |
+| Sekirei and lineprior runbooks | [SEKIREI_GATE_EVALUATION.md](docs/SEKIREI_GATE_EVALUATION.md), [LINEPRIOR_DOGFOOD.md](docs/LINEPRIOR_DOGFOOD.md) |
+| Release checks and evidence | [release_checklist.md](docs/release_checklist.md), [v0.10.0 validation](docs/release_validation_2026-09-23.md) |
 
-## Limits and evidence boundary
+## Evidence boundary
 
-- SFEN checks syntax and conservative material constraints; it is not full legal-move generation.
+- SFEN validation checks syntax and conservative material constraints, not full legal-move reachability.
 - Native interoperability with GenSfen, rshogi, cshogi, rsshogi, and python-shogi is unmeasured.
-- Throughput, RSS, training effect, match results, and Elo are unmeasured unless a dated result
-  records corpus, commit, hardware, engine/weight, and budget.
-- The cross-repository experiment envelope is a shogiesa-owned draft, not a shared standard.
+- Throughput, RSS, training effect, match results, and Elo remain unverified without a dated run
+  that records corpus, commit, hardware, engine/weight, and budget.
+- The experiment envelope is a shogiesa-owned draft, not a shared cross-repository standard.
 
 ## Development
 
 ```bash
+bash scripts/check_repository_contract.sh
 cargo fmt --all -- --check
 cargo test --workspace
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-bash scripts/check_repository_contract.sh
 ```
-
-The contract check is lightweight. `scripts/release_readiness.sh` additionally runs the cargo
-checks and reports unavailable dependencies or network failures as failures, not success.
 
 ## License
 

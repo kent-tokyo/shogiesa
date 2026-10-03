@@ -1,7 +1,10 @@
-# Release validation log — 2026-09-04
+# Historical release validation — 2026-09-04
 
 This log records the local validation run for the `v0.9.2` release candidate. It is evidence for
 this environment and does not claim external performance, training, Elo, or native interoperability.
+It is retained because the crates.io authentication failure is part of the release history;
+current release status is recorded in the
+[v0.10.0 validation log](release_validation_2026-09-23.md).
 
 | check | result | evidence |
 |---|---|---|

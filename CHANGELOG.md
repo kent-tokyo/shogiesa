@@ -1,312 +1,190 @@
 # Changelog
 
-All notable changes to shogiesa are documented here.
-
-Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
-
----
+Notable changes to shogiesa follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+Compare links at the end provide the complete commit history.
 
 ## [Unreleased]
 
 ### Added
 
-- `extract --recursive` discovers nested `.csa`, `.kif`, and `.ki2` inputs in deterministic
-  relative-path order, records portable relative source paths, deduplicates across the complete
-  tree, skips symlinks to avoid cycles, and reports skipped or unreadable entries. The existing
-  shallow directory behavior remains the default.
+- `extract --recursive` discovers nested `.csa`, `.kif`, and `.ki2` files in deterministic
+  relative-path order. It records relative provenance, deduplicates across the complete tree,
+  reports skipped entries, and never follows symlinks. Shallow traversal remains the default.
+- A fixture-backed reproducibility matrix verifies stable identity, order, and dataset hashes
+  across absolute input paths, reversed input order, and one/two label workers.
+
+### Documentation
+
+- The experiment-envelope consumer audit now records the incompatible quietset, lineprior, and
+  veridict contracts and keeps nested v1 emission deferred until consumers agree.
 
 ## [0.10.0] — 2026-09-23
 
 ### Fixed
 
-- Documentation maintenance: made the English/Japanese READMEs concise entry points, moved
-  option-level authority to CLI `--help`, condensed the roadmap and experiment-envelope draft,
-  and retained concise release evidence.
-- Hardened SFEN parsing against oversized hand counts and excessively wide ranks, and hardened
-  `distribution` bucket iteration against extreme integer ranges. Added regression tests.
-- KIF: an indented nested `変化：N手` marker now replays from its active parent variation rather
-  than silently remapping to the mainline. Nested source paths and variation IDs retain the full
-  deterministic lineage (for example, `#var1@2#var2@3` and `var1.var2`); malformed nested markers
-  emit a diagnostic and are skipped without changing parentage.
-- Made CLI golden comparisons independent of checkout line endings, tracked the shared malformed
-  JSONL fixture, and updated fixture decoding for current Clippy.
-- Updated `sha2` to 0.11.0, `clap` to 4.6.7, `thiserror` to 2.0.20, `blake3` to 1.8.7, and
-  `encoding_rs` to 0.8.40.
+- KIF nested variations now replay from their active parent and retain deterministic lineage.
+- SFEN and distribution parsing reject oversized values instead of overflowing or looping over
+  unreasonable ranges.
+- CLI golden fixtures are line-ending independent, and malformed-input fixtures are tracked.
+- Public documentation and dependency versions were synchronized for the release.
 
 ## [0.9.2] — 2026-09-04
 
 ### Added
-- `dataset-diff` compares two JSONL datasets independently of line order and emits both a human
-  summary and a versioned JSON artifact. It separates added/removed/changed records, field changes,
-  and source-root/phase/eval-bucket/observation deltas, with explicit occurrence- or SFEN-based
-  identity modes.
-- `recipe plan` validates a typed recipe-v1 stage graph without executing it, rejects unsafe or
-  ambiguous topology, hashes external inputs, derives portable stage identities, and emits a
-  versioned ready/waiting/blocked plan artifact.
-- `recipe run` and `recipe verify` execute typed stages without a shell, commit declared outputs
-  through per-stage staging, atomically replace the run manifest, reuse matching successful stages,
-  and verify recorded output hashes for safe local resume.
-- recipe stage commits now validate every declared output first and restore pre-existing outputs if
-  a multi-output commit fails midway.
-- `recipe run` now checkpoints after each stage and requires explicit `--resume` for an incomplete
-  run, so interrupted work can reuse only durably recorded successful stages.
-- `recipe verify` now validates manifest version, stage order, exact output topology, and hash shape
-  before checking output contents.
-- Added a normalized run-manifest golden fixture that fixes the durable schema without baking in
-  machine-specific paths or content hashes.
-- Added a partial-checkpoint regression proving `--resume` reuses only the durable prefix and
-  reruns the remaining dependent stages.
+
+- `dataset-diff` reports semantic record and distribution changes independently of input order.
+- `recipe plan/run/verify` validates typed stage graphs, commits staged outputs atomically,
+  checkpoints each stage, supports explicit resume, and verifies output hashes.
+- Fixture-backed manifest and interrupted-run tests fix the recipe durability contract.
 
 ## [0.9.1] — 2026-09-03
 
 ### Added
-- Pack boundary and corruption fixtures covering malformed input, bad magic/version/endian,
-  truncation, and error classification.
-- Fixture-backed golden outputs for `report`, `validate`, `conflict-report`, `block-report`,
-  `distribution`, and `calibrate`, including missing-bucket and malformed-input cases.
 
-### Changed
-- Updated the roadmap, release checklist, validation evidence, and public command documentation
-  to match the current JSONL/pack contracts and regression fixtures.
-- Kept external measurements, large-dataset performance, training effect, Elo, and native
-  interoperability claims explicitly unmeasured; this release does not imply those results.
-
-### Validation
-- Repository contract, formatting, and offline workspace checks were run locally.
-- Full fixture tests and all-target clippy remain environment-blocked when `float-cmp v0.10.0`
-  is unavailable from the offline dependency cache; this is recorded in the release evidence.
+- Pack corruption fixtures cover bad magic, version, endian, truncation, and trailing bytes.
+- Golden CLI outputs cover report, validate, conflict/block reports, distribution, calibration,
+  missing buckets, and malformed input.
 
 ## [0.9.0] — 2026-07-26
 
 ### Added
-- `label --nodes N[,N2,...]` — a fixed-node-count search limit, as a first-class alternative to `--depths` (exactly one of the two is required; they're mutually exclusive). Sends `go nodes N` instead of `go depth N`. Motivation: comparing different engines/versions as teachers, "depth" isn't a comparable unit of search work across them, while a node count is. `Observation` gains `search_limit_kind` (`"depth"`/`"nodes"`, `#[serde(default)]` so it's always present) and `requested_nodes` (mirrors the existing `requested_depth`, `None` in depth mode) — the existing `nodes` field already serves as "actual nodes" in both modes, exactly parallel to how `depth` already serves as "actual depth" opposite `requested_depth`, so no separate `actual_nodes` field was added. `label`'s on-disk cache key now folds in a kind discriminant so `--depths 8` and `--nodes 8` never collide; the label-cache `CacheEntry` gains `search_limit_kind`/`search_limit_value` (additive, `#[serde(default)]`, not a rename of `requested_depth`, so pre-existing v2 cache entries keep parsing correctly).
-- `Observation` gains full search telemetry, parsed from the engine's own USI `info` line: `seldepth`, `nps`, `hashfull`. `RunManifest`/`label` gain `engine_threads`/`engine_hash_mb` (read from `--engine-option Threads=N`/`Hash=M`, case-insensitive; not duplicated per-`Observation`, same as `multipv`). `cache stats` gains a `search_limit_kind` distribution alongside its existing `requested_depth`/`multipv` breakdowns, so a node-limited cache dir doesn't just report `requested_depth: 0` for every entry with nothing explaining why.
-- `Observation.engine_options_hash` (full blake3 hex digest of the resolved `--engine-option` pairs, including a synthesized `MultiPV` entry) and `Observation.weight_sha256` (SHA-256 of a new `label --weight-file PATH` flag — the NNUE/eval weight file the engine is configured to use, e.g. via `--engine-option EvalFile=...`; a directory is rejected with a clear error). `weight_sha256` is also duplicated onto `RunManifest`, unlike `engine_threads`/`engine_hash_mb`: a retrained net written over the same option-string path is invisible to `engine_options_hash` alone, and observations can accumulate across multiple `label` invocations (`--resume-from`), so per-observation attribution is what survives once data is shuffled away from its manifest.
-- A shared "experiment envelope" (vendored as `schema/experiment_envelope.schema.json`, identically across the shogiesa/quietset/lineprior/veridict pipeline — not a shared library, just the same JSON Schema file copied into each repo): `RunManifest`/`label` gain `--experiment-id`/`--candidate-id`/`--baseline-id`/`--lineage-id`/`--teacher-manifest-sha256`/`--init-seed`/`--split-seed`/`--split-sha256`/`--validity` (all opaque passthrough — shogiesa neither validates nor interprets them) plus computed `dataset_sha256` (SHA-256 of `--input`) and `binary_sha256` (SHA-256 of the engine binary). `shuffle --manifest` gains `shuffle_seed` (already present per-line on `OrderManifestLine`, now also surfaced at the manifest level for a consumer that only reads `--manifest`). New `sha2` dependency, used *only* for these envelope-facing `_sha256` fields — every existing blake3 use (label-cache key, `input_hash`, `order_hash`, `seeded_hash`) is untouched, since those are internal join/ordering keys with no cross-repo verifiability requirement, unlike a field literally named `_sha256` that a sibling repo may check with `shasum -a 256`.
-- `label --usi-strict` — detects USI protocol desync instead of silently trusting it: an unsolicited bestmove (no matching `go`), a duplicate bestmove for the same `go`, a bestmove that arrives after its search was already timeout-salvaged, and (via the existing `shogi_core`/`shogi_legality_lite` legality check, reused from `make-gate-openings`) a bestmove that isn't legal in the position it was given. Motivated by a real "stale bestmove" bug in a sibling repo (Sekirei), where a desynced/half-dead engine process silently produced plausible-but-wrong labels for the rest of an unattended run. Detected violations are counted in `--manifest` as `protocol_violations_count` (`None` unless `--usi-strict` is given, so a reader can distinguish "not checked" from "checked, found none"); an illegal bestmove is discarded rather than recorded as a trusted observation.
-- `label --restart-engine-every N` / `--restart-on-protocol-error` / `--transcript-on-error DIR` — independent, composable USI-lifecycle levers. A dead engine process (`Io` — the pipe itself is broken) is now **unconditionally** relaunched regardless of any flag, fixing a real bug: previously, once `analyse()` errored, the worker loop logged a warning and kept reusing the same (now-permanently-broken) engine for every remaining position on that thread. `--restart-on-protocol-error` extends relaunching to non-`Io` failures too (a timeout, an unparseable response, or a `--usi-strict` violation) — off by default, since a bare timeout alone can just mean `--timeout-ms` is too tight for this engine, not proof it's dead. `--restart-engine-every N` relaunches periodically regardless of errors, as a hedge against slow resource growth in long unattended runs. `--transcript-on-error DIR` dumps the raw USI exchange since the last clean `go` to `{nanos}_worker{id}_{kind}.log` on any search error, for post-mortem debugging. `RunManifest`/`label` gain `engine_restarts` (always populated when `--manifest` is given, like `timeout_salvaged_count` — can be nonzero even with none of the three flags set, since the `Io` case is unconditional).
-- `make-gate-openings --manifest` gains `selection_seed` (echoes `--seed`), `canonical_valid_count` (count surviving every filter, before `--count`'s quota trims it — distinct from the existing `records_kept`), `output_sha256` (SHA-256 of `--out`'s written bytes, reusing the same `hash_file_sha256` helper the experiment envelope's `dataset_sha256`/`binary_sha256` use), `source_distribution`/`phase_distribution`/`material_distribution` over the final kept suite, and `selection_algorithm_version` (a new `GATE_OPENING_SELECTION_ALGORITHM_VERSION` const, bumped only when the underlying tie-break/ranking/dedup scheme itself changes) — closing gaps in bespoke Sekirei-side gate-opening manifest scripts. `material_distribution` is powered by a new `total_material(sfen) -> Option<u32>` (standard integer piece-point table: P1/L3/N3/S5/G6/B8/R10, promoted minors at Gold's value, King excluded — no prior material concept existed anywhere in this codebase, so this is a fresh judgment call with its own golden-value regression test, not a verified external standard). `--out`'s doc comment now states explicitly that line order is deterministic input-encounter order (not seed-shuffled), the leanest possible answer to "pair order" for a downstream consumer that wants to join openings by position.
+
+- `label --nodes` adds fixed-node search beside fixed-depth search.
+- Observations record requested limit, search telemetry, engine-option identity, and weight hash.
+- Strict USI checks detect unsolicited, duplicate, delayed, or illegal bestmoves; engine restart
+  and transcript controls improve unattended labeling.
+- Manifests gained dataset, engine, weight, seed, lineage, and gate-opening provenance fields.
 
 ### Fixed
-- `merge_observations_into`'s dedup key (`(engine, engine_version, depth, requested_depth)`) silently collapsed two node-limited observations from the same engine with different `requested_nodes` but the same achieved depth into a false collision, dropping one under `PreferPrimary`/`PreferSecondary`. Fixed by extending the key to include `(search_limit_kind, requested_nodes)`.
-- `label`'s worker loop never reset a dead/errored engine to `None` after a failed search, silently reusing the same broken process for every remaining position on that thread. Now unconditional on an `Io`-class error (see `--restart-on-protocol-error` above), regardless of whether any Phase 2 flag is set.
 
-**Schema bump**: `SCHEMA_VERSION`/`shogiesa_pack::FORMAT_VERSION` 10 → 11, for the `Observation` fields above (`search_limit_kind`, `requested_nodes`, `seldepth`, `nps`, `hashfull`, `engine_options_hash`, `weight_sha256`). Old `.shgpk` files are not readable by this version (the pack format is a strict positional encoder with no per-field forward-compat tolerance); JSONL is unaffected — every new field is `#[serde(default, ...)]`.
+- Node-limited observations no longer collide during merge.
+- Dead engine processes are relaunched instead of being reused for the remaining queue.
+
+### Compatibility
+
+- JSONL schema and pack format advanced to 11. JSONL additions use defaults; older binary packs
+  require conversion through a compatible release.
 
 ## [0.8.0] — 2026-07-19
 
-### Fixed
-- `label`'s `analyse()` no longer discards a position entirely when `--timeout-ms` elapses before `bestmove` arrives — it now sends `stop` and salvages a degraded-but-real result (the deepest completed `info` line, `depth < requested_depth`) instead. Measured impact motivating this: at depth=6/timeout=15s on 30 real loss-mined positions, 30% (9/30) failed to label at all, and failures skewed toward higher ply (~38 avg) than successes (~29 avg) — a real bias toward silently dropping exactly the complex, decisive late-game positions hard-position mining/`select --strategy coverage`/boundary relabeling exist to target. No schema change: `depth`/`requested_depth` already represent this exact shape of "degraded but real" result for an engine's own early stop (e.g. a forced mate via `--early-stop-depth`), and `filter --require-requested-depth-reached` already exists for a consumer who needs strict full-depth-only data — this fix is default-on, not a new flag, for the same reason the `label` output-order default was flipped rather than left opt-in: the data loss was silent, and an opt-in flag would perpetuate it for anyone who doesn't already know to ask. If the engine never responds even after `stop` and a 500ms grace period (e.g. a genuinely hung process), this is unchanged from before — a hard failure with nothing salvaged, since there's nothing to salvage. **Previously-known, now-closed limitation**: `requested_depth_underreached` still exempts every `Score::Mate` observation from underreach entirely (unchanged, and correct for a genuine early-stop-on-forced-mate) — but `evaluate_quality`'s `require_requested_depth_reached` gate no longer grants that same exemption to a timeout-salvaged observation carrying an unconfirmed mate score, since it didn't actually confirm the mate the way a genuine early stop does. See `Observation.was_timeout_salvaged` and `QualityConfig.allow_timeout_salvaged_mate` below.
-- `label --resume-from` no longer fully loads the resume file's `PositionRecord`s (every `Vec<Observation>`, PV lines, etc.) into memory. It now builds a lightweight byte-offset index (alignment key -> line offset, parsing only `sfen`/`source.path`/`source.ply` per line, via a new `build_resume_index`) and re-reads a resumed record's actual observations from disk (one seek + one line, via `read_resume_observations_at`) only when the current `--input` produces a matching key. `label`'s reader thread is single-threaded, so this doesn't touch the pipeline's worker concurrency at all. Resuming a near-complete multi-GB run no longer spikes RAM by roughly that file's size — memory now scales with the number of *distinct keys* in the resume file (two `String`s + a `u32` each), not their full labeled content. Same last-write-wins semantics on a duplicated key as before.
-
 ### Added
-- `shuffle` command — deterministically permutes a positions dataset into training order (the first command in this codebase that actually reorders output; every other seeded command preserves input-line or rank order), with an optional `--order-manifest PATH` (JSONL, one line per output position: `training_position`/`sample_id`/`game_id`/`game_position_index`/`outcome`/`teacher_cp`/`teacher_depth`/`source_file`/`split_id`/`shuffle_seed`/`block_id`/`opening_id`) so "what were the 32 positions in block B5 of this training run" is answerable later without re-running the shuffle. `sample_id` is `blake3(sfen, source.path, source.ply)` — a within-run join key (documented as not portable across independent re-extractions on a different machine/directory layout, since `source.path` isn't canonicalized anywhere in this codebase), not a schema field. `--manifest` gains `order_hash` (blake3 over every output position's `sample_id` in final order) so a later run can be checked for byte-identical training order even after a code change to the shuffle algorithm itself, not just "used the same seed." `opening_id` always emits `null` this round — the gate-opening SFEN a game started from isn't retained anywhere on `PositionRecord` today (used transiently during extraction, then discarded); populating it is future work. No schema/pack-format bump — `PositionRecord` is unchanged, this is a sidecar manifest.
-- `PositionRecord.game_result: Option<GameResultInfo>` — game-level win/draw/loss provenance (`outcome: GameOutcome` [`black_wins`/`white_wins`/`draw`/`unknown`, black-relative and absolute] + `result_source: String` [`"csa_terminal"`/`"kif_marker"`/`"match_header"`/`"unknown"`]), populated by `extract`/`from-match` and previously computed only transiently inside `lineprior export`. Lets a raw-vs-curated dataset comparison (e.g. CSA source data vs. shogiesa-filtered output) check whether a filter is accidentally biasing the dataset toward wins/losses/certain game phases — nothing in the schema exposed this before. Deliberately NOT mover-relative: a caller needing mover-relative WDL (`"success"`/`"failure"`/`"draw"`/`"unknown"`, matching `lineprior export`'s existing `outcome` string convention) calls `outcome.for_mover(tags.side_to_move)` or the new `shogiesa_stratify::feature_wdl` helper — no redundant `wdl_for_black`/`wdl_for_side_to_move` pair is stored per record, since side-to-move already varies per-record while `outcome` is fixed for the whole game. CSA/`from-match` records get a uniform per-game value; KIF variation-branch records get `unknown`/`unknown` (their own terminal, if any, isn't the actual game's result), matching `RawMove.outcome`'s existing convention. `#[serde(default, skip_serializing_if = "Option::is_none")]`, so every pre-v10 record deserializes `None`, a genuine no-op on existing JSONL. `balance`/`stratify --by` gain a `wdl` dimension; `report`/`distribution` gain a WDL count/percentage tally. **Schema bump**: `SCHEMA_VERSION`/`shogiesa_pack::FORMAT_VERSION` 9 → 10 (the pack binary format is a strict positional encoder with no per-field forward-compat tolerance, so this only affects `pack`-encoded files, not JSONL).
-- `make-gate-openings --allow-unplayable` (default off — unplayable positions are filtered): gate opening suites feed an external match runner as playable starting positions, but SFEN syntax validity doesn't guarantee playability — a small fraction of real extracted positions have zero legal moves for the side to move (checkmate/stalemate-adjacent terminal positions). These now default to being dropped (new `unplayable` drop reason, reported in `--manifest` and the stderr summary alongside the existing reasons) rather than silently corrupting the gate suite. Legality is checked via the `shogi_core`/`shogi_usi_parser`/`shogi_legality_lite` crate family (SFEN → `PartialPosition` → `all_legal_moves_partial().is_empty()`) rather than hand-rolled shogi move generation, which shogiesa had none of and which is a correctness project of its own (drops, forced promotion, nifu, uchifuzume, pins) out of scope for a filter. A SFEN that shogiesa's own `Sfen::parse` already accepted but the external parser rejects is treated as unplayable (warn-logged, not silently dropped) rather than conflated with a confirmed zero-legal-move position.
-- `label --manifest` reports `timeout_salvaged_count`: how many observations came from the timeout-salvage path above, as opposed to a full completion or an engine's own early stop. Distinct from the existing `requested_depth_underreach` counter, which conflates both causes — a maintainer tuning `timeout_ms`/depth needs to tell "engine found a forced mate and stopped early" (fast, trustworthy) apart from "we had to force-stop a slow/complex position" (the actual bias the salvage fix above is about).
-- `Observation.was_timeout_salvaged: bool` — per-observation provenance for whether this specific observation came from the timeout-salvage path (`#[serde(default)]`, so every pre-v9 record deserializes `false`, a genuine no-op on existing datasets). `filter`/`calibrate`/`tune` gain `--exclude-timeout-salvaged`, dropping any record with a salvaged observation. `--require-requested-depth-reached` (all three commands) no longer exempts a timeout-salvaged mate score from its usual underreach check by default — pass `--allow-timeout-salvaged-mate` to restore the old blanket mate exemption for that case. `shogiesa_core::requested_depth_underreached` itself is unchanged (still exempts every mate unconditionally); the new, narrower exemption logic lives only inside `evaluate_quality`'s own gate, not as a signature change rippling through its other call sites. **Schema bump**: `SCHEMA_VERSION`/`shogiesa_pack::FORMAT_VERSION` 8 → 9 (the pack binary format is strictly versioned and rejects a mismatched version outright, so this only affects `pack`-encoded files, not JSONL, which is unaffected by the version number itself).
-- `make-gate-openings`: builds a plain-text, one-SFEN-per-line opening suite from a positions dataset, for feeding an external match-runner's own opening-book flag (e.g. Sekirei's `--positions FILE`, confirmed byte-for-byte format-compatible with its real production `data/gate/openings_standard.sfen`). Reuses `stratify`'s group-aware quota-fill (rank = occurrences already kept from a record's own source root, lower rank always wins) degenerated to a single universal bucket sized `--count`, so one source game can't dominate the whole suite. `--min-ply` (default 8) / `--max-ply` (unbounded) filter by ply; positions are deduplicated on board+side+hand before rank assignment so two records that are the same starting position (even from different games) don't waste two quota slots; each output SFEN is validated before being written, so a malformed input line is skipped rather than handed to an external match-runner. `--input` need not be labeled. `--manifest` reports `distinct_roots_kept`/`max_root_share_in_any_bucket` (reused from `stratify`) plus the usual drop-reason breakdown.
-- `scripts/sekirei_dataset_ablation.sh` — ablation harness comparing 4 dataset arms (`baseline`, `tune-broad`, `tune-balanced`, `tune-strict`) built from the same labeled input via one `tune --preset-out` run and `filter --preset tuning.json:<arm>`, so whether a tuning preset actually moves Sekirei's playing strength can be measured empirically rather than inferred from dataset-side coverage/mismatch metrics alone. Training/gating are external hooks (`SEKIREI_TRAIN_CMD`/`SEKIREI_GATE_CMD` env vars, both optional and gracefully skipped if unset) — shogiesa still only produces data, never trains or judges, keeping that boundary intact.
-- `docs/SEKIREI_GATE_EVALUATION.md` — a runbook (not executed by shogiesa) for comparing `make-gate-openings`'s output against `startpos`-only and Sekirei's existing production opening suite on 4 arms (A: startpos, B: production suite, C: `make-gate-openings --count 100`, D: same with `--count 400`), covering what to measure (gate-result variance, Elo CI width, opening-side bias, source-root dominance, pass/fail stability) and how it can reuse `sekirei_dataset_ablation.sh`'s existing `SEKIREI_GATE_CMD` hook contract. Explicitly Sekirei-side evaluation, not a shogiesa feature.
-- `crates/stratifykit-core/README.md` — documents the crate's zero-shogi-vocabulary boundary, its module list, and that it stays inside this workspace (not yet an independent repo) until a real second consumer needs it. A new `cargo_toml_has_no_shogiesa_dependency` test enforces the `Cargo.toml` half of that boundary mechanically (fails the build the moment a `shogiesa-*` dependency is added, rather than relying on inspection). Added a few edge-case tests closing gaps in the existing 15 (`group_aware_fill` with no quotas at all / on empty input, `reservoir_sample` on empty input) — determinism-across-calls and one-group-starves-another were already covered.
+
+- Timeout salvage keeps the deepest completed USI result and marks it explicitly.
+- `shuffle` writes deterministic training order and an optional order manifest.
+- Position records gained game-result provenance and WDL-aware balancing/reporting.
+- `make-gate-openings` creates root-diverse, playable SFEN suites with a reproducibility manifest.
+- Sekirei dataset-ablation and gate-evaluation runbooks separate data diagnostics from strength
+  measurement.
 
 ### Changed
-- Extracted the generic quota/bucket/group-aware-sampling logic previously hand-rolled inline across `stratify`/`make-gate-openings`/`balance`/`select --strategy coverage`/`sample`/`distribution` into a new internal crate, **`stratifykit-core`** (zero shogi vocabulary: `HeapEntry`/`push_bounded`/`seeded_hash`/`bucket_floor`/`mean_of`/`classify_bucket`/`reservoir_sample`/`group_aware_fill`/`QuotaSpec`), behind a thin adapter crate, **`shogiesa-stratify`** (maps `PositionRecord`/`SourceInfo` onto stratifykit-core's generic feature/bucket/group concepts: `bucket_key`, `eval_bucket_of`, `EvalBucket`, `group_key`). `shogiesa-cli` now calls through this adapter instead of hand-rolling bucket/quota/group logic itself, and stops accumulating more of it as new commands are added. Purely a refactor: every existing golden-output test (`stratify_group_aware_quota_fill_diversifies_across_roots`, `balance_bounded_heap_auto_target_matches_pre_refactor_golden_output`, `select_coverage_bounded_heap_matches_pre_refactor_golden_output`, `make_gate_openings_diversifies_across_roots`, `distribution_shows_basic_sections`, and others) passes unedited, and CLI output/manifest shape is unchanged. Not yet an independent repo — grown inside the workspace first, so a future non-shogi consumer (e.g. a masstrust/quietset-style product) can adopt it without shogiesa needing to change.
-- `scripts/sekirei_dataset_ablation.sh`'s `report.md` table gains `coverage`/`mismatch` (per-arm, from the shared `tuning.json`'s `TunePresetCandidate`; `n/a` for `baseline`, which never runs through `tune`) and `elo`/`ci` (a verbatim pass-through of whatever `SEKIREI_GATE_CMD`'s own `gate_result.json` contains, or `n/a` if absent/unconfigured) — so a look back at a past run can actually see whether a dataset condition helped, not just how many records it kept. No synthesized pass/fail verdict: that judgment stays Sekirei's/the gate command's, matching the script's existing "shogiesa produces data, Sekirei trains, veridict judges" boundary.
+
+- Resume indexing, report, sample, balance, and several selection paths now use bounded or
+  streaming memory while preserving golden output order.
+- Evaluation buckets use Black-perspective cp; special bestmove tokens are excluded from move
+  agreement checks.
+
+### Fixed
+
+- Zobrist dedup no longer maps every invalid SFEN to one sentinel value.
+- Label-cache writes are atomic.
+
+### Compatibility
+
+- JSONL schema and pack format advanced through 9 and 10 for timeout and game-result provenance.
 
 ## [0.7.0] — 2026-07-07
 
-### Fixed
-- `from-match` now extracts from `position sfen ...` kifu, not just `position startpos ...`. Previously any match-runner game that didn't start from the standard position (e.g. a strength gate run with `--positions`, not `startpos`) hit an unconditional warn-and-skip — silently producing zero positions with no error, since `from-match`'s own summary line ("N games read, M positions extracted") doesn't distinguish "extracted nothing because every game was filtered by `--losing-side`" from "extracted nothing because every game's `position` line was unsupported." Added `Board::from_sfen` (the inverse of the existing `to_sfen()`, delegating structural validation to the already-existing `sfen::Sfen::parse` rather than re-validating) and wired it into `extract_from_match_kifu`'s sfen match arm. Confirmed against a real affected directory: 0 → 1102 positions extracted, SFEN/turn/hand/move-count all internally consistent.
-- Two follow-up gaps found (by inspection + fixture/sabotage tests, not a real-data rerun) in the `position sfen ...` support above, motivated by a real affected directory where only the 179 current-era `sfen` games silently extracted 0 positions (the 585 older `startpos` games read fine): (1) extracted positions from a `position sfen ...` game had their `source.ply` restart from 0/1 instead of continuing from the starting SFEN's own move-count field — confirmed against Sekirei's actual match-runner source that a real kifu log's `position sfen {start_pos}` preserves the true move-count verbatim (e.g. `22`, not reset to `1`), so every position extracted from a non-startpos game was silently mistagged (`phase_from_ply`, ply histograms/distribution, `--min-ply`/`--max-ply` filters would all misclassify it) — this means the "1102 positions, all internally consistent" from the fix above were only SFEN/turn/hand/move-count consistent; their ply numbering restarted at each game and needs regenerating after this fix. Fixed by deriving the ply counter from the constructed board's own `move_count` instead of a hardcoded `0` (a no-op for `startpos`, whose `move_count` is always `1`). (2) A malformed SFEN with a king literally in the hand field passed `Sfen::parse`'s validation (King is a valid piece letter generically) but then panicked inside `Board::from_sfen`'s hand-parsing loop (`PieceType::hand_idx()` has no entry for King) — crashing the whole `from-match` run on one bad file instead of the documented warn-and-skip. Fixed at the single validation choke point: `Sfen::parse`'s `validate_hand` now rejects King.
-
 ### Added
-- `shogiesa --version`/`-V` now works (previously `error: unexpected argument '--version' found` — clap's auto-generated version flag was never opted into via `#[command(version)]` on the top-level `Cli` struct, even though every crate already sets `version.workspace = true`).
-- `label --resume-from PATH` — a native, one-flag resume for an interrupted run. `--skip-existing` alone can't resume a killed run: it only sees observations already present in whatever it's reading as `--input`, so pointing it at a killed run's own partial `--out` skips only the positions that file happens to contain, silently dropping everything the kill never reached at all. `--resume-from` fixes this by merging the *original* `--input`'s full position set with the killed run's partial `--out`, matched on `(sfen, source.path, source.ply)` — the same alignment key `merge-observations` uses (and indeed reuses `merge_alignment_key`/`merge_observations_into`/`load_records` directly, no new merge logic). Positions already covered are then skipped automatically (implies `--skip-existing`'s behavior unless `--replace-existing` is also given); the path doesn't need to exist yet, so a wrapper script can pass it unconditionally from a job's very first run. Must not be the same path as `--out` (rejected with a clear error). `RunManifest` gains `resume_from`/`resumed_count`. Not a union like `merge-observations` — only `--input` is iterated, so it must be the full original corpus, or a `--resume-from`-only record is silently dropped. Also fully loads `--resume-from` into memory (needs each record's actual prior observations, not just a seen-key set), unlike `label`'s otherwise-bounded `--jobs`-scaled streaming — resuming a near-complete multi-GB run spikes RAM by roughly that file's size.
-- `distribution` command — reports phase/side/eval-bucket/ply/source-root distribution, explicitly enumerating and flagging bucket combinations that have zero records within the observed range. `report` and `select --strategy coverage` already compute distribution stats, but neither can ever surface a fully-missing bucket, since both only populate their tallies from records actually seen — a zero-count combination simply never gets an entry, so it's silently absent rather than shown as `0`. Deliberately not named `coverage`, to avoid colliding with `select --strategy coverage` (ranks existing records by thin-bucket membership) or the unrelated MultiPV/quality-gate pass-rate "coverage" used by `report`/`calibrate`/`audit`/`tune`. Reuses `bucket_key`'s existing phase/side/eval-bucket notion (factored a structured `EvalBucket` out of it, behavior-preserving) and `split_root_key`'s `root_id`-aware grouping (fixing `report`'s own source stat, which groups by raw path and so double-counts a game's mainline and its variations as separate sources). Present buckets are flagged `UNDER`/`OVER` relative to the mean (`--under-ratio`/`--over-ratio`). Diagnostic only, same shape as `report` — no `--out`/`--manifest`.
-- `stratify` command — quota-based sampling to a per-bucket target distribution, unlike `balance`'s single uniform `--target`, and group-aware so one source game/root can't dominate a bucket's fill. Two modes: `--write-template FILE.json` observes current bucket counts (via `bucket_key`) as a hand-editable starting point; `--quota FILE.json` applies a (possibly hand-edited) quota file, reusing the file's own `by` field to reconstruct bucketing rather than accepting a possibly-mismatched `--by` at apply time (passing both is a hard error). Group-awareness: each record gets a rank (how many positions from its own source root, via `split_root_key`, have already been seen in its bucket, in file order) and the fill prefers lower ranks unconditionally — every root's first position in a bucket beats every root's second, across all roots, so no root can take a whole bucket's quota while excluding another root present in it (a straightforward tuple-key swap on the existing generic `HeapEntry`/`push_bounded`/`seeded_hash`, no new primitives). A bucket in the input but absent from the quota file is dropped (`bucket_not_in_quota`), tracked distinctly from a bucket present but over its quota (`over_quota`), in the existing `RunManifest.drop_reasons`. `RunManifest` gains `max_root_share_in_any_bucket` (scoped to buckets with ≥2 kept records, so a singleton bucket can't pin it at a meaningless 1.0) and `distinct_roots_kept`. With only one distinct root in a bucket, the fill degrades to "first N in file order" for that bucket — documented, not smoothed over, since there's no root diversity to protect in that case.
+
+- `from-match` accepts `position startpos` and custom `position sfen` logs.
+- `label --resume-from`, `distribution`, and group-aware `stratify` support interrupted and
+  coverage-driven dataset work.
+- `shogiesa --version` reports the workspace version.
 
 ### Changed
-- **`label`'s default output ordering flipped from order-preserving to unordered/write-on-completion.** Real production incident: killing a long `--jobs N` run (no signal handler exists anywhere in `label`, so any Ctrl-C/SIGTERM/SIGKILL just terminates the process) previously discarded every already-completed observation still sitting in the writer's in-memory reorder buffer, waiting for a slower straggler position to catch up — up to `jobs * 4` fully-finished records, held indefinitely if that straggler never finishes before the kill. The old `--unordered-output` flag already fully avoided this (skip the buffer, write on arrival) but was opt-in, so the fragile-to-interruption mode was the default despite `--skip-existing` being specifically designed to support resuming an interrupted run. **Breaking**: the flag is renamed and inverted — `--unordered-output` (opt-in to safe/unordered) is now the default with no flag needed; `--preserve-order` (opt-in to the old default) trades that safety back for strict input-order output. `RunManifest`'s `unordered_output: Option<bool>` field is similarly renamed to `preserve_order: Option<bool>`. Also added an explicit per-record `flush()` in the writer (previously only flushed once at the very end of the whole run) to shrink the smaller, secondary loss window of writes still sitting in Rust's own `BufWriter` — negligible cost, since engine search time dominates I/O time by orders of magnitude.
+
+- Parallel label output is written on completion by default; `--preserve-order` opts into the
+  previous reorder-buffer behavior.
+
+### Fixed
+
+- Custom-SFEN match logs continue the SFEN move count and reject kings in hand without panicking.
 
 ## [0.6.0] — 2026-07-05
 
 ### Added
-- `shogiesa_core::requested_depth_underreached(obs: &Observation) -> bool` — the mate-exempt "did this observation fall short of the depth `label` asked it to reach" check, extracted from `evaluate_quality`'s `require_requested_depth_reached` gate and the CLI's `accumulate_requested_depth`, which each previously inlined the identical logic independently. No behavior change.
-- `calibrate` command — sweeps `filter`'s `--min-policy-margin-cp`/`--max-score-swing-cp` thresholds across caller-supplied values and reports coverage/kept/dropped/drop-reason-counts per swept value (`--out calibration.csv`), plus a one-time stderr summary of dataset-wide `policy_margin_cp`/`score_swing_cp` distributions, observation-level `score_bound` counts, `requested_depth` underreach rate, and special-bestmove rate. Reuses `shogiesa_core::evaluate_quality`/`QualityConfig` unchanged — no separate quality-judgment logic was added to the CLI. Every other `filter` gate flag is available as a fixed base-config value held across the sweep.
-- `audit` command — compares each engine's shallow ("student") observations against its own deep ("teacher") observation within an already-labeled file (one `label --depths a,b,c,teacher_depth` run already produces the multi-depth, same-engine data this needs). Groups by engine so a multi-engine dataset never cross-compares engines; matches teacher/student depths by `requested_depth`, falling back to achieved `depth` for legacy pre-schema-v6 data. Reuses `bestmove_agreement` (resign/win/none-excluding) and `cp_from_black_perspective` (for `score_error_cp`, normalized through the record's `side_to_move` rather than a raw side-to-move-relative subtraction) — no new comparison logic. Writes `--out audit.jsonl` (one line per (record, engine, student_depth) pair) plus a per-student-depth and overall stderr summary (bestmove-mismatch rate, average/max `|score_error_cp|`, non-exact rate, underreach rate, special-bestmove rate, for both teacher and student).
-- `score_bound_str(bound: ScoreBound) -> &'static str` (CLI-internal) — extracted the `exact`/`lowerbound`/`upperbound` string mapping that `report`, `calibrate`, and now `audit` each need, previously duplicated three times as an inline `match`.
-- `docs/THEORY.md` — explains what shogiesa's quality signals (`score.cp`, `policy_margin_cp`, `score_swing_cp`, `bestmove_agreement`, `QualityDecision.score`) mean and, more importantly, what they don't: none are calibrated win probabilities or confidence values, and thresholds built on them need per-dataset/per-engine calibration via `calibrate`/`audit` rather than intuition.
-- `cache stats|verify|prune` subcommands for a `label --cache-dir` cache. `stats` reports entry count/total size/oldest-newest age/per-engine distribution; `verify` detects corrupted (unparseable) entries, explicitly not claiming schema/fingerprint-staleness detection the cache's one-way-hashed key format can't honestly support (a schema bump or engine change already produces a different future key by construction — see `label_cache_path` — so stale entries are never wrongly reused, just orphaned); `prune --older-than-days N`/`--corrupted-only` deletes matched entries, dry-run by default (the first genuinely destructive command in this CLI), requiring an explicit `--yes`.
-- `tune` command — merges `calibrate` and `audit`: grid-sweeps `--sweep-policy-margin` × `--sweep-score-swing` (combined thresholds per grid cell, not independent 1D sweeps) and reports, per cell, both `evaluate_quality` coverage and `audit`-style teacher/student mismatch metrics restricted to the records that cell would keep. Single streaming pass — each record's teacher/student comparison is computed once and folded into every cell that keeps it, not recomputed per cell. `--out tuning.csv` (audit-derived columns render empty, not `0.00`, when a cell has no audit pairs). Optional `--report tuning.md` computes the Pareto frontier over (coverage, mismatch-rate) and presents broad/balanced/strict candidates instead of picking one threshold — `balanced` range-normalizes both axes to the frontier's own observed spread before computing distance, since raw values would let coverage's wider dynamic range make it collapse onto `broad`. Reuses `AuditStats`/`find_at_depth`/`CoverageTally`/`DatasetDiagnostics` unchanged — no new quality-judgment or comparison logic.
-- `cache prune --legacy-only` — deletes only pre-v2-envelope (bare-`Observation`) cache entries, for once the new format has been running long enough to be confidently redundant.
-- `cache stats`/`verify` now report a legacy (v1) entry count plus, for v2 entries, `schema_version`/`engine_fingerprint`/`requested_depth`/`multipv` distributions — see the v2 envelope change below.
-- `label --manifest` gains throughput diagnostics: `records_per_sec` (wall-clock, based on records durably written, not records read), `cache_hit_rate` (only when `--cache-dir` is used), `average_engine_time_ms` (averaged from `Observation.time_ms` across each written record — documented as including any observations inherited from a prior `label` run on the same file under `--skip-existing`/`--replace-existing`/append, not purely this invocation's own engine calls), and `unordered_output`. No new `worker_count` field — the existing `jobs` field already is that value. The stderr summary line now shows `records_per_sec` too, independent of `--manifest`.
-- `tune --preset-out FILE.json` writes the same broad/balanced/strict candidates as `--report`, machine-readable, each carrying its full resolved `QualityConfig` (not just the swept fields). `filter --preset FILE.json:label` loads one candidate's config directly instead of building one from individual flags (conflicts with every gate flag, so precedence is never ambiguous) — removes hand-transcribing thresholds from a Markdown report into `filter` flags, which breaks reproducibility and severs the link between a data condition and the coverage/mismatch numbers that justified picking it. `shogiesa_core::QualityConfig` gains `Deserialize` (was `Serialize`-only) to support this round-trip.
-- `from-match` command — a pure extractor for an external engine's match-runner kifu logs (e.g. Sekirei's `sekirei-match-runner --output <dir>`, one `gameNNNN.txt` per game: header lines plus a `position startpos moves ...` USI move list). Does not label — feed the output through the existing `label`/`select`/`filter` commands, same as any other extracted dataset; a match-runner's own result JSONL typically has no per-ply eval to filter on directly. `--losing-side engine1|engine2` extracts only from games where that literal kifu-file label lost, per its own `# Result: ...` line, not an inferred candidate/baseline mapping. `shogiesa_core::{UsiMove, parse_usi_move, Board::apply_usi_move}` — a new USI move-notation parser/replay primitive (nothing in the workspace previously needed to parse incoming USI move tokens, only send them). `position sfen ...` (custom start position) isn't supported — the game is skipped with a warning rather than crashing, since no SFEN→Board reconstructor exists and this form was never observed in real match-runner output sampled while building the command. No schema/pack-format bump — `SourceInfo`'s existing `path`/`ply` fields already carry unambiguous run+game identity for a match-runner game (strictly linear, no variation concept), and no gate consumes a stamped win/loss field since `--losing-side` selection already happens at extraction time.
-- `merge-observations` command — merges two labeled JSONL files' observations (e.g. a shallow `label` pass plus a deeper relabel pass, such as `from-match`'s output run back through `label` at higher depth) record-by-record, matched on `(sfen, source.path, source.ply)` rather than bare `sfen` (which could conflate two different games/plies reaching an identical position). `--on-collision keep-both` (default, no data loss, matches `label`'s own `ExistingPolicy::Append` convention) / `prefer-primary` / `prefer-secondary`, keyed on `(engine, engine_version, depth, requested_depth)` — deliberately including `engine_version`, unlike `label`'s own narrower in-place dedup key, since this command explicitly merges data whose provenance might differ. Positions present in only one file pass through unchanged (a union). **`--on-collision` is not a "deeper depth wins" switch**: since `depth` is part of the collision key, a shallow pass and a deeper relabel of the same position never collide (different keys) — both survive under every policy; the flag only resolves two passes landing on the exact same `(engine, engine_version, depth, requested_depth)` tuple. A merged record's `stability` is cleared (computed from only one side's observations, it would otherwise misrepresent the combined set). No schema bump — recombines existing fields only.
+
+- `calibrate`, `audit`, and `tune` measure coverage and teacher/student disagreement before a
+  filter threshold is selected; presets transfer the chosen configuration without transcription.
+- Cache `stats`, `verify`, and dry-run-by-default `prune` commands inspect label caches.
+- `from-match` imports match-runner games, and `merge-observations` combines labeling passes.
+- Label manifests report throughput, cache use, and engine timing diagnostics.
 
 ### Changed
-- **`label --cache-dir` now writes a small metadata envelope (`CacheEntry`: `cache_schema_version`, `created_at`, `schema_version`, engine name/version/fingerprint/fingerprint-mode, `requested_depth`, `multipv`, plus the `observation` itself) instead of a bare `Observation`.** Reverses the previous round's deliberate "scoped-down" cache-tooling choice — that choice reasoned the cache key already folds `SCHEMA_VERSION`/the engine fingerprint so staleness is correctness-safe without needing payload metadata; this round adds the metadata anyway because `cache stats`/`verify`/`prune` now exist and get used, and richer introspection (which schema/engine/depth/multipv a cache dir's entries were written under) has real operational value beyond bare correctness. The cache key hash is unchanged (`label_cache_path` still folds only `SCHEMA_VERSION`, not the new `cache_schema_version`) — envelope format is a read-time parsing concern, not a cache-validity concern. **Consequence:** none for existing cache dirs — every read tries the new v2 format first, falling back to the old bare-`Observation` (v1) shape on parse failure, so pre-existing cache entries keep working unchanged and don't need re-labeling or migrating; only newly-written entries use the richer format.
+
+- Cache entries use a backward-compatible metadata envelope.
 
 ## [0.5.0] — 2026-07-05
 
 ### Added
-- `Observation.requested_depth: Option<u32>` — the depth `label` asked the engine to search to, distinct from `depth` (what it actually reached). `None` on records labeled before this field existed.
-- `filter --require-requested-depth-reached` excludes positions where any non-mate observation's achieved depth fell short of its own `requested_depth`; a no-op on observations with no recorded `requested_depth`. Mate observations are exempt, same rationale as `--min-depth-reached`.
-- `report` shows a requested-depth underreach rate (how many observations with a `requested_depth` fell short of it) when any are present in the dataset
-- `label`/`filter`/etc. `--manifest` gains `requested_depth_total`/`requested_depth_underreach` counters
-- `select` command — picks positions worth a closer look/re-label instead of re-labeling an entire dataset at higher depth. `--strategy uncertain` ranks by `evaluate_quality`'s pass-fraction (reusing `filter`'s exact gates); `--strategy hard` ranks by eval swing/bestmove disagreement/blunder-adjacency (reusing `mine`'s blunder-window detection); `--strategy coverage` prioritizes the thinnest phase/side/eval-bucket combinations (reusing `balance`'s bucket key). Outputs in ranked order, not restored to input order.
-- `label --cache-dir PATH` caches each observation as a sharded, content-addressed JSON file keyed on `(sfen, engine name, engine version, engine options, requested depth, multipv, schema version)`, so repeated experiments over the same positions reuse a cached observation instead of re-running the engine. No database — plain files. Cache hit/miss counts appear in `--manifest`.
-- `SourceInfo.root_id`/`variation_id`/`branch_from_ply` (all `Option`) — `root_id` is shared by a KIF game's mainline and every variation branching from it; `variation_id`/`branch_from_ply` are set on variation records only. `None` on CSA-extracted positions (no variation concept) and on JSONL predating this field.
-- `label --engine-fingerprint-mode content|metadata|none` (default `content`) folds the engine binary itself into the `--cache-dir` cache key, on top of its USI-reported `id name`/`id version` — those strings are controlled by the engine and aren't guaranteed to change after a local rebuild, so relying on them alone risked a cache hit silently reusing labels produced by a different executable. `content` hashes the binary's bytes (read once at startup); `metadata` hashes its canonical path/size/mtime instead (cheaper, but invalidates on every rebuild into a fresh path even when the bytes are unchanged); `none` restores the original identity-strings-only behavior. If the engine path can't be read/stat'd (e.g. `--engine` is a bare name resolved via `PATH`, which `fs::read`/`fs::canonicalize` can't follow), fingerprinting degrades gracefully to `none` for that run with a warning, rather than failing `label` outright over a case that worked before this flag existed. `--manifest` gains `engine_fingerprint_mode` when `--cache-dir` is used.
-- `Observation.score_perspective: ScorePerspective` (`side_to_move`/`black`) makes explicit which side a `cp` value's sign is relative to. USI's `info score cp` is side-to-move-relative by protocol convention and `label` never converts it, so every observation `label` produces is `side_to_move`; `#[serde(default)]` (no `skip_serializing_if`) loads older JSONL missing this field as `side_to_move` too, which is exactly what that data always meant.
-- `Observation.bestmove_kind: Option<BestMoveKind>` (`resign`/`win`/`no_move`) classifies a `bestmove` that's a special USI token rather than an ordinary move. `None` (absent on the wire) for the common case of an ordinary move, including on JSONL predating this field.
-- `shogiesa_core::{effective_bestmove_kind, bestmove_agreement, has_special_bestmove}` — shared helpers that classify a `bestmove` (falling back to classifying the literal string when `bestmove_kind` is absent, so older JSONL benefits too) and compute agreement while excluding special tokens from the comparison. `report` shows a special-bestmove rate (fraction of labeled positions with at least one `resign`/`win`/`none` observation) when any are present.
-- `split --by-source --max-open-writers N` (default 256) bounds how many per-source output files are held open at once, evicting (and, on re-encounter, reopening in append mode) the least-recently-written file when a corpus has more distinct source games than the limit.
+
+- Requested-depth provenance, underreach gates, selection strategies, content-addressed label
+  cache, engine fingerprinting, variation root IDs, score perspective, and special-bestmove kinds.
+- `split --max-open-writers` bounds file descriptors for many-source corpora.
 
 ### Changed
-- `SCHEMA_VERSION` bumped to 6 and pack `FORMAT_VERSION` bumped to 6 for the new `Observation.requested_depth` field; old `.shgpk` files are not readable by this version
-- `label --replace-existing`'s dedup now also matches on `requested_depth` (treating a legacy `None` as a wildcard), so "requested 12, reached 8" and "requested 8, reached 8" are no longer collapsed into the same entry
-- `validate` now reads its input line-by-line instead of loading the whole file into memory, so it stays memory-flat on multi-GB JSONL
-- `label` now streams its input and output through a bounded reader/worker-pool/writer pipeline instead of loading the whole dataset into memory and collecting the whole labeled result before writing anything; memory now scales with `--jobs`, not with dataset size. Output order matches input order by default; `label --unordered-output` opts out of that for higher throughput. `label` no longer depends on `rayon`.
-- `SCHEMA_VERSION` bumped to 7 and pack `FORMAT_VERSION` bumped to 7 for the new `SourceInfo` fields; old `.shgpk` files are not readable by this version
-- `split --train/--valid/--test` now groups by `source.root_id` when present, falling back to stripping the `path`'s `#varN@ply` suffix (its previous, sole mechanism) for records without `root_id`
-- Every persistent/reproducibility-critical hash (`label --cache-dir` cache keys, `--manifest`'s `input_hash`, `split`'s train/valid/test bucket assignment, `sample`/`select`'s seeded tie-breaks) now uses `blake3` instead of `std::collections::hash_map::DefaultHasher`. `DefaultHasher` is deterministic within one build, but std's own docs disclaim stability *across Rust toolchain versions* — for a tool whose purpose is reproducible splits/samples/caches, that was a latent risk. **Consequence:** re-running `split`/`sample`/`select` with the same `--seed` after upgrading will not reproduce output made before this upgrade (expected — the new hash no longer depends on toolchain internals going forward; re-run once on this version and results are stable across every future toolchain). Every existing `label --cache-dir` entry becomes a permanent, silent miss after upgrading (old cache dirs can be deleted). `RunManifest.input_hash` changes from a 16-hex-char digest to a 64-hex-char one; a new `fingerprint_algorithm` field (`"blake3"`) distinguishes manifests written after this change from ones written before (which lack the field)
-- `SCHEMA_VERSION` bumped to 8 and pack `FORMAT_VERSION` bumped to 8 for the new `Observation.score_perspective`/`bestmove_kind` fields; old `.shgpk` files are not readable by this version
-- **`filter --eval-min`/`--eval-max` now compare against Black-perspective cp instead of the raw side-to-move-relative value USI reports.** Previously, "+300" meant "good for whoever's turn it was" — so the same absolute position could pass or fail an eval-range gate depending only on whose turn it was, and a dataset's eval-range filtering was inconsistent across roughly half its positions (whichever side wasn't Black). `balance --by eval-bucket` and `report`'s eval histogram/cross-tabs are normalized the same way, fixing the same inconsistency there (previously `eval bucket x side`'s row axis mixed both perspectives under one bucket, which couldn't actually compare Black-to-move vs. White-to-move eval distributions on a shared scale). New `cp_from_black_perspective`/`cp_from_side_to_move_perspective` utilities in `shogiesa-core` centralize the conversion. **Consequence:** `filter --eval-min/--eval-max` may keep/drop a different set of positions than before for any dataset containing White-to-move positions; `balance --by eval-bucket` may form different buckets. This flag's 0.2.0-era description as an "absolute cp range gate" was already inaccurate (it was always side-to-move-relative) — this change makes it actually absolute.
-- **Every bestmove-agreement check now excludes special tokens (`resign`/`win`/`none`) from the comparison instead of treating them as an ordinary move string.** Previously, one engine/observation resigning while another returned a real move registered as a *disagreement* — a false positive unrelated to actual position ambiguity, since giving up isn't an opinion about which move is best. This affected `filter --require-bestmove-agreement`, `evaluate_quality`'s inline gate, `stability`'s serialized `StabilityInfo.bestmove_agreement`/`engine_bestmove_agreement` fields, `select --strategy hard`'s hardness ranking, and `report`'s "depth disagree"/"engine disagree" counters — all five now route through shared `shogiesa_core::bestmove_agreement`/`engine_bestmove_agreement` instead of five independent raw-string comparisons. Falls back to classifying the literal `bestmove` string when `bestmove_kind` is absent, so older JSONL benefits immediately, not just newly-labeled data. **Consequence:** any of the above may keep/rank/report positions differently than before for datasets containing resign/win/none observations.
-- `sample` and `select --strategy uncertain/coverage` now stream their input and keep a bounded top-`--count` heap instead of materializing the whole dataset into memory first; memory now scales with `--count`, not with dataset size. `coverage` reads its input twice (tally bucket sizes, then rank) since a bucket's size isn't known until every position naming it has been seen. Output is provably identical to the previous full-materialize-sort-truncate code (same tie-break chain: primary rank, then `seeded_hash`, then original index) — confirmed by golden-output tests captured against the pre-refactor binary, including a fixture that forces a genuine tie contest via a duplicated sfen. `select --strategy hard` is unchanged (still fully materializes; its blunder-adjacency signal fundamentally needs a whole game's positions grouped together).
-- `balance` now reads its input twice (tally each bucket's size, then keep a bounded top-`--target` heap per bucket, keyed by SFEN) instead of materializing the whole dataset into memory first; memory now scales with `(bucket count × target)`, not with dataset size. Output is provably identical to the previous full-materialize-sort-truncate code, confirmed by golden-output tests captured against the pre-refactor binary (including a forced multi-way tie contest via a duplicated sfen).
-- `report` now streams its input in a single pass instead of materializing the whole dataset and then re-scanning it three more times (once for source-file counts, once via `candidate_coverage_stats`, once via `requested_depth_stats`) — collapsed into one pass alongside every other stat, so it no longer materializes the record set; memory now scales with distinct SFEN/source-file count, not total records. Output is provably identical to the pre-refactor code, confirmed by a golden-output test covering every stat `report` prints (multi-engine agreement/disagreement, special-bestmove rate, MultiPV coverage, requested-depth underreach, duplicate SFENs, tag mismatch, invalid SFEN, broken JSON, unlabeled records) against the pre-refactor binary.
-- `load_records` (still used by `mine` and `select --strategy hard`) now scans its input in one pass instead of two (it previously scanned once to count broken lines, then again to parse) — same output, less redundant CPU.
-- `split --by-source` no longer keeps every distinct source game's output file open for the whole run (real FD-limit exposure on large multi-source corpora); see `--max-open-writers` above. A source's first write this run still truncates a pre-existing file at that path exactly as before; every subsequent write (whether the file is still open or was evicted and reopened) appends, so no positions are lost across an eviction.
 
-### Fixed
-- `extract --dedup-zobrist` no longer collapses every unparseable SFEN into a single sentinel hash (`0`); each unparseable position is now individually warned about and counted as skipped, instead of the first bad SFEN silently absorbing all later, unrelated bad SFENs as "duplicates"
-- `label --cache-dir` writes are now atomic (temp file + rename) instead of a direct `fs::write`, so a crash/kill/disk-full mid-write can no longer leave a torn JSON file visible to a concurrent `label` process sharing the same cache dir
-
----
+- Label and validate paths became streaming; deterministic hashes moved to BLAKE3.
+- Train/valid/test split groups KIF variations with their source root.
+- JSONL schema and pack format advanced through 6, 7, and 8.
 
 ## [0.4.0] — 2026-07-04
 
+### Added
+
+- MultiPV candidates, policy margins, score bounds, cross-engine disagreement, source-aware split,
+  quality explanations, dry-run filtering, run manifests, and richer reports.
+- Cross-platform CI, cargo-audit, and core benchmarks.
+
 ### Fixed
-- KIF: support `同` (same-square) notation; previously truncated extraction of any game containing it
-- KIF: stop cleanly at `変化` (variation) blocks instead of misapplying moves and truncating extraction
-- USI: `analyse()`/`handshake()` timeouts are now elapsed-time based, so an engine that streams `info` without ever sending `bestmove` can no longer hang `label` forever
-- USI: `analyse()` now reports the depth the engine actually reached instead of blindly echoing the requested depth, so an engine that stops early (e.g. a forced mate) no longer mislabels a shallow observation as the target depth
-- `split`: propagate per-file I/O errors instead of panicking
-- `label`: warn (instead of silently dropping) when a worker thread's USI engine fails to launch
-- USI: `analyse()`'s `policy_margin_cp` now also checks the bestmove's (rank 1's) own `ScoreBound`, not just the runner-up's — a lowerbound/upperbound-tagged bestmove score (possible with aspiration-window searches) was still being used as a confirmed evaluation for the margin subtraction
-- `split --train/--valid/--test`: a KIF variation's positions now hash into the same split bucket as the mainline game it branched from, instead of independently by its suffixed `source.path` — previously a variation and its mainline (which share a parent position) could land in different splits, leaking correlated positions across train/valid/test
-- `shogiesa-pack`'s module doc comment was still describing format version 4 and didn't mention the per-observation `score_bound` byte added when `FORMAT_VERSION` bumped to 5 — both fixed to match the actual encoding
+
+- KIF same-square notation, USI timeout handling, achieved-depth reporting, split I/O errors,
+  variation leakage, and bounded-score handling.
 
 ### Changed
-- `PositionRecord::fill_stability()` and `filter --max-score-swing-cp` now share one `score_swing()` implementation
-- `SCHEMA_VERSION` bumped to 2 and pack `FORMAT_VERSION` bumped to 2 for the new `Observation.policy_margin_cp` field; old `.shgpk` files are not readable by this version
-- `SCHEMA_VERSION` bumped to 3 and pack `FORMAT_VERSION` bumped to 3 for the new `StabilityInfo.engine_bestmove_agreement`/`engine_score_swing_cp` fields; old `.shgpk` files are not readable by this version
-- `SCHEMA_VERSION` bumped to 4 and pack `FORMAT_VERSION` bumped to 4 for the new `Observation.candidates`/`CandidateMove.score_bound` fields; old `.shgpk` files are not readable by this version
-- `SCHEMA_VERSION` bumped to 5 and pack `FORMAT_VERSION` bumped to 5 for the new `Observation.score_bound` field; old `.shgpk` files are not readable by this version
-- `filter`'s gate-checking (min observations, phase, mate/in-check/capture exclusion, eval range, score swing, policy margin, bestmove/engine agreement) moved into `shogiesa_core::evaluate_quality()`, driven by a new `QualityConfig`/`QualityDecision`, so the decision logic lives in one place instead of being closed inside the CLI. `filter`'s stderr drop-reason output is unchanged.
-- `label` now runs on a local rayon thread pool instead of a process-global one
 
-### Added
-- `filter --min-depth-reached N` excludes positions where any non-mate observation's achieved depth is below `N`; mate observations are exempt since an engine stopping short of the requested depth is dominantly caused by finding a forced mate (a confirmed result), not a weak search — gating on depth without this exemption would penalize the most reliable observations
-- `filter --explain-out PATH` writes every rejected record to a JSONL file as `{"record": ..., "quality": ...}`, pairing the dropped record with its full `QualityDecision` (every failing reason, not just the first one used for the stderr breakdown); `QualityDecision`/`QualityReason` gained `Serialize` for this
-- `Observation.score_bound: ScoreBound` — whether the bestmove's own score is a confirmed evaluation or a search bound, populated from the engine's rank-1 `info` line independent of MultiPV. Previously only `CandidateMove.score_bound` carried this, so a plain single-PV label whose score was a lowerbound/upperbound (e.g. an aspiration-window fail-high/low) silently lost the information.
-- `filter --require-exact-score` excludes positions where any observation's score is a search bound rather than a confirmed evaluation
-- `filter --require-policy-margin` excludes positions where no observation has a computed `policy_margin_cp` at all — unlike `--min-policy-margin-cp` (a no-op when every margin is unset), this requires a margin to have been computed in the first place
-- `report` shows an observation-level `score_bound` distribution (distinct from the existing MultiPV-candidate-level one, which is unaffected and stays conditional on MultiPV usage) — this one is unconditional, so it surfaces label confidence for plain single-PV-labeled datasets too
-- `filter --dry-run` reports what would be kept/dropped (and why) without writing `--out`, which becomes optional in this mode; combine with `--manifest` for a structured preview of a filter config's effect with no output file
-- `report` shows MultiPV-candidate coverage and a `score_bound` (exact/lowerbound/upperbound) distribution when `label --multipv N` (N≥2) was used, shared with the `--manifest` fields of the same name via one `candidate_coverage_stats()` helper instead of duplicating the tally
-- `filter`/`balance`/`sample`/`pack`/`label --manifest PATH` writes an opt-in run manifest (JSON): shogiesa version, git sha, schema/pack-format version, full command args, input path + a non-cryptographic content hash (change-detection only, not a verifiable checksum), records read/kept/dropped, drop-reason counts, labeled/unlabeled record counts, MultiPV-candidate coverage, score-bound distribution, and (for `filter`) the resolved `QualityConfig` or (for `label`) engine name/depths/MultiPV/engine options/jobs/engine-launch-failure count. `split` is not covered — it already has its own tailored `manifest.json`.
-- `Observation.candidates: Vec<CandidateMove>` — every MultiPV rank from a `label --multipv N` (N≥2) pass (not just the top-2 used for `policy_margin_cp`), each with its own `multipv`/`bestmove`/`score`/`score_bound`/`pv`. Populated only when MultiPV≥2 was actually used, matching `policy_margin_cp`'s existing convention (empty otherwise, so ordinary single-PV labeling gains no output size). `ScoreBound` (`exact`/`lowerbound`/`upperbound`) distinguishes a confirmed evaluation from a search bound, replacing the internal boolean that only asked "is this a bound at all".
-- KIF: `変化` (variation/branch) blocks are now extracted as additional positions, not just cleanly skipped. Each variation always branches from the mainline (never from another variation — nested variations are out of scope), and gets its own `source.path` suffix (`game.kif#varN@ply`) so it can't collide with the mainline's positions or with a sibling variation, keeping `split --by-source`/`mine`'s per-source-path grouping correct.
-- Cross-engine (teacher ensemble) disagreement signal: `stability`/`filter`/`report` now distinguish disagreement *between distinct engines* (each engine's deepest observation as its vote) from disagreement across depths of the same engine, which the existing `bestmove_agreement`/`score_swing_cp` metrics conflated. New `filter --require-engine-agreement` / `--max-engine-score-swing-cp` gates (no-op on positions labeled by only one engine — see `label --engine-name` to label with multiple engines against the same file) and a `report` engine-disagreement rate.
-- `label --skip-existing` / `--replace-existing` (mutually exclusive) — skip or overwrite an observation from the same engine at a depth already covered, instead of always appending a duplicate. Both key off the depth the engine *actually achieved*, not the one requested, so they behave correctly even when an engine stops early (e.g. a forced mate) and under-reaches the target depth across repeated runs.
-- `split --train/--valid/--test` — a source-aware, seeded ratio split (`--valid-frac`/`--test-frac`) that assigns each source game's positions to exactly one of the three splits, so near-duplicate positions from the same game can't leak across train/valid/test. Writes a `manifest.json` with the seed, requested fractions, and actual per-split position/source counts (which deviate from the requested fractions since games vary in length — that's correct no-leakage behavior).
-- `report` shows cp/mate ratio, average score swing (plus a histogram of the existing `score_swing_cp` metric — not a new composite score), average `policy_margin_cp`, and eval-bucket × phase / eval-bucket × side cross-tabs
-- `label --multipv N` (N≥2) sends `setoption name MultiPV`, parses the runner-up `info` line, and populates each observation's `policy_margin_cp` (bestmove's cp score minus the runner-up's) — a low margin means a weak teacher label even when a bestmove exists. Lowerbound/upperbound-tagged runner-up lines are ignored rather than trusted as a real evaluation.
-- `filter --min-policy-margin-cp`, excluding positions whose margin is too small; observations without a computed margin never trigger this gate
-- `filter --exclude-in-check` / `--exclude-capture`, wiring the existing `tags.in_check`/`tags.has_capture` into filtering
-- `filter` prints a per-reason drop-count breakdown to stderr, not just an aggregate skipped count
-- `report` shows in-check ratio and capture ratio
-- `split --by-source` writes a `manifest.json` (input path, schema version, shogiesa version, per-file counts) alongside the split output files
-- `cargo-audit` CI job; `dependabot.yml` for weekly cargo/github-actions updates
-- Cross-platform CI test matrix (ubuntu/windows/macos)
-- `criterion` benchmarks for `shogiesa-core`'s `Sfen::parse` / `Board::apply_normal` / `Board::to_sfen`
-
----
+- Shared quality evaluation replaced duplicated CLI gates.
+- JSONL schema and pack format advanced through 2, 3, 4, and 5.
 
 ## [0.3.0] — 2026-06-28
 
 ### Added
-- `shogiesa-kif` crate — KIF format ingestion (kanji ranks, full-width file digits, promotions, drops, handicap boards); `shogiesa-core` gains a shared `Board`/`PieceType` used by both `shogiesa-csa` and `shogiesa-kif`
-- `shogiesa-pack` crate — compact binary encoding (`b"SHOGIESA"` magic + length-prefixed LE fields) with `shogiesa pack` / `shogiesa unpack` CLI commands
-- `shogiesa stability` — computes `score_swing_cp` / `bestmove_agreement` and attaches `StabilityInfo` to each record
-- `shogiesa mine` — hard-position mining via blunder detection (eval swing) and/or a losing-eval threshold
-- `shogiesa balance` — rebalances a dataset by phase/side/eval-bucket
-- `shogiesa split --by-source` / `shogiesa sample --count --seed` — dataset slicing
-- `label --jobs N` — parallel labeling (one engine process per worker thread)
-- `label --engine-option Key=Value` — USI option passthrough (repeatable)
-- `extract --dedup-zobrist` — Zobrist-hash-based dedup
-- `in_check` / `has_capture` tags are now computed (`Board::is_in_check` / `is_capture`) instead of always `false`
-- `report`: eval-bucket histogram, depth-disagreement count, per-depth observation counts
 
----
+- KIF ingestion, binary pack/unpack, stability calculation, hard-position mining, balancing,
+  source split, sampling, parallel labeling, engine options, Zobrist dedup, and position tags.
 
 ## [0.2.0] — 2026-06-28
 
 ### Added
-- `shogiesa filter` command — stability-based position filtering
-  - `--require-bestmove-agreement` — all observations must agree on bestmove
-  - `--max-score-swing-cp N` — cap on cp difference across observations
-  - `--exclude-mate` — drop positions with any `Score::Mate` observation
-  - `--eval-min` / `--eval-max` — absolute cp range gate
-  - `--min-observations N` — require at least N observations
-  - `--phase opening,middlegame,endgame` — game phase filter
-  - Streaming read/write; JSON errors warned and skipped
-- `shogiesa report` — eval bucket distribution
-  - 200cp-width histogram of deepest-observation scores (ASCII bars)
-  - Labeled / unlabeled position counts
-  - Depth disagreement count (bestmove differs across depths)
-- 8 new filter CLI integration tests
 
----
+- Streaming stability/evaluation filtering and labeled-dataset reporting.
 
 ## [0.1.0] — 2026-06-28
 
 ### Added
-- `shogiesa extract` — CSA game records → SFEN positions JSONL
-  - `--min-ply`, `--max-ply`, `--every-n-plies`, `--dedup`
-  - Board state tracker: CSA `Action::Move` → SFEN without external shogi crate
-  - Drop moves: `from.file == 0` (CSA `00` from-square convention)
-- `shogiesa label` — USI engine evaluation labeling
-  - `shogiesa-usi` crate: stdout reader thread + `mpsc::recv_timeout` for timeout
-  - `Score` enum: `Cp { value: i32 }` / `Mate { moves: i32 }`
-    - JSON: `{"kind":"cp","value":43}` / `{"kind":"mate","moves":3}`
-  - `Observation` fields: `score`, `bestmove`, `nodes`, `time_ms`, `pv`
-  - `fake-usi-engine` binary for integration testing (`--hang` for timeout tests)
-  - Appends to existing observations; re-labelable
-- `shogiesa report` — dataset statistics
-  - Phase/side distribution, ply range, source file counts
-  - Duplicate SFENs, tag mismatches, source dominance, balance warnings
-- `shogiesa validate` — data integrity check
-  - Broken JSON, invalid SFENs (`Sfen::parse()`), duplicate SFENs, tag mismatches
-  - `--strict` flag: exit 1 on any issue (CI mode)
-- `shogiesa-core` domain types
-  - `SideToMove` / `GamePhase` enums (`serde(rename_all = "lowercase")`, JSON unchanged)
-  - `Sfen::parse()` — syntactic validator (field count, rank width, side, hand, move count)
-- `shogiesa` meta crate re-exporting core/csa/usi
-- GitHub Actions CI (fmt + clippy -D warnings + test)
-- CLI integration tests (`assert_cmd` / `predicates` / `tempfile`)
-- `LICENSE-MIT` and `LICENSE-APACHE`
+
+- CSA extraction, USI labeling, validation/reporting, shared domain types, CI, fixtures, and dual
+  MIT/Apache-2.0 licensing.
 
 [Unreleased]: https://github.com/kent-tokyo/shogiesa/compare/v0.10.0...HEAD
 [0.10.0]: https://github.com/kent-tokyo/shogiesa/compare/v0.9.2...v0.10.0
 [0.9.2]: https://github.com/kent-tokyo/shogiesa/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/kent-tokyo/shogiesa/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/kent-tokyo/shogiesa/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/kent-tokyo/shogiesa/compare/v0.7.0...v0.8.0
+[0.7.0]: https://github.com/kent-tokyo/shogiesa/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/kent-tokyo/shogiesa/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/kent-tokyo/shogiesa/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/kent-tokyo/shogiesa/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/kent-tokyo/shogiesa/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/kent-tokyo/shogiesa/compare/v0.1.0...v0.2.0

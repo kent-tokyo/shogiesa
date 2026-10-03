@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-10-03T00:11:31Z",
-  "source_commit": "3f9449cd33a6d7c97d418adacf8148d6c1db602a",
+  "generated_at": "2026-10-03T00:23:15Z",
+  "source_commit": "da588f7493cef898f93b6181fc5773ba5abbed47",
   "worktree_clean": true,
   "harness_sha256": "162844fd9cbf704591de9a8c7c0549428018b9e8f0a1e7131c6023d79b6f5573",
   "shogiesa_version": "0.10.0",

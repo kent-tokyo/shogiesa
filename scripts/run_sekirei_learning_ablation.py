@@ -115,7 +115,7 @@ def main() -> int:
     parser.add_argument("--positions", type=int, default=512)
     parser.add_argument("--arm-size", type=int, default=64)
     parser.add_argument("--diagnostic-nodes", type=int, default=2_000)
-    parser.add_argument("--teacher-nodes", type=int, default=200)
+    parser.add_argument("--teacher-nodes", type=int, default=2_000)
     parser.add_argument("--seeds", type=parse_seeds, default=parse_seeds("101,202,303"))
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--keep-work-dir", type=Path)

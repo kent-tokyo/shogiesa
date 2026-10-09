@@ -25,6 +25,20 @@ The fixture-backed path/order/worker comparison was completed on 2026-10-03. Its
 artifact is [`../measurements/reproducibility_matrix_2026-10-03.json`](../measurements/reproducibility_matrix_2026-10-03.json),
 and `scripts/run_reproducibility_matrix.sh` regenerates it.
 
+Run the local streaming/resource baseline against a prebuilt release binary with:
+
+```bash
+cargo build --release -p shogiesa-cli
+python3 scripts/run_resource_baseline.py \
+  --records 100000 \
+  --out docs/measurements/resource_baseline_100k.json
+```
+
+The harness records command wall time, sampled peak RSS and open file descriptors, disk headroom,
+binary and dataset hashes, output sizes, and explicit measurement limits. A dirty-tree run is a
+provisional diagnostic; the roadmap row is complete only for an artifact built from an identified
+clean commit.
+
 Every run must retain the exact command line, repository commit, input/output hashes, engine and
 weight identity, options, seed, hardware/OS, and any blocked dependency or network reason. Missing
 measurements remain `unverified`; small fixtures do not substitute for scale or training evidence.

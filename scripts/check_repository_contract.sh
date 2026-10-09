@@ -23,6 +23,8 @@ required_files=(
   scripts/release_readiness.sh
   scripts/run_local_measurement_smoke.sh
   scripts/run_reproducibility_matrix.sh
+  scripts/check_sekirei_compat.sh
+  scripts/run_resource_baseline.py
   docs/measurements/reproducibility_matrix_2026-10-03.json
   tests/fixtures/sample.csa
   tests/fixtures/sample.kif
@@ -137,6 +139,9 @@ check_marker tests/fixtures/recipe_run_manifest.golden '"run_version": 1' 'recip
 check_marker tests/fixtures/recipe_forward_dependency.json '"id": "consume"' 'recipe forward dependency rejection input'
 check_marker tests/fixtures/recipe_output_escape.json '"../outside.shgpk"' 'recipe output escape rejection input'
 check_marker crates/shogiesa-cli/tests/cli_test.rs 'fn recipe_run_verify_and_reuse_stage_outputs' 'recipe run verify reuse regression'
+check_marker crates/shogiesa-cli/tests/cli_test.rs 'fn validate_strict_rejects_future_schema_and_reports_version' 'strict validate future-schema regression'
+check_marker scripts/check_sekirei_compat.sh 'shogiesa\.sekirei-compat\.v1' 'Sekirei compatibility artifact schema'
+check_marker scripts/run_resource_baseline.py 'shogiesa\.resource-baseline\.v1' 'resource baseline artifact schema'
 check_marker docs/measurements/reproducibility_matrix_2026-10-03.json '"overall": "pass"' 'reproducibility matrix result'
 check_marker docs/measurements/reproducibility_matrix_2026-10-03.json '"axis": "worker_count"' 'reproducibility worker-count axis'
 check_marker tests/fixtures/pack_bad_magic.hex '^00000000000000000b00$' 'pack bad magic bytes'

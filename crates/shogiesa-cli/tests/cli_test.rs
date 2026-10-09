@@ -1156,10 +1156,12 @@ total lines    : 1
 valid JSON     : 0
 valid records  : 0
 broken lines   : 1
+invalid records: 0
 invalid SFENs  : 0
 duplicate SFENs: 0
 tag mismatches : 0  (side_to_move vs SFEN)
 schema versions: {}
+unsupported schema versions: {}
 
 WARN: 1 broken lines
 "#;
@@ -1231,6 +1233,56 @@ fn validate_strict_broken_json_exits_1() {
         ])
         .assert()
         .failure();
+}
+
+#[test]
+fn validate_strict_rejects_valid_json_with_invalid_record_shape() {
+    let mut f = NamedTempFile::new().unwrap();
+    writeln!(
+        f,
+        r#"{{"schema_version":11,"sfen":"startpos","observations":[]}}"#
+    )
+    .unwrap();
+    f.flush().unwrap();
+
+    shogiesa()
+        .args([
+            "validate",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--strict",
+        ])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("valid JSON     : 1"))
+        .stdout(predicate::str::contains("valid records  : 0"))
+        .stdout(predicate::str::contains("broken lines   : 0"))
+        .stdout(predicate::str::contains("invalid records: 1"))
+        .stdout(predicate::str::contains("WARN: 1 invalid position records"));
+}
+
+#[test]
+fn validate_strict_rejects_future_schema_and_reports_version() {
+    let f = make_labeled_jsonl(&[position_with_version(
+        shogiesa_core::SCHEMA_VERSION + 1,
+        serde_json::json!([]),
+        None,
+    )]);
+
+    shogiesa()
+        .args([
+            "validate",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--strict",
+        ])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("valid JSON     : 1"))
+        .stdout(predicate::str::contains("invalid records: 1"))
+        .stdout(predicate::str::contains(
+            "unsupported schema versions: {12: 1}",
+        ));
 }
 
 #[test]

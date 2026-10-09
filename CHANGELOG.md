@@ -5,6 +5,14 @@ Compare links at the end provide the complete commit history.
 
 ## [Unreleased]
 
+- `validate --strict` now rejects valid JSON that is not a valid typed `PositionRecord`, including
+  unsupported future schema versions and missing required fields, and reports those separately
+  from malformed JSON.
+- Added a tag-pinned Sekirei compatibility harness that compares the canonical schema fixture and
+  runs the released trainer's typed position-reader tests without modifying its checkout.
+- Added a deterministic local resource-baseline harness for 100k/1M streaming measurements with
+  wall-time, sampled RSS/FD, disk, binary, and artifact provenance.
+
 ## [0.11.0] — 2026-10-03
 
 ### Added

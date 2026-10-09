@@ -16,7 +16,10 @@ use shogiesa_core::{
     SearchLimitKind, SideToMove, SourceInfo, UsiMove, bestmove_agreement,
     cp_from_black_perspective, effective_bestmove_kind, engine_bestmove_agreement,
     evaluate_quality, has_special_bestmove, parse_usi_move, phase_from_ply,
-    requested_depth_underreached, schema::parse_json_line, score_swing, sfen::Sfen,
+    requested_depth_underreached,
+    schema::{PositionRecordParseError, parse_json_line},
+    score_swing,
+    sfen::Sfen,
     zobrist_from_sfen,
 };
 use shogiesa_pack as pack;
@@ -8687,13 +8690,16 @@ fn cmd_validate(args: ValidateArgs) -> Result<()> {
     let mut total_lines = 0usize;
     let mut valid_json = 0usize;
     let mut valid_records = 0usize;
+    let mut invalid_records = 0usize;
+    let mut unsupported_schema_versions = BTreeMap::<u32, usize>::new();
     let mut tag_mismatches = 0usize;
     let mut invalid_sfens = 0usize;
     let mut schema_versions = BTreeMap::<u32, usize>::new();
     let mut seen_sfens: HashSet<String> = HashSet::new();
     let mut duplicate_sfens = 0usize;
 
-    for line in reader.lines() {
+    for (line_index, line) in reader.lines().enumerate() {
+        let source_line = line_index + 1;
         let line = line.with_context(|| format!("cannot read {:?}", args.input))?;
         if line.trim().is_empty() {
             continue;
@@ -8705,8 +8711,18 @@ fn cmd_validate(args: ValidateArgs) -> Result<()> {
         }
         valid_json += 1;
 
-        let Ok(rec) = parse_json_line(&line) else {
-            continue;
+        let rec = match parse_json_line(&line) {
+            Ok(rec) => rec,
+            Err(error) => {
+                invalid_records += 1;
+                if let PositionRecordParseError::UnsupportedSchema(version) = &error {
+                    *unsupported_schema_versions
+                        .entry(version.found)
+                        .or_default() += 1;
+                }
+                tracing::warn!(line = source_line, "invalid position record: {error}");
+                continue;
+            }
         };
         valid_records += 1;
 
@@ -8727,22 +8743,27 @@ fn cmd_validate(args: ValidateArgs) -> Result<()> {
     }
 
     let broken = total_lines - valid_json;
-    let has_problems = tag_mismatches > 0 || broken > 0 || invalid_sfens > 0;
+    let has_problems = tag_mismatches > 0 || broken > 0 || invalid_records > 0 || invalid_sfens > 0;
 
     println!("=== shogiesa validate ===");
     println!("total lines    : {total_lines}");
     println!("valid JSON     : {valid_json}");
     println!("valid records  : {valid_records}");
     println!("broken lines   : {broken}");
+    println!("invalid records: {invalid_records}");
     println!("invalid SFENs  : {invalid_sfens}");
     println!("duplicate SFENs: {duplicate_sfens}");
     println!("tag mismatches : {tag_mismatches}  (side_to_move vs SFEN)");
     println!("schema versions: {schema_versions:?}");
+    println!("unsupported schema versions: {unsupported_schema_versions:?}");
 
     if has_problems {
         println!();
         if broken > 0 {
             println!("WARN: {broken} broken lines");
+        }
+        if invalid_records > 0 {
+            println!("WARN: {invalid_records} invalid position records");
         }
         if invalid_sfens > 0 {
             println!("WARN: {invalid_sfens} invalid SFENs");

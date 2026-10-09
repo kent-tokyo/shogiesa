@@ -81,6 +81,33 @@ def jsonl_count(path: Path) -> int:
         return sum(1 for line in source if line.strip())
 
 
+def stage_corpus(source: Path, destination: Path, max_games: int) -> list[dict[str, str]]:
+    if source.is_file():
+        candidates = [source]
+        root = source.parent
+    else:
+        candidates = sorted(
+            path
+            for path in source.rglob("*")
+            if path.is_file() and path.suffix.lower() in {".csa", ".kif", ".ki2"}
+        )[:max_games]
+        root = source
+    if not candidates:
+        raise RuntimeError(f"no supported game records found under {source}")
+    destination.mkdir(parents=True)
+    selected = []
+    for index, path in enumerate(candidates):
+        staged = destination / f"{index:04d}{path.suffix.lower()}"
+        shutil.copy2(path, staged)
+        selected.append(
+            {
+                "path": str(path.relative_to(root)),
+                "sha256": sha256_file(path),
+            }
+        )
+    return selected
+
+
 def percentile(values: list[int], fraction: float) -> int | None:
     if not values:
         return None
@@ -148,11 +175,19 @@ def main() -> int:
     parser.add_argument("--nodes", type=int, default=10_000)
     parser.add_argument("--positions", type=int, default=256)
     parser.add_argument("--mine-count", type=int, default=64)
+    parser.add_argument("--max-games", type=int, default=12)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--keep-work-dir", type=Path)
     args = parser.parse_args()
-    if args.nodes <= 0 or args.positions <= 0 or args.mine_count <= 0:
-        parser.error("--nodes, --positions, and --mine-count must be greater than zero")
+    if (
+        args.nodes <= 0
+        or args.positions <= 0
+        or args.mine_count <= 0
+        or args.max_games <= 0
+    ):
+        parser.error(
+            "--nodes, --positions, --mine-count, and --max-games must be greater than zero"
+        )
     sekirei_dir = args.sekirei_dir.resolve()
     corpus = args.corpus.resolve()
     shogiesa = args.shogiesa.resolve()
@@ -221,6 +256,8 @@ def main() -> int:
     mined = work_dir / "mined.jsonl"
     baseline_manifest = work_dir / "baseline-manifest.json"
     candidate_manifest = work_dir / "candidate-manifest.json"
+    staged_corpus = work_dir / "corpus"
+    selected_inputs = stage_corpus(corpus, staged_corpus, args.max_games)
 
     steps.append(
         run_logged(
@@ -229,7 +266,7 @@ def main() -> int:
                 str(shogiesa),
                 "extract",
                 "--input",
-                str(corpus),
+                str(staged_corpus),
                 "--recursive",
                 "--min-ply",
                 "20",
@@ -244,6 +281,9 @@ def main() -> int:
             work_dir,
         )
     )
+    extracted_count = jsonl_count(extracted)
+    if extracted_count == 0:
+        raise RuntimeError("corpus yielded zero positions; refusing an empty measurement")
     steps.append(
         run_logged(
             "sample",
@@ -262,6 +302,9 @@ def main() -> int:
             work_dir,
         )
     )
+    sampled_count = jsonl_count(sampled)
+    if sampled_count == 0:
+        raise RuntimeError("sampling yielded zero positions; refusing an empty measurement")
 
     def label_command(
         engine: Path, engine_name: str, output: Path, manifest: Path
@@ -397,8 +440,9 @@ def main() -> int:
                 if corpus.is_relative_to(sekirei_dir)
                 else str(corpus)
             ),
-            "extracted_records": jsonl_count(extracted),
-            "sampled_records": jsonl_count(sampled),
+            "selected_inputs": selected_inputs,
+            "extracted_records": extracted_count,
+            "sampled_records": sampled_count,
             "sampled_sha256": sha256_file(sampled),
         },
         "delta": analyse_delta(stable, baseline_engine_name, candidate_engine_name),

@@ -43,8 +43,9 @@ synthetic input after `pack` and before `unpack`; no measured command includes t
 For a fixed-node delta between two immutable Sekirei releases, use
 `scripts/run_sekirei_version_delta.py`. It builds both tags outside their working tree, fixes
 `Threads=1` and `SpecTopN=0`, labels the identical sampled corpus, and records disagreement and
-absolute cp-delta summaries. This is a search-output diagnostic, not an Elo or teacher-quality
-claim.
+absolute cp-delta summaries. Input games are selected in sorted-path order up to `--max-games`,
+with every selected path and SHA-256 retained; an empty extraction fails the run. This is a
+search-output diagnostic, not an Elo or teacher-quality claim.
 
 Every run must retain the exact command line, repository commit, input/output hashes, engine and
 weight identity, options, seed, hardware/OS, and any blocked dependency or network reason. Missing

@@ -1,0 +1,117 @@
+{
+  "schema": "shogiesa.resource-baseline.v1",
+  "generated_at": "2026-10-09T14:40:37Z",
+  "status": "pass",
+  "repository": {
+    "commit": "4662c000dde065e0e1eed98450a54346d0cbd5fd",
+    "working_tree_dirty": false,
+    "changed_paths": []
+  },
+  "binary": {
+    "path": "/Users/k_tanabe/Documents/Documents/oss_rust/shogiesa/target/release/shogiesa",
+    "sha256": "d3f0e0bedf3b18dd5ad44cf14e88c8a5a3658faeadf5e0e55758f413fa2406df",
+    "version": "shogiesa 0.11.0"
+  },
+  "environment": {
+    "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.13.6",
+    "logical_cpus": 10,
+    "sampling_interval_seconds": 0.01,
+    "disk_free_before_bytes": 1332260864,
+    "disk_free_after_bytes": 1100603392,
+    "disk_consumed_bytes": 231657472
+  },
+  "dataset": {
+    "records": 100000,
+    "generation_seconds": 2.399948,
+    "input_bytes": 100084895,
+    "input_sha256": "4398f546fcc1d104081f8b0d7bc8b8d3be1c126f83aeb4a44bee170700e872f1",
+    "fixture_sha256": "83e7460c8b3d106bfc2cfb6d99e31a36ac2e3f5ad0334e324fcc91a84ff9fba2",
+    "pack_bytes": 34238905,
+    "pack_sha256": "fb06a258318d4986af21026d02ea5f7042f45e8c91dff975633683bfb8c4e08e",
+    "unpacked_bytes": 95784895,
+    "unpacked_sha256": "afbae0e43981913046dca711fbae0745035cb46c53fef727643b0c6641da13e3",
+    "unpacked_records": 100000
+  },
+  "measurements": [
+    {
+      "name": "validate",
+      "command": [
+        "/Users/k_tanabe/Documents/Documents/oss_rust/shogiesa/target/release/shogiesa",
+        "validate",
+        "--strict",
+        "--input",
+        "/var/folders/_h/f8_99c4s0vn6f7lb4p3tq6km0000gn/T/shogiesa-resource-apzy4nk2/input.jsonl"
+      ],
+      "exit_code": 0,
+      "wall_time_seconds": 0.927983,
+      "peak_rss_bytes": 19431424,
+      "max_open_fds": 4,
+      "fd_measurement": "lsof",
+      "samples": 31,
+      "stdout_bytes": 283,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "report",
+      "command": [
+        "/Users/k_tanabe/Documents/Documents/oss_rust/shogiesa/target/release/shogiesa",
+        "report",
+        "--input",
+        "/var/folders/_h/f8_99c4s0vn6f7lb4p3tq6km0000gn/T/shogiesa-resource-apzy4nk2/input.jsonl"
+      ],
+      "exit_code": 0,
+      "wall_time_seconds": 0.279101,
+      "peak_rss_bytes": 21102592,
+      "max_open_fds": 4,
+      "fd_measurement": "lsof",
+      "samples": 9,
+      "stdout_bytes": 2306,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "pack",
+      "command": [
+        "/Users/k_tanabe/Documents/Documents/oss_rust/shogiesa/target/release/shogiesa",
+        "pack",
+        "--input",
+        "/var/folders/_h/f8_99c4s0vn6f7lb4p3tq6km0000gn/T/shogiesa-resource-apzy4nk2/input.jsonl",
+        "--out",
+        "/var/folders/_h/f8_99c4s0vn6f7lb4p3tq6km0000gn/T/shogiesa-resource-apzy4nk2/dataset.shgpk"
+      ],
+      "exit_code": 0,
+      "wall_time_seconds": 0.397797,
+      "peak_rss_bytes": 4276224,
+      "max_open_fds": 5,
+      "fd_measurement": "lsof",
+      "samples": 13,
+      "stdout_bytes": 0,
+      "stderr_bytes": 127
+    },
+    {
+      "name": "unpack",
+      "command": [
+        "/Users/k_tanabe/Documents/Documents/oss_rust/shogiesa/target/release/shogiesa",
+        "unpack",
+        "--input",
+        "/var/folders/_h/f8_99c4s0vn6f7lb4p3tq6km0000gn/T/shogiesa-resource-apzy4nk2/dataset.shgpk",
+        "--out",
+        "/var/folders/_h/f8_99c4s0vn6f7lb4p3tq6km0000gn/T/shogiesa-resource-apzy4nk2/unpacked.jsonl"
+      ],
+      "exit_code": 0,
+      "wall_time_seconds": 0.558249,
+      "peak_rss_bytes": 3850240,
+      "max_open_fds": 5,
+      "fd_measurement": "lsof",
+      "samples": 18,
+      "stdout_bytes": 0,
+      "stderr_bytes": 119
+    }
+  ],
+  "limits": [
+    "Synthetic records vary source provenance and SFEN move count but do not model a real corpus distribution.",
+    "RSS and FD values are sampled and can miss a short-lived peak.",
+    "Generation time is recorded separately and excluded from command wall times."
+  ]
+}

@@ -10,9 +10,12 @@ import re
 import shutil
 import statistics
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
+
+sys.dont_write_bytecode = True
 
 from run_sekirei_version_delta import archive_ref, jsonl_count, sha256_file, stage_corpus
 

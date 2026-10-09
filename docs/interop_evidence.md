@@ -12,11 +12,11 @@ the formats are semantically identical.
 | SFEN -> core/pack | `tests/fixtures/match_position_sfen_*.txt`, pack round-trip tests | SFEN records survive validation and pack/unpack | arbitrary producer-specific metadata |
 | JSONL -> pack -> JSONL | `tests/fixtures/pack_input.jsonl`, `malformed_mixed.jsonl`, `pack_bad_magic.hex`, `pack_truncated_header.hex`, `pack_unsupported_version.hex`, `pack_trailing_bytes.hex`, `pack_wrong_endian_version.hex`, `pack_truncated_record.hex`, `shogiesa-pack` unit tests, and CLI schema fixtures v1-v11 | current format 11 round-trips through JSONL; malformed input is counted and corrupt/unsupported/trailing/wrong-endian/truncated-record bytes fail with stable diagnostic classes; library batch decode distinguishes clean EOF from truncated records; pack manifest records artifact hash and counts | editing pack as a primary format |
 | JSONL -> USI label | `fake-usi-engine` and USI tests | direct USI boundary, limits, timeout/restart diagnostics | any particular engine's strength |
-| JSONL -> Sekirei trainer | `scripts/check_sekirei_compat.sh`; canonical schema 11 fixture vendored by `sekirei-train` | a pinned Sekirei tag depends on `shogiesa-core 0.11.0`, carries the byte-identical fixture, and passes its typed position-reader tests | that shogiesa observations become teacher targets or improve training/playing strength |
+| JSONL -> Sekirei trainer | pinned schema check and 2026-10-10 three-seed pilot | Sekirei 0.3.66 reads typed records; four dataset arms complete one-epoch runs | generalization, match transfer, or Elo improvement |
 | GenSfen/rshogi/cshogi/rsshogi/python-shogi | no external adapter in this checkout | only shared SFEN/JSONL boundary is proposed | native import/export compatibility |
 
-The external-tool row remains an explicit measurement gap. “Compatible” may be claimed only after
-an external round-trip or a loss report is recorded for that tool.
+The named native-format row remains an explicit gap. Claim compatibility only after a round-trip
+or loss report for that exact tool and version.
 
 Run the Sekirei check against an immutable tag without modifying its checkout:
 
@@ -27,5 +27,6 @@ scripts/check_sekirei_compat.sh \
   --out /tmp/sekirei-v0.3.66-compat.json
 ```
 
-The result proves schema ingestion only. Sekirei 0.3.66 deliberately retains shogiesa observations
-as diagnostics while its trainer obtains targets from its own search/cache.
+The schema check proves ingestion only. The fixed-node delta and training pilot are indexed in
+[`measurements/README.md`](measurements/README.md). Sekirei retains shogiesa observations as
+diagnostics while its trainer obtains targets from its own search/cache.

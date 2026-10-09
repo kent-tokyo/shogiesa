@@ -3,8 +3,8 @@
 > Shogi training-data feed for NNUE engines.
 
 shogiesa turns CSA, KIF, KI2, and match-runner records into inspectable training datasets. It
-extracts SFEN positions, labels them through USI engines, filters unstable samples, and writes
-reproducible JSONL or binary-pack artifacts for external trainers such as Sekirei.
+extracts SFEN positions, labels them with USI engines, filters unstable samples, and writes
+reproducible JSONL or binary-pack artifacts for trainers such as Sekirei.
 
 The workspace version and latest verified published release are `0.11.0`. See the
 [GitHub Release](https://github.com/kent-tokyo/shogiesa/releases/tag/v0.11.0), the
@@ -13,16 +13,8 @@ The workspace version and latest verified published release are `0.11.0`. See th
 
 ## Scope
 
-shogiesa creates and inspects data. It is not a Shogi engine, NNUE trainer, GUI, tournament
-manager, or cloud service. Dataset diagnostics are not evidence of training gain or Elo.
-
-Main capabilities:
-
-- CSA/KIF/KI2 and match-runner ingestion;
-- SFEN validation, deduplication, variation-aware provenance, and diagnostics;
-- USI labeling with MultiPV, timeouts, restart handling, cache, and resume;
-- stability, quality, conflict, distribution, and integrity reports; and
-- deterministic split, sampling, shuffle, recipe, JSONL, and pack workflows.
+shogiesa creates and inspects data. It is not an engine, trainer, GUI, tournament manager, or
+cloud service. Dataset diagnostics alone do not establish training gain or Elo.
 
 ## Install
 
@@ -47,18 +39,10 @@ shogiesa report --input labeled.jsonl
 shogiesa filter --input labeled.jsonl --max-score-swing-cp 150 --out train.jsonl
 ```
 
-Directory extraction is shallow unless `--recursive` is specified. Recursive mode reads `.csa`,
-`.kif`, and `.ki2` files in deterministic relative-path order, records relative source paths,
-and does not follow symlinks. An input root that is itself a symlink is rejected.
+Directory extraction is shallow by default. `--recursive` reads `.csa`, `.kif`, and `.ki2` in
+deterministic relative-path order without following symlinks.
 
-The executable is the option-level authority:
-
-```bash
-shogiesa --help
-shogiesa extract --help
-shogiesa label --help
-shogiesa recipe run --help
-```
+CLI help is the option-level authority: use `shogiesa <command> --help`.
 
 ## Workflow
 
@@ -72,8 +56,8 @@ filter / select / mine / balance / stratify → split / shuffle → pack
 report / distribution / validate / dataset-diff
 ```
 
-For reproducible runs, retain the input hash, command line, seed, engine binary/options, weight,
-and generated manifests. Missing identities remain `unknown`; they are never inferred.
+For reproducible runs, retain input hashes, commands, seeds, engine/weight identities, options,
+and generated manifests. Missing identities remain `unknown`.
 
 ## Commands
 
@@ -91,23 +75,22 @@ and generated manifests. Missing identities remain `unknown`; they are never inf
 
 ## Data contract
 
-JSONL is the canonical format. Each record contains a schema version, post-move SFEN, source,
-tags, and optional observations, stability, and result data.
+JSONL is canonical. Each record contains a schema version, post-move SFEN, source, tags, and
+optional observations, stability, and result data.
 
 ```json
 {
   "schema_version": 11,
   "sfen": "lnsgkgsnl/1r5b1/p1ppppppp/1p7/9/2P6/PP1PPPPPP/1B5R1/LNSGKGSNL b - 2",
   "source": { "kind": "csa", "path": "games/example.csa", "ply": 24 },
-  "tags": { "phase": "middlegame", "side_to_move": "black", "in_check": false, "has_capture": true },
+  "tags": { "phase": "middlegame", "side_to_move": "black", "in_check": false },
   "observations": []
 }
 ```
 
 Rust consumers should depend one-way on `shogiesa-core` and call
-`shogiesa_core::schema::parse_json_line`. This preserves the typed record contract, applies
-documented legacy defaults, and rejects unsupported schema versions without coupling shogiesa to
-an engine or trainer.
+`shogiesa_core::schema::parse_json_line`. It applies documented legacy defaults and rejects
+unsupported schema versions without coupling shogiesa to a trainer.
 
 Binary pack is a versioned transport format. Convert it back to JSONL for inspection or diffing.
 See [schema and pack compatibility](docs/design/schema_compatibility.md).
@@ -121,17 +104,20 @@ See [schema and pack compatibility](docs/design/schema_compatibility.md).
 | Rust API boundary | [api_boundary.md](docs/api_boundary.md) |
 | Local interoperability evidence | [interop_evidence.md](docs/interop_evidence.md) |
 | Reproducible recipe record | [dataset_recipe_template.md](docs/design/dataset_recipe_template.md) |
-| Scale and training measurements | [measurement_matrix.md](docs/design/measurement_matrix.md), [training_effect_measurement.md](docs/design/training_effect_measurement.md) |
-| Completed measurement artifacts | [reproducibility matrix](docs/measurements/reproducibility_matrix_2026-10-03.json) |
+| Measurement status and artifacts | [measurement_matrix.md](docs/design/measurement_matrix.md), [measurement index](docs/measurements/README.md) |
+| Training comparison protocol | [training_effect_measurement.md](docs/design/training_effect_measurement.md) |
 | Sekirei and lineprior runbooks | [SEKIREI_GATE_EVALUATION.md](docs/SEKIREI_GATE_EVALUATION.md), [LINEPRIOR_DOGFOOD.md](docs/LINEPRIOR_DOGFOOD.md) |
 | Release checks and evidence | [release_checklist.md](docs/release_checklist.md), [v0.11.0 validation](docs/release_validation_2026-10-03_v0.11.0.md) |
 
 ## Evidence boundary
 
 - SFEN validation checks syntax and conservative material constraints, not full legal-move reachability.
-- Native interoperability with GenSfen, rshogi, cshogi, rsshogi, and python-shogi is unmeasured.
-- Throughput, RSS, training effect, match results, and Elo remain unverified without a dated run
-  that records corpus, commit, hardware, engine/weight, and budget.
+- The checked-in 100k/1M resource runs use synthetic records on one macOS host. They do not prove
+  representative-corpus or cross-platform performance.
+- The three-seed training run is a 48-position, one-epoch pilot. Its small loss differences do not
+  establish generalization or playing strength.
+- Native GenSfen/rshogi/cshogi/rsshogi/python-shogi adapters, 10M scale, match transfer, and Elo are
+  unmeasured.
 - The experiment envelope is a shogiesa-owned draft, not a shared cross-repository standard.
 
 ## Development

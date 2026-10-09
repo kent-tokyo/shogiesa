@@ -12,6 +12,10 @@ Compare links at the end provide the complete commit history.
   runs the released trainer's typed position-reader tests without modifying its checkout.
 - Added a deterministic local resource-baseline harness for 100k/1M streaming measurements with
   wall-time, sampled RSS/FD, disk, binary, and artifact provenance.
+- Recorded clean-release 100k and 1M resource baselines, a fixed-node Sekirei 0.3.65/0.3.66
+  comparison with 64 retained mined positions, and a four-arm three-seed training pilot.
+- Added reproducible harnesses for the Sekirei version delta and training ablation; both pin source
+  tags, dataset identities, search/training controls, and claim limits.
 
 ## [0.11.0] — 2026-10-03
 

@@ -57,7 +57,8 @@ agreement trade-offs; none is automatically correct.
 
 ## Test coverage and evidence limit
 
-Fixture-backed tests check score perspective, bounds, MultiPV margin, agreement, quality reasons,
-requested-depth underreach, malformed input, and stable report output. These tests verify
-implementation behavior. Calibration, representative-corpus quality, throughput, training gain,
-and engine strength require separate measurements.
+Fixture-backed tests verify implementation behavior: score perspective, bounds, MultiPV margin,
+agreement, quality reasons, requested-depth underreach, malformed input, and stable reports.
+Calibration, representative-corpus quality, and engine strength require separate measurements.
+Completed resource and training-pilot runs are indexed in
+[`measurements/README.md`](measurements/README.md); their limits still apply.

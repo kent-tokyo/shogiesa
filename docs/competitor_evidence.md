@@ -1,19 +1,17 @@
-# Seven-axis fit evidence
+# Capability evidence
 
-This is an implementation-fit assessment of `main` at `cafe567` (workspace version `0.10.0`), not
-Elo, speed, or training-effect data. Scores are provisional and are not competitor rankings.
+This file records evidence boundaries for the current `0.11.0` workspace plus unreleased
+measurement tooling. It is not a competitor ranking.
 
-| axis | points | score | evidence | limitation |
-|---|---:|---:|---|---|
-| data pipeline fit | 25 | 21 | extract, label, quality, split, export CLI | no trainer |
-| CSA/KIF/SFEN processing | 15 | 12 | CSA/KIF fixtures, SFEN validation, root-aware variations | external dialect coverage unmeasured |
-| USI teacher labeling | 20 | 17 | depth/node, MultiPV, bounds, timeout, cache, resume | engine throughput unmeasured |
-| quality diagnostics/filtering | 15 | 13 | stability, conflict, block, calibration, distribution | thresholds not universally calibrated |
-| reproducibility/provenance | 10 | 9 | manifests, hashes, seeds, split/order artifacts | cross-repo envelope not adopted |
-| large-scale performance | 10 | 0 | no accepted 1M/10M benchmark yet | RSS, wall time, FD and disk headroom unmeasured |
-| API/ecosystem | 5 | 4 | Rust crates, JSONL, pack, USI boundaries and docs | no external bindings/adapters |
-| **total** | **100** | **76** | implementation evidence only | not a competitor ranking |
+| Area | Available evidence | Remaining limit |
+|---|---|---|
+| Ingestion | CSA/KIF/KI2 fixtures, malformed-prefix recovery, nested variations, recursive discovery | broad external dialect coverage is unmeasured |
+| USI labeling | depth/node limits, MultiPV, bounds, timeout/restart, cache, resume, strict-protocol tests | representative multi-engine throughput is unmeasured |
+| Quality and selection | stability, filter, audit, calibration, mining, balancing, distribution reports | thresholds remain corpus- and teacher-specific |
+| Reproducibility | manifests, hashes, seeds, root-aware split, path/order/worker matrix | the experiment envelope is not shared across repositories |
+| Scale | clean-release 100k and 1M local resource artifacts | 10M and cross-platform measurements are unverified |
+| Sekirei | pinned schema check, 0.3.65/0.3.66 fixed-node delta, four-arm three-seed pilot | no match-transfer or Elo result |
+| Ecosystem | Rust crates, JSONL, pack, and USI boundaries | no native GenSfen/rshogi/cshogi/rsshogi/python-shogi adapters |
 
-The zero in performance is intentional: no speed advantage is inferred from architecture or small
-fixtures. Competitor feature claims require the same fixture, engine conditions, hardware, and
-measurement protocol.
+The measured files are indexed in [`measurements/README.md`](measurements/README.md). Comparisons
+with another tool require the same corpus, engine, search budget, hardware, and metric definition.

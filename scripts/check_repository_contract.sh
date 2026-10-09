@@ -27,7 +27,13 @@ required_files=(
   scripts/run_resource_baseline.py
   scripts/run_sekirei_version_delta.py
   scripts/run_sekirei_learning_ablation.py
+  docs/measurements/README.md
   docs/measurements/reproducibility_matrix_2026-10-03.json
+  docs/measurements/resource_baseline_100k_2026-10-09.json
+  docs/measurements/resource_baseline_1m_2026-10-09.json
+  docs/measurements/sekirei_delta_v0.3.65_v0.3.66_2026-10-09.json
+  docs/measurements/sekirei_delta_v0.3.65_v0.3.66_2026-10-10_mined.jsonl
+  docs/measurements/sekirei_learning_ablation_2026-10-10.json
   tests/fixtures/sample.csa
   tests/fixtures/sample.kif
   tests/fixtures/malformed.csa
@@ -148,6 +154,11 @@ check_marker scripts/run_sekirei_version_delta.py 'shogiesa\.sekirei-version-del
 check_marker scripts/run_sekirei_learning_ablation.py 'shogiesa\.sekirei-learning-ablation\.v1' 'Sekirei learning ablation artifact schema'
 check_marker docs/measurements/reproducibility_matrix_2026-10-03.json '"overall": "pass"' 'reproducibility matrix result'
 check_marker docs/measurements/reproducibility_matrix_2026-10-03.json '"axis": "worker_count"' 'reproducibility worker-count axis'
+check_marker docs/measurements/resource_baseline_100k_2026-10-09.json '"schema": "shogiesa.resource-baseline.v1"' '100k resource artifact schema'
+check_marker docs/measurements/resource_baseline_1m_2026-10-09.json '"schema": "shogiesa.resource-baseline.v1"' '1M resource artifact schema'
+check_marker docs/measurements/sekirei_delta_v0.3.65_v0.3.66_2026-10-09.json '"schema": "shogiesa.sekirei-version-delta.v1"' 'Sekirei delta artifact schema'
+check_marker docs/measurements/sekirei_delta_v0.3.65_v0.3.66_2026-10-10_mined.jsonl '^\{"schema_version":11' 'Sekirei mined position schema'
+check_marker docs/measurements/sekirei_learning_ablation_2026-10-10.json '"schema": "shogiesa.sekirei-learning-ablation.v1"' 'Sekirei ablation artifact schema'
 check_marker tests/fixtures/pack_bad_magic.hex '^00000000000000000b00$' 'pack bad magic bytes'
 check_marker tests/fixtures/pack_truncated_header.hex '^53484f4749455341$' 'pack truncated header bytes'
 check_marker tests/fixtures/pack_unsupported_version.hex '^53484f4749455341ffff$' 'pack unsupported version bytes'

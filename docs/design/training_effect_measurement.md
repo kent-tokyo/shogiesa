@@ -1,19 +1,25 @@
 # Training-effect measurement record
 
-This document defines the minimum evidence for comparing shogiesa dataset recipes in a real
-trainer. It is a measurement protocol, not a claim that any filter improves NNUE strength.
+This document defines the minimum evidence for comparing dataset recipes in a real trainer. A
+lower validation loss does not by itself establish NNUE playing strength.
+
+## Completed pilot
+
+The 2026-10-10 Sekirei 0.3.66 run compared baseline, filtered, uncertain-mined, and phase-balanced
+arms. Each arm used 48 positions, three paired seeds, one epoch, and the same 106-position
+validation set. Mean `valid_cp_mse` ranged from 170821 to 170847, less than 0.02% apart. This proves
+the comparison path runs end to end; it does not establish an arm ranking. See the
+[`sekirei_learning_ablation_2026-10-10.json`](../measurements/sekirei_learning_ablation_2026-10-10.json)
+artifact for per-seed values and hashes.
 
 ## Experimental controls
 
-Use one fixed source-root train/valid/test split and reuse its manifest for every arm. Keep the
-teacher engine binary, weight hash, options, search limit, label schema, model architecture,
-optimizer, learning-rate schedule, batch size, total steps/epochs, validation records, and
-hardware constant. Run at least three training seeds per arm; record failed or incomplete runs
-instead of silently removing them.
+Reuse one source-root train/valid/test split for every arm. Hold the teacher, weight, options,
+search limit, schema, model, optimizer, schedule, budget, validation records, and hardware fixed.
+Run at least three seeds per arm and retain failed or incomplete runs.
 
-The only intended independent variable is the dataset recipe: baseline, filtered, mined, or
-balanced. If corpus size differs, report both the raw result and a cost/position-count context;
-do not call a larger dataset an unconditional quality improvement.
+Only the dataset recipe should change. If arm sizes differ, report the sizes and cost instead of
+calling the larger arm an unconditional quality improvement.
 
 ## Required result table
 
@@ -28,21 +34,15 @@ was not collected; blank values must not mean both zero and missing.
 | `split_manifest_hash` | exact shared split identity |
 | `teacher_manifest_hash` | exact labeling run identity |
 | `positions_train` / `positions_valid` | records consumed by the trainer |
-| `validation_loss_final` | final validation loss, with metric definition |
-| `validation_loss_best` | best validation loss and step |
-| `validation_wdl` | fixed WDL evaluation on the same validation set |
+| validation metric(s) | final/best value with an exact definition |
 | `label_wall_time_sec` | cost of producing labels |
 | `train_wall_time_sec` | cost of training |
 | `status` | `complete`, `failed`, or `incomplete` with a reason |
 
 ## Analysis rules
 
-Report per-seed values, median, and spread for each arm. Compare arms on the same validation
-positions and report the paired difference for each seed where pairing is valid. A lower loss or
-higher WDL is evidence about that fixed training setup, not a general claim about engine strength.
-Keep data quality diagnostics (`conflict-report`, `block-report`, coverage, bound rate) separate
-from training/search outcomes so a search change cannot be misattributed to dataset quality.
+Report per-seed values and spread. Use paired differences only when seeds and validation positions
+match. Keep quality diagnostics separate from training/search outcomes.
 
-The minimum completion gate is: all complete runs use the same split and training budget, at
-least three seeds are present per compared arm, failed runs are accounted for, and the conclusion
-does not rely on a single seed or a single aggregate score.
+Completion requires one split and budget, at least three seeds per arm, failed-run accounting, and
+a conclusion that does not depend on one seed or one aggregate.

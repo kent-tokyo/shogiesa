@@ -1,31 +1,27 @@
-# Measurement matrix for remaining roadmap gates
+# Measurement status and remaining gates
 
-This is an execution plan, not benchmark evidence. A row is complete only after its listed
-artifact contains the measured result and the environment is recorded.
+This table separates completed measurements from open gates. Results apply only to the environment
+and inputs recorded in their artifacts.
 
 For changes that do not require external engines, start with
 `bash scripts/run_local_measurement_smoke.sh`. It validates the repository contract, formatting,
-and eight deterministic fixture-backed regression points (streaming report output, conflict
-exclusions, semantic dataset diff, recipe planning/run verification, split reproducibility, pack
-manifest hashes, and the path/order/worker matrix). A PASS here is local regression evidence only; it does not
-complete any scale, cross-platform, training, or external-interoperability row below.
+and deterministic fixture-backed regressions. A PASS is local regression evidence; it does not
+complete scale, training, or external-interoperability gates.
 
-| area | fixed input/control | record | completion artifact |
-|---|---|---|---|
-| USI flakiness | fixture, command, runner OS/load, no retry | runs, failures, flaky rate, child-process residue | repeated-run log |
-| label rerun | same corpus, engine, depths/nodes, MultiPV, options, weight | skip/replace/cache counts and output identity | paired manifest table |
-| split identity | same records, reordered input, alternate path, same seed | input/output hashes, root overlap, bucket distributions | split comparison manifest |
-| streaming/resource | 100k, 1M, and if feasible 10M records; fixed command and jobs | wall time, RSS, FD count, output size, disk headroom | resource report |
-| threshold calibration | fixed corpus and teacher reference | coverage, agreement, bound rate, drop reasons by threshold | calibrate/audit report |
-| training effect | fixed split, teacher/weight, trainer, budget, at least 3 seeds | validation loss/WDL, data size, label cost, variance | recipe comparison report |
-| match transfer | fixed opening suite, opponent, games, seed and SPRT/interval rule | game count, result, confidence interval, comparison setup | match report |
-| external interoperability | named tool/version and fixture | import/export result, loss report, legality, provenance, time | per-tool evidence row |
+| Status | Area | Evidence or completion requirement |
+|---|---|---|
+| complete | path/order/worker reproducibility | [`../measurements/reproducibility_matrix_2026-10-03.json`](../measurements/reproducibility_matrix_2026-10-03.json) |
+| complete | 100k/1M local resource use | dated clean-release artifacts in [`../measurements/`](../measurements/README.md) |
+| complete | Sekirei 0.3.65/0.3.66 fixed-node delta | 230 paired positions and 64 retained mined records |
+| pilot complete | four-arm training comparison | 48 positions per arm, three seeds, one epoch, shared validation |
+| open | USI flakiness and rerun behavior | repeated real-engine runs, failure rate, residue, cache/output identity |
+| open | threshold calibration | fixed corpus/teacher; coverage, agreement, bounds, and drop reasons |
+| open | representative training effect | larger corpus and budget, paired seeds, failed-run accounting |
+| open | match transfer | fixed openings/opponent/budget with interval or SPRT rule |
+| open | external native formats | named tool/version with round-trip and loss report |
+| deferred | 10M and cross-platform resources | run only with adequate disk and matched hosts |
 
-The fixture-backed path/order/worker comparison was completed on 2026-10-03. Its machine-readable
-artifact is [`../measurements/reproducibility_matrix_2026-10-03.json`](../measurements/reproducibility_matrix_2026-10-03.json),
-and `scripts/run_reproducibility_matrix.sh` regenerates it.
-
-Run the local streaming/resource baseline against a prebuilt release binary with:
+Run the resource baseline against a prebuilt release binary:
 
 ```bash
 cargo build --release -p shogiesa-cli
@@ -34,27 +30,18 @@ python3 scripts/run_resource_baseline.py \
   --out docs/measurements/resource_baseline_100k.json
 ```
 
-The harness records command wall time, sampled peak RSS and open file descriptors, disk headroom,
-binary and dataset hashes, output sizes, and explicit measurement limits. A dirty-tree run is a
-provisional diagnostic; the roadmap row is complete only for an artifact built from an identified
-clean commit. To bound peak disk use at 1M, the harness hashes and removes its regenerable
-synthetic input after `pack` and before `unpack`; no measured command includes that deletion.
+The harness records wall time, sampled peak RSS/FD count, disk headroom, hashes, and output sizes.
+It rejects dirty trees. At 1M it removes the hashed synthetic input after `pack` to bound disk use;
+the deletion is outside every measured command.
 
-For a fixed-node delta between two immutable Sekirei releases, use
-`scripts/run_sekirei_version_delta.py`. It builds both tags outside their working tree, fixes
-`Threads=1` and `SpecTopN=0`, labels the identical sampled corpus, and records disagreement and
-absolute cp-delta summaries. Input games are selected in sorted-path order up to `--max-games`,
-with every selected path and SHA-256 retained; an empty extraction fails the run. This is a
-search-output diagnostic, not an Elo or teacher-quality claim. Pass `--mined-out` when the selected
-position JSONL must be retained instead of only recording its count and SHA-256.
+`scripts/run_sekirei_version_delta.py` compares immutable Sekirei tags with one sampled corpus,
+fixed nodes, `Threads=1`, and `SpecTopN=0`. It records selected-input hashes, search disagreement,
+cp deltas, and optional mined JSONL. This measures output differences, not strength.
 
-For the bounded training pilot, use `scripts/run_sekirei_learning_ablation.py`. It creates
-equal-size baseline, filtered, uncertain-mined, and phase-balanced arms from one source-level
-split, then runs each arm with three identical seeds against one frozen validation set. Compare
-the recorded `valid_cp_mse` distributions only within that artifact. The trainer uses a completed
-fixed-depth teacher search so a node-budget abort cannot inject an inexact label. One epoch on a
-small corpus is pipeline evidence, not a playing-strength or generalization result.
+`scripts/run_sekirei_learning_ablation.py` creates equal-size baseline, filtered, uncertain-mined,
+and phase-balanced arms from one source split. It runs three paired seeds against frozen
+validation using a completed fixed-depth teacher search. The checked-in one-epoch result is
+pipeline evidence, not a generalization or playing-strength result.
 
-Every run must retain the exact command line, repository commit, input/output hashes, engine and
-weight identity, options, seed, hardware/OS, and any blocked dependency or network reason. Missing
-measurements remain `unverified`; small fixtures do not substitute for scale or training evidence.
+Every run must retain commands, commits, input/output hashes, engine/weight identity, options,
+seeds, hardware/OS, and failure reasons. Missing measurements remain `unverified`.

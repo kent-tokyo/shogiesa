@@ -1,0 +1,119 @@
+{
+  "schema": "shogiesa.resource-baseline.v1",
+  "generated_at": "2026-10-09T14:43:29Z",
+  "status": "pass",
+  "repository": {
+    "commit": "17eff9a78d75217bcbe00774f5c9d821afa2a4db",
+    "working_tree_dirty": false,
+    "changed_paths": []
+  },
+  "binary": {
+    "path": "/Users/k_tanabe/Documents/Documents/oss_rust/shogiesa/target/release/shogiesa",
+    "sha256": "d3f0e0bedf3b18dd5ad44cf14e88c8a5a3658faeadf5e0e55758f413fa2406df",
+    "version": "shogiesa 0.11.0"
+  },
+  "environment": {
+    "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.13.6",
+    "logical_cpus": 10,
+    "sampling_interval_seconds": 0.01,
+    "disk_free_before_bytes": 2407153664,
+    "disk_free_after_bytes": 1069592576,
+    "disk_consumed_bytes": 1337561088
+  },
+  "dataset": {
+    "records": 1000000,
+    "generation_seconds": 21.536926,
+    "input_bytes": 1001848896,
+    "input_sha256": "e505c0efbae42dff6641cd0d8e106631faa7ebc8f40dab68bb165edb4eafdfda",
+    "input_removed_before_unpack": true,
+    "fixture_sha256": "83e7460c8b3d106bfc2cfb6d99e31a36ac2e3f5ad0334e324fcc91a84ff9fba2",
+    "pack_bytes": 343388906,
+    "pack_sha256": "9e56436cd83743d3be277abbe85d6fb0b561ebaf97e986ce5a3fe1d6a41679f1",
+    "unpacked_bytes": 958848896,
+    "unpacked_sha256": "bccdc5cf31394467b33e7947c2590178cbf69f881c79f2b375628f1adc5ea96b",
+    "unpacked_records": 1000000
+  },
+  "measurements": [
+    {
+      "name": "validate",
+      "command": [
+        "/Users/k_tanabe/Documents/Documents/oss_rust/shogiesa/target/release/shogiesa",
+        "validate",
+        "--strict",
+        "--input",
+        "/var/folders/_h/f8_99c4s0vn6f7lb4p3tq6km0000gn/T/shogiesa-resource-zyfi4bf0/input.jsonl"
+      ],
+      "exit_code": 0,
+      "wall_time_seconds": 5.861954,
+      "peak_rss_bytes": 190414848,
+      "max_open_fds": 4,
+      "fd_measurement": "lsof",
+      "samples": 190,
+      "stdout_bytes": 287,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "report",
+      "command": [
+        "/Users/k_tanabe/Documents/Documents/oss_rust/shogiesa/target/release/shogiesa",
+        "report",
+        "--input",
+        "/var/folders/_h/f8_99c4s0vn6f7lb4p3tq6km0000gn/T/shogiesa-resource-zyfi4bf0/input.jsonl"
+      ],
+      "exit_code": 0,
+      "wall_time_seconds": 2.809462,
+      "peak_rss_bytes": 224657408,
+      "max_open_fds": 4,
+      "fd_measurement": "lsof",
+      "samples": 92,
+      "stdout_bytes": 2320,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "pack",
+      "command": [
+        "/Users/k_tanabe/Documents/Documents/oss_rust/shogiesa/target/release/shogiesa",
+        "pack",
+        "--input",
+        "/var/folders/_h/f8_99c4s0vn6f7lb4p3tq6km0000gn/T/shogiesa-resource-zyfi4bf0/input.jsonl",
+        "--out",
+        "/var/folders/_h/f8_99c4s0vn6f7lb4p3tq6km0000gn/T/shogiesa-resource-zyfi4bf0/dataset.shgpk"
+      ],
+      "exit_code": 0,
+      "wall_time_seconds": 2.529386,
+      "peak_rss_bytes": 4276224,
+      "max_open_fds": 5,
+      "fd_measurement": "lsof",
+      "samples": 82,
+      "stdout_bytes": 0,
+      "stderr_bytes": 128
+    },
+    {
+      "name": "unpack",
+      "command": [
+        "/Users/k_tanabe/Documents/Documents/oss_rust/shogiesa/target/release/shogiesa",
+        "unpack",
+        "--input",
+        "/var/folders/_h/f8_99c4s0vn6f7lb4p3tq6km0000gn/T/shogiesa-resource-zyfi4bf0/dataset.shgpk",
+        "--out",
+        "/var/folders/_h/f8_99c4s0vn6f7lb4p3tq6km0000gn/T/shogiesa-resource-zyfi4bf0/unpacked.jsonl"
+      ],
+      "exit_code": 0,
+      "wall_time_seconds": 2.719925,
+      "peak_rss_bytes": 3817472,
+      "max_open_fds": 5,
+      "fd_measurement": "lsof",
+      "samples": 88,
+      "stdout_bytes": 0,
+      "stderr_bytes": 120
+    }
+  ],
+  "limits": [
+    "Synthetic records vary source provenance and SFEN move count but do not model a real corpus distribution.",
+    "RSS and FD values are sampled and can miss a short-lived peak.",
+    "Generation time is recorded separately and excluded from command wall times.",
+    "The regenerable synthetic input is removed after pack and before unpack to bound peak disk use."
+  ]
+}

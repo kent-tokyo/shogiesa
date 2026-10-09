@@ -47,6 +47,12 @@ absolute cp-delta summaries. Input games are selected in sorted-path order up to
 with every selected path and SHA-256 retained; an empty extraction fails the run. This is a
 search-output diagnostic, not an Elo or teacher-quality claim.
 
+For the bounded training pilot, use `scripts/run_sekirei_learning_ablation.py`. It creates
+equal-size baseline, filtered, uncertain-mined, and phase-balanced arms from one source-level
+split, then runs each arm with three identical seeds against one frozen validation set. Compare
+the recorded `valid_cp_mse` distributions only within that artifact. One epoch on a small corpus
+is pipeline evidence, not a playing-strength or generalization result.
+
 Every run must retain the exact command line, repository commit, input/output hashes, engine and
 weight identity, options, seed, hardware/OS, and any blocked dependency or network reason. Missing
 measurements remain `unverified`; small fixtures do not substitute for scale or training evidence.

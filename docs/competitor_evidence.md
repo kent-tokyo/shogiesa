@@ -1,7 +1,7 @@
 # Capability evidence
 
-This file records evidence boundaries for the current `0.11.0` workspace plus unreleased
-measurement tooling. It is not a competitor ranking.
+This file records evidence boundaries for the `0.11.1` release candidate. It is not a competitor
+ranking.
 
 | Area | Available evidence | Remaining limit |
 |---|---|---|

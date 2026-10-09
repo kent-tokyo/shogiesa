@@ -5,6 +5,8 @@ Compare links at the end provide the complete commit history.
 
 ## [Unreleased]
 
+## [0.11.1] — 2026-10-10
+
 - `validate --strict` now rejects valid JSON that is not a valid typed `PositionRecord`, including
   unsupported future schema versions and missing required fields, and reports those separately
   from malformed JSON.
@@ -212,7 +214,8 @@ Compare links at the end provide the complete commit history.
 - CSA extraction, USI labeling, validation/reporting, shared domain types, CI, fixtures, and dual
   MIT/Apache-2.0 licensing.
 
-[Unreleased]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/kent-tokyo/shogiesa/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/kent-tokyo/shogiesa/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/kent-tokyo/shogiesa/compare/v0.9.2...v0.10.0

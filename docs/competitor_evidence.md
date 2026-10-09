@@ -1,6 +1,6 @@
 # Capability evidence
 
-This file records evidence boundaries for the `0.11.1` release candidate. It is not a competitor
+This file records evidence boundaries for the published `0.11.1` release. It is not a competitor
 ranking.
 
 | Area | Available evidence | Remaining limit |

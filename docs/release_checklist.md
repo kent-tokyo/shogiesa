@@ -40,9 +40,9 @@ bash scripts/release_readiness.sh
 
 ## Current published release
 
-The corresponding checks for `v0.11.0` are complete. Evidence is in the
-[v0.11.0 validation log](release_validation_2026-10-03_v0.11.0.md), the
-[GitHub Release](https://github.com/kent-tokyo/shogiesa/releases/tag/v0.11.0), and the nine
+The corresponding checks for `v0.11.1` are complete. Evidence is in the
+[v0.11.1 validation log](release_validation_2026-10-10_v0.11.1.md), the
+[GitHub Release](https://github.com/kent-tokyo/shogiesa/releases/tag/v0.11.1), and the nine
 crates.io package records. `main` may contain later unreleased changes.
 
 Release validation proves build, test, packaging, and publication status. It does not prove that

@@ -18,6 +18,9 @@ Compare links at the end provide the complete commit history.
   comparison with 64 retained mined positions, and a four-arm three-seed training pilot.
 - Added reproducible harnesses for the Sekirei version delta and training ablation; both pin source
   tags, dataset identities, search/training controls, and claim limits.
+- Reused USI sessions now place a command-order barrier between completed searches in both strict
+  and compatibility modes, preventing a late duplicate `bestmove` from being mistaken for the
+  next position's response.
 
 ## [0.11.0] — 2026-10-03
 

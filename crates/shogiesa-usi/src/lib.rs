@@ -528,8 +528,10 @@ impl UsiEngine {
         // A duplicate can be written immediately after the first bestmove but reach the reader
         // thread only after this call's initial try_recv(). `isready` is processed in command
         // order, so seeing `readyok` proves all output from the preceding search has crossed the
-        // channel boundary before a new `go` is sent.
-        if self.strict && self.previous_search_completed {
+        // channel boundary before a new `go` is sent. The barrier is required in both modes:
+        // strict mode reports the duplicate, while non-strict mode preserves its compatibility
+        // behavior by discarding it without allowing it to become the next search's response.
+        if self.previous_search_completed {
             self.write_line("isready")?;
             let deadline = Instant::now() + Duration::from_millis(timeout_ms);
             loop {
@@ -538,7 +540,7 @@ impl UsiEngine {
                     self.previous_search_completed = false;
                     break;
                 }
-                if line.starts_with("bestmove ") {
+                if self.strict && line.starts_with("bestmove ") {
                     return Err(UsiError::DuplicateBestmove);
                 }
             }

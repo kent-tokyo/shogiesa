@@ -169,20 +169,42 @@ def main() -> int:
     generation_started = time.monotonic()
     make_dataset(input_path, args.records)
     generation_seconds = time.monotonic() - generation_started
+    input_bytes = input_path.stat().st_size
+    input_sha256 = sha256_file(input_path)
 
-    commands = [
+    commands_before_unpack = [
         ("validate", [str(binary), "validate", "--strict", "--input", str(input_path)]),
         ("report", [str(binary), "report", "--input", str(input_path)]),
         (
             "pack",
             [str(binary), "pack", "--input", str(input_path), "--out", str(pack_path)],
         ),
-        (
-            "unpack",
-            [str(binary), "unpack", "--input", str(pack_path), "--out", str(unpacked_path)],
-        ),
     ]
-    measurements = [run_measured(name, command, work_dir) for name, command in commands]
+    measurements = [
+        run_measured(name, command, work_dir) for name, command in commands_before_unpack
+    ]
+    input_removed_before_unpack = False
+    if all(item["exit_code"] == 0 for item in measurements) and pack_path.exists():
+        # At 1M records the JSONL, pack, and unpacked JSONL together need more than 2 GiB.
+        # validate/report/pack have already consumed and hashed the input, so remove that
+        # regenerable synthetic file before measuring unpack. This keeps the peak footprint near
+        # max(input + pack, pack + unpack) without changing any measured command.
+        input_path.unlink()
+        input_removed_before_unpack = True
+    measurements.append(
+        run_measured(
+            "unpack",
+            [
+                str(binary),
+                "unpack",
+                "--input",
+                str(pack_path),
+                "--out",
+                str(unpacked_path),
+            ],
+            work_dir,
+        )
+    )
     disk_after = shutil.disk_usage(work_dir).free
     status = "pass" if all(item["exit_code"] == 0 for item in measurements) else "fail"
     unpacked_records = (
@@ -228,8 +250,9 @@ def main() -> int:
         "dataset": {
             "records": args.records,
             "generation_seconds": round(generation_seconds, 6),
-            "input_bytes": input_path.stat().st_size,
-            "input_sha256": sha256_file(input_path),
+            "input_bytes": input_bytes,
+            "input_sha256": input_sha256,
+            "input_removed_before_unpack": input_removed_before_unpack,
             "fixture_sha256": sha256_file(FIXTURE),
             "pack_bytes": pack_path.stat().st_size if pack_path.exists() else None,
             "pack_sha256": sha256_file(pack_path) if pack_path.exists() else None,
@@ -242,6 +265,7 @@ def main() -> int:
             "Synthetic records vary source provenance and SFEN move count but do not model a real corpus distribution.",
             "RSS and FD values are sampled and can miss a short-lived peak.",
             "Generation time is recorded separately and excluded from command wall times.",
+            "The regenerable synthetic input is removed after pack and before unpack to bound peak disk use.",
         ],
     }
     args.out.parent.mkdir(parents=True, exist_ok=True)

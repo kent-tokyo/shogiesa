@@ -37,7 +37,8 @@ python3 scripts/run_resource_baseline.py \
 The harness records command wall time, sampled peak RSS and open file descriptors, disk headroom,
 binary and dataset hashes, output sizes, and explicit measurement limits. A dirty-tree run is a
 provisional diagnostic; the roadmap row is complete only for an artifact built from an identified
-clean commit.
+clean commit. To bound peak disk use at 1M, the harness hashes and removes its regenerable
+synthetic input after `pack` and before `unpack`; no measured command includes that deletion.
 
 Every run must retain the exact command line, repository commit, input/output hashes, engine and
 weight identity, options, seed, hardware/OS, and any blocked dependency or network reason. Missing

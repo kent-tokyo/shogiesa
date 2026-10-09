@@ -1,10 +1,10 @@
 {
   "schema": "shogiesa.sekirei-version-delta.v1",
-  "generated_at": "2026-10-09T14:54:52Z",
+  "generated_at": "2026-10-09T15:07:06Z",
   "status": "complete",
   "claim_boundary": "fixed-node material-evaluator diagnostic; no playing-strength claim",
   "shogiesa": {
-    "commit": "4544000fd623155556770aad97363e9bcf890cec",
+    "commit": "0c5b3606fc202f64233452170f0af6cb86bc888b",
     "binary_sha256": "d3f0e0bedf3b18dd5ad44cf14e88c8a5a3658faeadf5e0e55758f413fa2406df"
   },
   "sekirei": {
@@ -98,11 +98,11 @@
   },
   "mined": {
     "records": 64,
-    "sha256": "01ab360105d07149d8b6813d9250662f1b95ccd3defb6dbd109df29538758715"
+    "sha256": "1425236d90081bd105f9eefd4467c87cc242056b5600e22bf5c0691a0f746ec4"
   },
   "manifests": {
-    "baseline_sha256": "98087b90fcbdc7839d0c0344f31a8531756ec9018a29e526284ede05afcbb371",
-    "candidate_sha256": "c2ee6888fc9e73576b273db9be22db06f8f446f54c8b60dd1a231c58188c310f"
+    "baseline_sha256": "aea8bb68d9cf1922c510c8c1531e20a75ce62c547519d95e55fec6106d33106d",
+    "candidate_sha256": "4f7dfefcc886affe7302abb2aabcc042527132e7c9e2563df9109967902bb847"
   },
   "steps": [
     {
@@ -115,7 +115,7 @@
         "-p",
         "sekirei"
       ],
-      "wall_time_seconds": 35.282418,
+      "wall_time_seconds": 35.945096,
       "exit_code": 0
     },
     {
@@ -128,7 +128,7 @@
         "-p",
         "sekirei"
       ],
-      "wall_time_seconds": 33.939963,
+      "wall_time_seconds": 34.227928,
       "exit_code": 0
     },
     {
@@ -149,7 +149,7 @@
         "--out",
         "<work>/extracted.jsonl"
       ],
-      "wall_time_seconds": 0.040986,
+      "wall_time_seconds": 0.041413,
       "exit_code": 0
     },
     {
@@ -166,7 +166,7 @@
         "--out",
         "<work>/sampled.jsonl"
       ],
-      "wall_time_seconds": 0.004531,
+      "wall_time_seconds": 0.004717,
       "exit_code": 0
     },
     {
@@ -197,7 +197,7 @@
         "--out",
         "<work>/baseline.jsonl"
       ],
-      "wall_time_seconds": 1.535411,
+      "wall_time_seconds": 1.482392,
       "exit_code": 0
     },
     {
@@ -228,7 +228,7 @@
         "--out",
         "<work>/candidate.jsonl"
       ],
-      "wall_time_seconds": 1.365007,
+      "wall_time_seconds": 1.384689,
       "exit_code": 0
     },
     {
@@ -243,7 +243,7 @@
         "--out",
         "<work>/merged.jsonl"
       ],
-      "wall_time_seconds": 0.005238,
+      "wall_time_seconds": 0.004878,
       "exit_code": 0
     },
     {
@@ -256,7 +256,7 @@
         "--out",
         "<work>/stable.jsonl"
       ],
-      "wall_time_seconds": 0.005843,
+      "wall_time_seconds": 0.005441,
       "exit_code": 0
     },
     {
@@ -275,7 +275,7 @@
         "--out",
         "<work>/mined.jsonl"
       ],
-      "wall_time_seconds": 0.003963,
+      "wall_time_seconds": 0.003733,
       "exit_code": 0
     }
   ]

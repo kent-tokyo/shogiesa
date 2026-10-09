@@ -5,6 +5,7 @@ ROADMAP.md
 
 # generated datasets (extract/label/filter output)
 *.jsonl
+!docs/measurements/sekirei_delta_*_mined.jsonl
 !tests/fixtures/broken.jsonl
 !crates/shogiesa-core/tests/fixtures/schema_contract_v1.jsonl
 !crates/shogiesa-core/tests/fixtures/schema_contract_v11.jsonl

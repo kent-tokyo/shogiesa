@@ -6,6 +6,7 @@ cd "$ROOT_DIR"
 
 required_files=(
   README.md
+  README_ja.md
   docs/design/schema_compatibility.md
   docs/THEORY.md
   schema/experiment_envelope.schema.json
@@ -91,12 +92,16 @@ for path in "${required_files[@]}"; do
   fi
 done
 
-if rg -q 'shogiesa extract|shogiesa label|shogiesa filter' README.md; then
-  printf 'PASS quick-start commands\n'
-else
-  printf 'FAIL quick-start commands missing\n'
-  missing=1
-fi
+for readme in README.md README_ja.md; do
+  if rg -q 'shogiesa extract' "$readme" \
+    && rg -q 'shogiesa label' "$readme" \
+    && rg -q 'shogiesa filter' "$readme"; then
+    printf 'PASS quick-start commands %s\n' "$readme"
+  else
+    printf 'FAIL quick-start commands missing %s\n' "$readme"
+    missing=1
+  fi
+done
 
 check_marker() {
   local path="$1"
@@ -109,6 +114,9 @@ check_marker() {
     missing=1
   fi
 }
+
+check_marker README.md 'latest verified published release are `0\.11\.1`' 'English release version'
+check_marker README_ja.md '最新公開版は`0\.11\.1`' 'Japanese release version'
 
 check_marker tests/fixtures/malformed.csa '^\+BAD$' 'malformed CSA token'
 check_marker tests/fixtures/malformed.kif 'これは指し手ではない' 'malformed KIF move'

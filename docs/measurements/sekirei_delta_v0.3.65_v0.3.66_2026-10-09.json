@@ -1,0 +1,282 @@
+{
+  "schema": "shogiesa.sekirei-version-delta.v1",
+  "generated_at": "2026-10-09T14:54:52Z",
+  "status": "complete",
+  "claim_boundary": "fixed-node material-evaluator diagnostic; no playing-strength claim",
+  "shogiesa": {
+    "commit": "4544000fd623155556770aad97363e9bcf890cec",
+    "binary_sha256": "d3f0e0bedf3b18dd5ad44cf14e88c8a5a3658faeadf5e0e55758f413fa2406df"
+  },
+  "sekirei": {
+    "baseline": {
+      "ref": "v0.3.65",
+      "commit": "d949063d1672701b01046e786b92f93f8db52712",
+      "binary_sha256": "449225060f8bdc881ae8baa6d915a3bd394fb9be184a6b12253cb3564c4920c5"
+    },
+    "candidate": {
+      "ref": "v0.3.66",
+      "commit": "2532ef3dbe1e3d1088c9f2ac9516ef2f5e803c0e",
+      "binary_sha256": "2e361279e32e40d29731aff100f51c50bdded4f36956ec1c8761a32ee5e5d0a4"
+    },
+    "engine_options": {
+      "Threads": 1,
+      "SpecTopN": 0
+    },
+    "nodes": 10000,
+    "evaluator": "built-in material"
+  },
+  "corpus": {
+    "path": "data/csa/2025",
+    "selected_inputs": [
+      {
+        "path": "wdoor+floodgate-300-10F+007_512x2-64-16_12T+test_i7-8550U+20250201003002.csa",
+        "sha256": "83986420f8e44737eb28c39915a480559d2d80b67b5d6342f7e405cc41a1210c"
+      },
+      {
+        "path": "wdoor+floodgate-300-10F+1000epoch_4t+AXIF+20250215033007.csa",
+        "sha256": "8370a3df7b395d54fe6543e3d2e2d15ea83a856a7e1bfb577b38d7c5da596a24"
+      },
+      {
+        "path": "wdoor+floodgate-300-10F+1000epoch_4t+gikou2_1c+20250215073008.csa",
+        "sha256": "573b7377c4cf462687c889afbc50ae7e8dee55f1060e47c1037a8cf0aec44c77"
+      },
+      {
+        "path": "wdoor+floodgate-300-10F+1000epoch_4t+sample1-1+20250215000005.csa",
+        "sha256": "ec56a6eb4ce1b573fe856b739d349df7e9f7900c215d52aab939d2c8f3a9ffc5"
+      },
+      {
+        "path": "wdoor+floodgate-300-10F+1000epoch_4t+sample1-1+20250215090005.csa",
+        "sha256": "56c5244ec2d15fa7309bb3defaf37cdc6e7fffffbb00e2b935447115569d24a6"
+      },
+      {
+        "path": "wdoor+floodgate-300-10F+1000epoch_4t+sample4-6+20250215070007.csa",
+        "sha256": "0b64cfcbed7c0f451591cb672f6cbc34a579fb9539cf43dec5a0a393bbd4d51d"
+      },
+      {
+        "path": "wdoor+floodgate-300-10F+1000epoch_4t+sample4-6+20250215093008.csa",
+        "sha256": "d59b95133e44023a0413d09d0face64b8ded88d76dacf95b4b3b74f20e5ef2ac"
+      },
+      {
+        "path": "wdoor+floodgate-300-10F+1000epoch_4t+sample4-6+20250215103008.csa",
+        "sha256": "0d8abf50e2426519da5a9a751f85da19fc3f901a50a0adf6c7378e484155d7e3"
+      },
+      {
+        "path": "wdoor+floodgate-300-10F+1000epoch_4t+tanuki_wcsc33_473stb_10m+20250215060004.csa",
+        "sha256": "c781d0bd1fdaa4d924b749133e609bde1727c133a952a5ba3cf4928e27e961f9"
+      },
+      {
+        "path": "wdoor+floodgate-300-10F+101376po-noP_4090x2s+50688po-noP+20251128213008.csa",
+        "sha256": "6e93605cd0eb70b9a964b5babd01c2f4b20355d526374ffc11ecb4079f96abd5"
+      },
+      {
+        "path": "wdoor+floodgate-300-10F+101376po-noP_4090x2s+HimawariNLab_lowspec_1128book+20251128210012.csa",
+        "sha256": "082586f28c6b7ade980cfe3ea3b3451a2578aa27e56fe9b0ac1488e471528b21"
+      },
+      {
+        "path": "wdoor+floodgate-300-10F+20241225MerryChristmas+AXIF+20250215030004.csa",
+        "sha256": "9161735c152641f0aed6d10eaeed4046a8f622d1a20c97ef03c4897d2f0471f3"
+      }
+    ],
+    "extracted_records": 230,
+    "sampled_records": 230,
+    "sampled_sha256": "5001ff5ccf878683ea05f4ac107fd07d81789ba7354bef92fb52e42bbda9b850"
+  },
+  "delta": {
+    "records": 230,
+    "paired_records": 230,
+    "bestmove_disagreements": 114,
+    "bestmove_disagreement_rate": 0.4956521739130435,
+    "cp_pairs": 224,
+    "mate_or_unpaired_scores": 6,
+    "absolute_cp_delta": {
+      "mean": 168.43303571428572,
+      "median": 110.5,
+      "p90": 408,
+      "p95": 548,
+      "max": 1014
+    }
+  },
+  "mined": {
+    "records": 64,
+    "sha256": "01ab360105d07149d8b6813d9250662f1b95ccd3defb6dbd109df29538758715"
+  },
+  "manifests": {
+    "baseline_sha256": "98087b90fcbdc7839d0c0344f31a8531756ec9018a29e526284ede05afcbb371",
+    "candidate_sha256": "c2ee6888fc9e73576b273db9be22db06f8f446f54c8b60dd1a231c58188c310f"
+  },
+  "steps": [
+    {
+      "name": "build-baseline",
+      "command": [
+        "cargo",
+        "build",
+        "--locked",
+        "--release",
+        "-p",
+        "sekirei"
+      ],
+      "wall_time_seconds": 35.282418,
+      "exit_code": 0
+    },
+    {
+      "name": "build-candidate",
+      "command": [
+        "cargo",
+        "build",
+        "--locked",
+        "--release",
+        "-p",
+        "sekirei"
+      ],
+      "wall_time_seconds": 33.939963,
+      "exit_code": 0
+    },
+    {
+      "name": "extract",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "extract",
+        "--input",
+        "<work>/corpus",
+        "--recursive",
+        "--min-ply",
+        "20",
+        "--max-ply",
+        "160",
+        "--every-n-plies",
+        "4",
+        "--dedup",
+        "--out",
+        "<work>/extracted.jsonl"
+      ],
+      "wall_time_seconds": 0.040986,
+      "exit_code": 0
+    },
+    {
+      "name": "sample",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "sample",
+        "--input",
+        "<work>/extracted.jsonl",
+        "--count",
+        "256",
+        "--seed",
+        "366",
+        "--out",
+        "<work>/sampled.jsonl"
+      ],
+      "wall_time_seconds": 0.004531,
+      "exit_code": 0
+    },
+    {
+      "name": "label-baseline",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "label",
+        "--input",
+        "<work>/sampled.jsonl",
+        "--engine",
+        "<work>/sekirei-baseline",
+        "--engine-name",
+        "sekirei-v0.3.65",
+        "--nodes",
+        "10000",
+        "--timeout-ms",
+        "60000",
+        "--jobs",
+        "1",
+        "--engine-option",
+        "Threads=1",
+        "--engine-option",
+        "SpecTopN=0",
+        "--usi-strict",
+        "--preserve-order",
+        "--manifest",
+        "<work>/baseline-manifest.json",
+        "--out",
+        "<work>/baseline.jsonl"
+      ],
+      "wall_time_seconds": 1.535411,
+      "exit_code": 0
+    },
+    {
+      "name": "label-candidate",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "label",
+        "--input",
+        "<work>/sampled.jsonl",
+        "--engine",
+        "<work>/sekirei-candidate",
+        "--engine-name",
+        "sekirei-v0.3.66",
+        "--nodes",
+        "10000",
+        "--timeout-ms",
+        "60000",
+        "--jobs",
+        "1",
+        "--engine-option",
+        "Threads=1",
+        "--engine-option",
+        "SpecTopN=0",
+        "--usi-strict",
+        "--preserve-order",
+        "--manifest",
+        "<work>/candidate-manifest.json",
+        "--out",
+        "<work>/candidate.jsonl"
+      ],
+      "wall_time_seconds": 1.365007,
+      "exit_code": 0
+    },
+    {
+      "name": "merge",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "merge-observations",
+        "--primary",
+        "<work>/baseline.jsonl",
+        "--secondary",
+        "<work>/candidate.jsonl",
+        "--out",
+        "<work>/merged.jsonl"
+      ],
+      "wall_time_seconds": 0.005238,
+      "exit_code": 0
+    },
+    {
+      "name": "stability",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "stability",
+        "--input",
+        "<work>/merged.jsonl",
+        "--out",
+        "<work>/stable.jsonl"
+      ],
+      "wall_time_seconds": 0.005843,
+      "exit_code": 0
+    },
+    {
+      "name": "mine-uncertain",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "select",
+        "--strategy",
+        "uncertain",
+        "--input",
+        "<work>/stable.jsonl",
+        "--count",
+        "64",
+        "--seed",
+        "366",
+        "--out",
+        "<work>/mined.jsonl"
+      ],
+      "wall_time_seconds": 0.003963,
+      "exit_code": 0
+    }
+  ]
+}

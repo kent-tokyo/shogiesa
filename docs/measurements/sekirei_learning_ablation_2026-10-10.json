@@ -1,0 +1,699 @@
+{
+  "schema": "shogiesa.sekirei-learning-ablation.v1",
+  "generated_at": "2026-10-09T15:03:01Z",
+  "status": "complete",
+  "claim_boundary": "small-corpus one-epoch diagnostic; no playing-strength or generalization claim",
+  "shogiesa": {
+    "commit": "ca60be53a3ed2568b9f6aae468c154032cd2eb53",
+    "binary_sha256": "d3f0e0bedf3b18dd5ad44cf14e88c8a5a3658faeadf5e0e55758f413fa2406df"
+  },
+  "sekirei": {
+    "baseline": {
+      "ref": "v0.3.65",
+      "commit": "d949063d1672701b01046e786b92f93f8db52712",
+      "binary_sha256": "b7b49f74ddd10a3ad3dd59913eae68fd61afbcaf6ce541c1a060b1b47521d68c"
+    },
+    "candidate": {
+      "ref": "v0.3.66",
+      "commit": "2532ef3dbe1e3d1088c9f2ac9516ef2f5e803c0e",
+      "binary_sha256": "2ca30671c60e9893e4f9bf8f43c9c6ab59aaf98dd994d5e0ce706da2493d7919"
+    },
+    "trainer_sha256": "e55698a924484d549d23cd94fa07f0a21a5773fad960e94693e3a1ece3c4a083",
+    "diagnostic_nodes": 2000,
+    "teacher_depth": 1,
+    "engine_options": {
+      "Threads": 1,
+      "SpecTopN": 0
+    }
+  },
+  "corpus": {
+    "path": "data/csa/2025",
+    "selected_inputs": [
+      {
+        "path": "wdoor+floodgate-300-10F+007_512x2-64-16_12T+test_i7-8550U+20250201003002.csa",
+        "sha256": "83986420f8e44737eb28c39915a480559d2d80b67b5d6342f7e405cc41a1210c"
+      },
+      {
+        "path": "wdoor+floodgate-300-10F+1000epoch_4t+AXIF+20250215033007.csa",
+        "sha256": "8370a3df7b395d54fe6543e3d2e2d15ea83a856a7e1bfb577b38d7c5da596a24"
+      },
+      {
+        "path": "wdoor+floodgate-300-10F+1000epoch_4t+gikou2_1c+20250215073008.csa",
+        "sha256": "573b7377c4cf462687c889afbc50ae7e8dee55f1060e47c1037a8cf0aec44c77"
+      },
+      {
+        "path": "wdoor+floodgate-300-10F+1000epoch_4t+sample1-1+20250215000005.csa",
+        "sha256": "ec56a6eb4ce1b573fe856b739d349df7e9f7900c215d52aab939d2c8f3a9ffc5"
+      },
+      {
+        "path": "wdoor+floodgate-300-10F+1000epoch_4t+sample1-1+20250215090005.csa",
+        "sha256": "56c5244ec2d15fa7309bb3defaf37cdc6e7fffffbb00e2b935447115569d24a6"
+      },
+      {
+        "path": "wdoor+floodgate-300-10F+1000epoch_4t+sample4-6+20250215070007.csa",
+        "sha256": "0b64cfcbed7c0f451591cb672f6cbc34a579fb9539cf43dec5a0a393bbd4d51d"
+      },
+      {
+        "path": "wdoor+floodgate-300-10F+1000epoch_4t+sample4-6+20250215093008.csa",
+        "sha256": "d59b95133e44023a0413d09d0face64b8ded88d76dacf95b4b3b74f20e5ef2ac"
+      },
+      {
+        "path": "wdoor+floodgate-300-10F+1000epoch_4t+sample4-6+20250215103008.csa",
+        "sha256": "0d8abf50e2426519da5a9a751f85da19fc3f901a50a0adf6c7378e484155d7e3"
+      },
+      {
+        "path": "wdoor+floodgate-300-10F+1000epoch_4t+tanuki_wcsc33_473stb_10m+20250215060004.csa",
+        "sha256": "c781d0bd1fdaa4d924b749133e609bde1727c133a952a5ba3cf4928e27e961f9"
+      },
+      {
+        "path": "wdoor+floodgate-300-10F+101376po-noP_4090x2s+50688po-noP+20251128213008.csa",
+        "sha256": "6e93605cd0eb70b9a964b5babd01c2f4b20355d526374ffc11ecb4079f96abd5"
+      },
+      {
+        "path": "wdoor+floodgate-300-10F+101376po-noP_4090x2s+HimawariNLab_lowspec_1128book+20251128210012.csa",
+        "sha256": "082586f28c6b7ade980cfe3ea3b3451a2578aa27e56fe9b0ac1488e471528b21"
+      },
+      {
+        "path": "wdoor+floodgate-300-10F+20241225MerryChristmas+AXIF+20250215030004.csa",
+        "sha256": "9161735c152641f0aed6d10eaeed4046a8f622d1a20c97ef03c4897d2f0471f3"
+      },
+      {
+        "path": "wdoor+floodgate-300-10F+20241225MerryChristmas+AobaFuribisha_w1984_avg_1600p+20250215023003.csa",
+        "sha256": "af07db4f43aa9589e9c03bf1f301e0927b252d718510ec9f63b28da708cf834d"
+      },
+      {
+        "path": "wdoor+floodgate-300-10F+20241225MerryChristmas+STATION+20250215033004.csa",
+        "sha256": "889f9f3f96c017139f09c75d12afbdf18729a1a58bf8917e80274ce9dc2ab494"
+      },
+      {
+        "path": "wdoor+floodgate-300-10F+20241225MerryChristmas+STATION+20250215060003.csa",
+        "sha256": "93dd3587cc624d3268f8f038224c83f02ae297660520110b9793611e149a1628"
+      },
+      {
+        "path": "wdoor+floodgate-300-10F+20241225MerryChristmas+STATION+20250215070005.csa",
+        "sha256": "81fdb0b65ea3357c4b879228ab147ac4c757c04105895e225286691fa3ad5ce3"
+      },
+      {
+        "path": "wdoor+floodgate-300-10F+20241225MerryChristmas+Yss1000k+20250101120003.csa",
+        "sha256": "a890e36600e6a4fc437ddd6c5653be0b75e4f91473c850c967cf5e055c6859c4"
+      },
+      {
+        "path": "wdoor+floodgate-300-10F+20241225MerryChristmas+sakana+20250215083004.csa",
+        "sha256": "a12a6117c27b8afca0cd6e0e8efe7e2cf25c42119d00ae75fc399ceac44e26d1"
+      },
+      {
+        "path": "wdoor+floodgate-300-10F+20241225MerryChristmas+test_i7-8550U+20250101103003.csa",
+        "sha256": "ecf7a5d060b446064cea8941ababee36860f7e7de01de6516a491c992bad7862"
+      },
+      {
+        "path": "wdoor+floodgate-300-10F+20241225MerryChristmas+test_i7-8550U+20250101110002.csa",
+        "sha256": "3463bdfb41742a10c6edbefaedf3f2e5c3187176134251146f237d0f9b5ac2a1"
+      },
+      {
+        "path": "wdoor+floodgate-300-10F+20241225MerryChristmas+test_i7-8550U+20250215043005.csa",
+        "sha256": "f8bb9de89997f00679ee944e75535e1597932f69c6f7a82e052c67625d7cb06e"
+      },
+      {
+        "path": "wdoor+floodgate-300-10F+20241225MerryChristmas+test_i7-8550U+20250215073003.csa",
+        "sha256": "63b17e3cc5f8b0477697fabcd1b1fec6037951c86c408618e540a30bd6168121"
+      },
+      {
+        "path": "wdoor+floodgate-300-10F+20250224a02000+SBrella_250223+20250224110009.csa",
+        "sha256": "e15dc741ae5fb22ebf8b2bf4b4c46463cf7bae8f5ebff8b6a49b4c93b703484c"
+      },
+      {
+        "path": "wdoor+floodgate-300-10F+20250224a02000+Yss1000k+20250224103003.csa",
+        "sha256": "1ca571ef6b37dac89669a731ec07cef32d54e3a8d2e2e2f07fe1243dab1b7c49"
+      }
+    ],
+    "extracted_records": 559,
+    "sampled_records": 512,
+    "sampled_sha256": "db5011e9bf7a5f19978234c1f92cf44d19c80ed2c27231b3388c998aef53249e",
+    "split_counts": {
+      "train": 340,
+      "valid": 106,
+      "test": 66
+    },
+    "validation_sha256": "ebe8493761967d0e0be6cb075be9c2209fe99b3e212b7a25c6974da4950cf772",
+    "test_sha256": "1fd01833a5e46b52ec8b80e7682161e57f932ffd3220aa5e229efecc53a1b2ae"
+  },
+  "arms": {
+    "baseline": {
+      "candidate_records": 340,
+      "training_records": 48,
+      "sha256": "af972be9cc4085695a4329a7aa288557662e4bcf4d1bdb37cba2a2132fffa69b"
+    },
+    "filtered": {
+      "candidate_records": 178,
+      "training_records": 48,
+      "sha256": "a2a34e589af50d2d6f9f77ca1483363cfccb3f6e43e39e498c742159cf1cd0d3"
+    },
+    "mined": {
+      "candidate_records": 64,
+      "training_records": 48,
+      "sha256": "929861b75634a4983835b500b9380b6df381a26fd5553233ab8c7ee394931a34"
+    },
+    "balanced": {
+      "candidate_records": 48,
+      "training_records": 48,
+      "sha256": "df1530a7d48fcd53629d118eaf7a571540328571c8bc07ad53f1eab27c71c3a0"
+    }
+  },
+  "seeds": [
+    101,
+    202,
+    303
+  ],
+  "runs": [
+    {
+      "arm": "baseline",
+      "seed": 101,
+      "wall_time_seconds": 0.33882,
+      "valid_loss_raw": 170849.6566,
+      "valid_loss_weighted": 170849.6566,
+      "valid_cp_mse": 170849.6566093323,
+      "valid_output_std": 0.006193666642560999,
+      "valid_output_range": 0.030139751732349396,
+      "train_count": 48,
+      "valid_count": 106,
+      "param_update_norm": null,
+      "checkpoint_hash": "06848d19b17bf212"
+    },
+    {
+      "arm": "baseline",
+      "seed": 202,
+      "wall_time_seconds": 0.190442,
+      "valid_loss_raw": 170841.745,
+      "valid_loss_weighted": 170841.745,
+      "valid_cp_mse": 170841.74498914758,
+      "valid_output_std": 0.016827076764510413,
+      "valid_output_range": 0.08449318259954453,
+      "train_count": 48,
+      "valid_count": 106,
+      "param_update_norm": null,
+      "checkpoint_hash": "30b75d8e8c51e027"
+    },
+    {
+      "arm": "baseline",
+      "seed": 303,
+      "wall_time_seconds": 0.190576,
+      "valid_loss_raw": 170844.9377,
+      "valid_loss_weighted": 170844.9377,
+      "valid_cp_mse": 170844.9376902308,
+      "valid_output_std": 0.010704882361865155,
+      "valid_output_range": 0.04887881875038147,
+      "train_count": 48,
+      "valid_count": 106,
+      "param_update_norm": null,
+      "checkpoint_hash": "7c0e8c0ad61c930f"
+    },
+    {
+      "arm": "filtered",
+      "seed": 101,
+      "wall_time_seconds": 0.191796,
+      "valid_loss_raw": 170833.1449,
+      "valid_loss_weighted": 170833.1449,
+      "valid_cp_mse": 170833.14493320335,
+      "valid_output_std": 0.02122382478113968,
+      "valid_output_range": 0.09585583209991455,
+      "train_count": 48,
+      "valid_count": 106,
+      "param_update_norm": null,
+      "checkpoint_hash": "5285500199542c39"
+    },
+    {
+      "arm": "filtered",
+      "seed": 202,
+      "wall_time_seconds": 0.190815,
+      "valid_loss_raw": 170808.0388,
+      "valid_loss_weighted": 170808.0388,
+      "valid_cp_mse": 170808.0388167641,
+      "valid_output_std": 0.05068283509447724,
+      "valid_output_range": 0.19733768701553345,
+      "train_count": 48,
+      "valid_count": 106,
+      "param_update_norm": null,
+      "checkpoint_hash": "bf198dcd5ea81d2a"
+    },
+    {
+      "arm": "filtered",
+      "seed": 303,
+      "wall_time_seconds": 0.200536,
+      "valid_loss_raw": 170822.73,
+      "valid_loss_weighted": 170822.73,
+      "valid_cp_mse": 170822.7299578634,
+      "valid_output_std": 0.0335743255276143,
+      "valid_output_range": 0.15228629112243652,
+      "train_count": 48,
+      "valid_count": 106,
+      "param_update_norm": null,
+      "checkpoint_hash": "77767b70ad0b2094"
+    },
+    {
+      "arm": "mined",
+      "seed": 101,
+      "wall_time_seconds": 0.18835,
+      "valid_loss_raw": 170847.3318,
+      "valid_loss_weighted": 170847.3318,
+      "valid_cp_mse": 170847.33184327706,
+      "valid_output_std": 0.009870744959956386,
+      "valid_output_range": 0.038839615881443024,
+      "train_count": 48,
+      "valid_count": 106,
+      "param_update_norm": null,
+      "checkpoint_hash": "9e13437929e29404"
+    },
+    {
+      "arm": "mined",
+      "seed": 202,
+      "wall_time_seconds": 0.189916,
+      "valid_loss_raw": 170843.0106,
+      "valid_loss_weighted": 170843.0106,
+      "valid_cp_mse": 170843.0105548697,
+      "valid_output_std": 0.016196495385880624,
+      "valid_output_range": 0.0649692639708519,
+      "train_count": 48,
+      "valid_count": 106,
+      "param_update_norm": null,
+      "checkpoint_hash": "6d251e8a738d917d"
+    },
+    {
+      "arm": "mined",
+      "seed": 303,
+      "wall_time_seconds": 0.188492,
+      "valid_loss_raw": 170849.3273,
+      "valid_loss_weighted": 170849.3273,
+      "valid_cp_mse": 170849.3273305331,
+      "valid_output_std": 0.010306600512278415,
+      "valid_output_range": 0.0456671416759491,
+      "train_count": 48,
+      "valid_count": 106,
+      "param_update_norm": null,
+      "checkpoint_hash": "3ba7123abdcd3e96"
+    },
+    {
+      "arm": "balanced",
+      "seed": 101,
+      "wall_time_seconds": 0.185568,
+      "valid_loss_raw": 170841.2079,
+      "valid_loss_weighted": 170841.2079,
+      "valid_cp_mse": 170841.20794207125,
+      "valid_output_std": 0.012778957001475029,
+      "valid_output_range": 0.0646480917930603,
+      "train_count": 48,
+      "valid_count": 106,
+      "param_update_norm": null,
+      "checkpoint_hash": "d9d9d5d587ce2cb2"
+    },
+    {
+      "arm": "balanced",
+      "seed": 202,
+      "wall_time_seconds": 0.190538,
+      "valid_loss_raw": 170800.793,
+      "valid_loss_weighted": 170800.793,
+      "valid_cp_mse": 170800.79303713227,
+      "valid_output_std": 0.05296230050806022,
+      "valid_output_range": 0.22306358814239502,
+      "train_count": 48,
+      "valid_count": 106,
+      "param_update_norm": null,
+      "checkpoint_hash": "29d5b575897aacbe"
+    },
+    {
+      "arm": "balanced",
+      "seed": 303,
+      "wall_time_seconds": 0.191576,
+      "valid_loss_raw": 170837.347,
+      "valid_loss_weighted": 170837.347,
+      "valid_cp_mse": 170837.34701920414,
+      "valid_output_std": 0.014011848588948883,
+      "valid_output_range": 0.06115201115608215,
+      "train_count": 48,
+      "valid_count": 106,
+      "param_update_norm": null,
+      "checkpoint_hash": "4e80510c9f3e4659"
+    }
+  ],
+  "summary": {
+    "baseline": {
+      "valid_cp_mse": {
+        "mean": 170845.44642957023,
+        "stdev": 3.980269497587643,
+        "min": 170841.74498914758,
+        "max": 170849.6566093323
+      },
+      "valid_loss_raw": {
+        "mean": 170845.44643333333,
+        "stdev": 3.9802588914910038,
+        "min": 170841.745,
+        "max": 170849.6566
+      }
+    },
+    "filtered": {
+      "valid_cp_mse": {
+        "mean": 170821.30456927695,
+        "stdev": 12.613606547376055,
+        "min": 170808.0388167641,
+        "max": 170833.14493320335
+      },
+      "valid_loss_raw": {
+        "mean": 170821.3045666667,
+        "stdev": 12.613602159707924,
+        "min": 170808.0388,
+        "max": 170833.1449
+      }
+    },
+    "mined": {
+      "valid_cp_mse": {
+        "mean": 170846.5565762266,
+        "stdev": 3.22896158928567,
+        "min": 170843.0105548697,
+        "max": 170849.3273305331
+      },
+      "valid_loss_raw": {
+        "mean": 170846.55656666667,
+        "stdev": 3.2289185129584905,
+        "min": 170843.0106,
+        "max": 170849.3273
+      }
+    },
+    "balanced": {
+      "valid_cp_mse": {
+        "mean": 170826.44933280256,
+        "stdev": 22.30270862445214,
+        "min": 170800.79303713227,
+        "max": 170841.20794207125
+      },
+      "valid_loss_raw": {
+        "mean": 170826.4493,
+        "stdev": 22.302711370371334,
+        "min": 170800.793,
+        "max": 170841.2079
+      }
+    }
+  },
+  "manifests": {
+    "filter_sha256": "fc2965110d3cbfb67e14f23de92a0a31da10dbb7294922e8661580d569c77262",
+    "balance_sha256": "da2b049db99a378fff9b9a735833fdd892160701f2b7393b373ee86b229eea12"
+  },
+  "preparation_steps": [
+    {
+      "name": "build-baseline",
+      "command": [
+        "cargo",
+        "build",
+        "--locked",
+        "--release",
+        "-p",
+        "sekirei"
+      ],
+      "wall_time_seconds": 36.196431,
+      "exit_code": 0
+    },
+    {
+      "name": "build-candidate-and-trainer",
+      "command": [
+        "cargo",
+        "build",
+        "--locked",
+        "--release",
+        "-p",
+        "sekirei",
+        "-p",
+        "sekirei-train"
+      ],
+      "wall_time_seconds": 41.551544,
+      "exit_code": 0
+    },
+    {
+      "name": "extract",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "extract",
+        "--input",
+        "<work>/corpus",
+        "--recursive",
+        "--min-ply",
+        "20",
+        "--max-ply",
+        "160",
+        "--every-n-plies",
+        "4",
+        "--dedup",
+        "--out",
+        "<work>/extracted.jsonl"
+      ],
+      "wall_time_seconds": 0.04455,
+      "exit_code": 0
+    },
+    {
+      "name": "sample",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "sample",
+        "--input",
+        "<work>/extracted.jsonl",
+        "--count",
+        "512",
+        "--seed",
+        "366",
+        "--out",
+        "<work>/sampled.jsonl"
+      ],
+      "wall_time_seconds": 0.00566,
+      "exit_code": 0
+    },
+    {
+      "name": "label-baseline",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "label",
+        "--input",
+        "<work>/sampled.jsonl",
+        "--engine",
+        "<work>/sekirei-baseline",
+        "--engine-name",
+        "sekirei-v0.3.65",
+        "--nodes",
+        "2000",
+        "--timeout-ms",
+        "60000",
+        "--jobs",
+        "1",
+        "--engine-option",
+        "Threads=1",
+        "--engine-option",
+        "SpecTopN=0",
+        "--usi-strict",
+        "--preserve-order",
+        "--out",
+        "<work>/baseline.jsonl"
+      ],
+      "wall_time_seconds": 0.806797,
+      "exit_code": 0
+    },
+    {
+      "name": "label-candidate",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "label",
+        "--input",
+        "<work>/sampled.jsonl",
+        "--engine",
+        "<work>/sekirei-candidate",
+        "--engine-name",
+        "sekirei-v0.3.66",
+        "--nodes",
+        "2000",
+        "--timeout-ms",
+        "60000",
+        "--jobs",
+        "1",
+        "--engine-option",
+        "Threads=1",
+        "--engine-option",
+        "SpecTopN=0",
+        "--usi-strict",
+        "--preserve-order",
+        "--out",
+        "<work>/candidate.jsonl"
+      ],
+      "wall_time_seconds": 0.589698,
+      "exit_code": 0
+    },
+    {
+      "name": "merge",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "merge-observations",
+        "--primary",
+        "<work>/baseline.jsonl",
+        "--secondary",
+        "<work>/candidate.jsonl",
+        "--out",
+        "<work>/merged.jsonl"
+      ],
+      "wall_time_seconds": 0.006882,
+      "exit_code": 0
+    },
+    {
+      "name": "stability",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "stability",
+        "--input",
+        "<work>/merged.jsonl",
+        "--out",
+        "<work>/stable.jsonl"
+      ],
+      "wall_time_seconds": 0.007583,
+      "exit_code": 0
+    },
+    {
+      "name": "split",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "split",
+        "--input",
+        "<work>/stable.jsonl",
+        "--train",
+        "<work>/train.jsonl",
+        "--valid",
+        "<work>/valid.jsonl",
+        "--test",
+        "<work>/test.jsonl",
+        "--valid-frac",
+        "0.2",
+        "--test-frac",
+        "0.2",
+        "--seed",
+        "366"
+      ],
+      "wall_time_seconds": 0.007459,
+      "exit_code": 0
+    },
+    {
+      "name": "filter-arm",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/train.jsonl",
+        "--require-engine-agreement",
+        "--max-engine-score-swing-cp",
+        "150",
+        "--exclude-mate",
+        "--manifest",
+        "<work>/filter-manifest.json",
+        "--out",
+        "<work>/filtered-candidates.jsonl"
+      ],
+      "wall_time_seconds": 0.004921,
+      "exit_code": 0
+    },
+    {
+      "name": "mine-arm",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "select",
+        "--strategy",
+        "uncertain",
+        "--input",
+        "<work>/train.jsonl",
+        "--count",
+        "64",
+        "--seed",
+        "366",
+        "--out",
+        "<work>/mined-candidates.jsonl"
+      ],
+      "wall_time_seconds": 0.00407,
+      "exit_code": 0
+    },
+    {
+      "name": "balance-arm",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "balance",
+        "--input",
+        "<work>/train.jsonl",
+        "--by",
+        "phase",
+        "--manifest",
+        "<work>/balance-manifest.json",
+        "--out",
+        "<work>/balanced-candidates.jsonl"
+      ],
+      "wall_time_seconds": 0.005679,
+      "exit_code": 0
+    },
+    {
+      "name": "sample-arm-baseline",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "sample",
+        "--input",
+        "<work>/train.jsonl",
+        "--count",
+        "48",
+        "--seed",
+        "366",
+        "--out",
+        "<work>/arm-baseline.jsonl"
+      ],
+      "wall_time_seconds": 0.003902,
+      "exit_code": 0
+    },
+    {
+      "name": "sample-arm-filtered",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "sample",
+        "--input",
+        "<work>/filtered-candidates.jsonl",
+        "--count",
+        "48",
+        "--seed",
+        "367",
+        "--out",
+        "<work>/arm-filtered.jsonl"
+      ],
+      "wall_time_seconds": 0.003429,
+      "exit_code": 0
+    },
+    {
+      "name": "sample-arm-mined",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "sample",
+        "--input",
+        "<work>/mined-candidates.jsonl",
+        "--count",
+        "48",
+        "--seed",
+        "368",
+        "--out",
+        "<work>/arm-mined.jsonl"
+      ],
+      "wall_time_seconds": 0.003276,
+      "exit_code": 0
+    },
+    {
+      "name": "sample-arm-balanced",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "sample",
+        "--input",
+        "<work>/balanced-candidates.jsonl",
+        "--count",
+        "48",
+        "--seed",
+        "369",
+        "--out",
+        "<work>/arm-balanced.jsonl"
+      ],
+      "wall_time_seconds": 0.003104,
+      "exit_code": 0
+    }
+  ]
+}

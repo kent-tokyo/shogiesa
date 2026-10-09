@@ -46,9 +46,21 @@ def run_logged(
             stderr=subprocess.STDOUT,
             check=False,
         )
+    portable_command = []
+    for argument in command:
+        portable = argument
+        for base, marker in ((ROOT, "<shogiesa>"), (work_dir, "<work>")):
+            base_text = str(base)
+            if portable == base_text:
+                portable = marker
+                break
+            if portable.startswith(f"{base_text}{os.sep}"):
+                portable = f"{marker}/{portable[len(base_text) + 1:]}"
+                break
+        portable_command.append(portable)
     record: dict[str, object] = {
         "name": name,
-        "command": command,
+        "command": portable_command,
         "wall_time_seconds": round(time.monotonic() - started, 6),
         "exit_code": result.returncode,
     }

@@ -25,6 +25,7 @@ required_files=(
   scripts/run_reproducibility_matrix.sh
   scripts/check_sekirei_compat.sh
   scripts/run_resource_baseline.py
+  scripts/run_sekirei_version_delta.py
   docs/measurements/reproducibility_matrix_2026-10-03.json
   tests/fixtures/sample.csa
   tests/fixtures/sample.kif
@@ -142,6 +143,7 @@ check_marker crates/shogiesa-cli/tests/cli_test.rs 'fn recipe_run_verify_and_reu
 check_marker crates/shogiesa-cli/tests/cli_test.rs 'fn validate_strict_rejects_future_schema_and_reports_version' 'strict validate future-schema regression'
 check_marker scripts/check_sekirei_compat.sh 'shogiesa\.sekirei-compat\.v1' 'Sekirei compatibility artifact schema'
 check_marker scripts/run_resource_baseline.py 'shogiesa\.resource-baseline\.v1' 'resource baseline artifact schema'
+check_marker scripts/run_sekirei_version_delta.py 'shogiesa\.sekirei-version-delta\.v1' 'Sekirei version delta artifact schema'
 check_marker docs/measurements/reproducibility_matrix_2026-10-03.json '"overall": "pass"' 'reproducibility matrix result'
 check_marker docs/measurements/reproducibility_matrix_2026-10-03.json '"axis": "worker_count"' 'reproducibility worker-count axis'
 check_marker tests/fixtures/pack_bad_magic.hex '^00000000000000000b00$' 'pack bad magic bytes'

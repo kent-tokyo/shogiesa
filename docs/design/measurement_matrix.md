@@ -45,7 +45,8 @@ For a fixed-node delta between two immutable Sekirei releases, use
 `Threads=1` and `SpecTopN=0`, labels the identical sampled corpus, and records disagreement and
 absolute cp-delta summaries. Input games are selected in sorted-path order up to `--max-games`,
 with every selected path and SHA-256 retained; an empty extraction fails the run. This is a
-search-output diagnostic, not an Elo or teacher-quality claim.
+search-output diagnostic, not an Elo or teacher-quality claim. Pass `--mined-out` when the selected
+position JSONL must be retained instead of only recording its count and SHA-256.
 
 For the bounded training pilot, use `scripts/run_sekirei_learning_ablation.py`. It creates
 equal-size baseline, filtered, uncertain-mined, and phase-balanced arms from one source-level

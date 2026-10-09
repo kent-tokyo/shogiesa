@@ -188,6 +188,7 @@ def main() -> int:
     parser.add_argument("--positions", type=int, default=256)
     parser.add_argument("--mine-count", type=int, default=64)
     parser.add_argument("--max-games", type=int, default=12)
+    parser.add_argument("--mined-out", type=Path)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--keep-work-dir", type=Path)
     args = parser.parse_args()
@@ -470,8 +471,13 @@ def main() -> int:
     }
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(artifact, indent=2) + "\n", encoding="utf-8")
+    if args.mined_out is not None:
+        args.mined_out.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(mined, args.mined_out)
     print(json.dumps(artifact["delta"], indent=2))
     print(f"artifact: {args.out}")
+    if args.mined_out is not None:
+        print(f"mined positions: {args.mined_out}")
     if temporary is not None:
         temporary.cleanup()
     return 0

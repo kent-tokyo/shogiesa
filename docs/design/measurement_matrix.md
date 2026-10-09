@@ -50,8 +50,9 @@ search-output diagnostic, not an Elo or teacher-quality claim.
 For the bounded training pilot, use `scripts/run_sekirei_learning_ablation.py`. It creates
 equal-size baseline, filtered, uncertain-mined, and phase-balanced arms from one source-level
 split, then runs each arm with three identical seeds against one frozen validation set. Compare
-the recorded `valid_cp_mse` distributions only within that artifact. One epoch on a small corpus
-is pipeline evidence, not a playing-strength or generalization result.
+the recorded `valid_cp_mse` distributions only within that artifact. The trainer uses a completed
+fixed-depth teacher search so a node-budget abort cannot inject an inexact label. One epoch on a
+small corpus is pipeline evidence, not a playing-strength or generalization result.
 
 Every run must retain the exact command line, repository commit, input/output hashes, engine and
 weight identity, options, seed, hardware/OS, and any blocked dependency or network reason. Missing

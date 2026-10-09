@@ -115,12 +115,12 @@ def main() -> int:
     parser.add_argument("--positions", type=int, default=512)
     parser.add_argument("--arm-size", type=int, default=64)
     parser.add_argument("--diagnostic-nodes", type=int, default=2_000)
-    parser.add_argument("--teacher-nodes", type=int, default=2_000)
+    parser.add_argument("--teacher-depth", type=int, default=1)
     parser.add_argument("--seeds", type=parse_seeds, default=parse_seeds("101,202,303"))
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--keep-work-dir", type=Path)
     args = parser.parse_args()
-    for name in ("max_games", "positions", "arm_size", "diagnostic_nodes", "teacher_nodes"):
+    for name in ("max_games", "positions", "arm_size", "diagnostic_nodes", "teacher_depth"):
         if getattr(args, name) <= 0:
             parser.error(f"--{name.replace('_', '-')} must be greater than zero")
 
@@ -375,8 +375,8 @@ def main() -> int:
                 str(checkpoint_dir),
                 "--epochs",
                 "1",
-                "--label-nodes",
-                str(args.teacher_nodes),
+                "--label-depth",
+                str(args.teacher_depth),
                 "--teacher-eval",
                 "material",
                 "--lr-schedule",
@@ -435,7 +435,7 @@ def main() -> int:
             "candidate": {"ref": args.candidate_ref, "commit": candidate_commit, "binary_sha256": sha256_file(candidate_engine)},
             "trainer_sha256": sha256_file(trainer),
             "diagnostic_nodes": args.diagnostic_nodes,
-            "teacher_nodes": args.teacher_nodes,
+            "teacher_depth": args.teacher_depth,
             "engine_options": {"Threads": 1, "SpecTopN": 0},
         },
         "corpus": {

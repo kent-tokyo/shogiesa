@@ -4,7 +4,23 @@ use std::path::Path;
 
 use assert_cmd::{Command, cargo::cargo_bin};
 use predicates::prelude::*;
-use tempfile::{NamedTempFile, TempDir};
+use tempfile::{NamedTempFile, TempDir, TempPath};
+
+/// Reserve a temporary output path without keeping its file handle open. Windows cannot
+/// atomically replace a destination while another process still holds the `NamedTempFile`
+/// handle, so command outputs use this helper while writable input fixtures keep using
+/// `NamedTempFile` directly.
+struct ClosedTempFile(TempPath);
+
+impl ClosedTempFile {
+    fn path(&self) -> &Path {
+        self.0.as_ref()
+    }
+}
+
+fn closed_temp_file() -> ClosedTempFile {
+    ClosedTempFile(NamedTempFile::new().unwrap().into_temp_path())
+}
 
 fn fixture(name: &str) -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -44,7 +60,7 @@ fn fake_usi_engine_bin() -> std::path::PathBuf {
 
 #[test]
 fn extract_creates_jsonl() {
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "extract",
@@ -68,7 +84,7 @@ fn extract_creates_jsonl() {
 
 #[test]
 fn extract_ply_filter_flag() {
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "extract",
@@ -91,7 +107,7 @@ fn extract_ply_filter_flag() {
 
 #[test]
 fn extract_directory_remains_shallow_by_default() {
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "extract",
@@ -109,8 +125,8 @@ fn extract_directory_remains_shallow_by_default() {
 
 #[test]
 fn extract_recursive_is_byte_stable_and_uses_sorted_relative_provenance() {
-    let out1 = NamedTempFile::new().unwrap();
-    let out2 = NamedTempFile::new().unwrap();
+    let out1 = closed_temp_file();
+    let out2 = closed_temp_file();
     for out in [&out1, &out2] {
         shogiesa()
             .args([
@@ -143,7 +159,7 @@ fn extract_recursive_is_byte_stable_and_uses_sorted_relative_provenance() {
 
 #[test]
 fn extract_recursive_deduplicates_across_the_whole_tree() {
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "extract",
@@ -174,7 +190,7 @@ fn extract_recursive_does_not_follow_symlink_cycles() {
     let input = TempDir::new().unwrap();
     std::fs::copy(fixture("sample.csa"), input.path().join("game.csa")).unwrap();
     symlink(input.path(), input.path().join("loop")).unwrap();
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
 
     shogiesa()
         .args([
@@ -204,7 +220,7 @@ fn extract_recursive_rejects_a_symlink_input_root() {
     std::fs::copy(fixture("sample.csa"), real_input.join("game.csa")).unwrap();
     let linked_input = parent.path().join("linked");
     symlink(&real_input, &linked_input).unwrap();
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
 
     shogiesa()
         .args([
@@ -229,7 +245,7 @@ fn extract_fixture_error_cases_preserve_valid_data_and_variation_provenance() {
         ("malformed.kif", 1usize),
         ("no-terminal.kif", 1usize),
     ] {
-        let out = NamedTempFile::new().unwrap();
+        let out = closed_temp_file();
         shogiesa()
             .args([
                 "extract",
@@ -251,7 +267,7 @@ fn extract_fixture_error_cases_preserve_valid_data_and_variation_provenance() {
         assert_eq!(records[0]["source"]["ply"], 1, "fixture {name}");
     }
 
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "extract",
@@ -281,7 +297,7 @@ fn extract_fixture_error_cases_preserve_valid_data_and_variation_provenance() {
 
 #[test]
 fn report_shows_stats() {
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "extract",
@@ -305,7 +321,7 @@ fn report_shows_stats() {
 
 #[test]
 fn dataset_diff_fixture_reports_semantic_changes_independent_of_input_order() {
-    let json_out = NamedTempFile::new().unwrap();
+    let json_out = closed_temp_file();
     let output = shogiesa()
         .args([
             "dataset-diff",
@@ -352,8 +368,8 @@ fn dataset_diff_fixture_reports_semantic_changes_independent_of_input_order() {
 
 #[test]
 fn dataset_diff_position_mode_treats_source_path_change_as_a_field_change() {
-    let baseline = NamedTempFile::new().unwrap();
-    let candidate = NamedTempFile::new().unwrap();
+    let baseline = closed_temp_file();
+    let candidate = closed_temp_file();
     let record = std::fs::read_to_string(fixture("dataset_diff_baseline.jsonl"))
         .unwrap()
         .lines()
@@ -389,7 +405,7 @@ fn dataset_diff_position_mode_treats_source_path_change_as_a_field_change() {
 
 #[test]
 fn recipe_plan_fixture_is_typed_deterministic_and_dry_run_only() {
-    let json_out = NamedTempFile::new().unwrap();
+    let json_out = closed_temp_file();
     let output = shogiesa()
         .args([
             "recipe",
@@ -823,8 +839,8 @@ fn block_report_keeps_roots_separate_and_reports_cp_summary() {
 
 #[test]
 fn report_shows_labeled_diagnostics() {
-    let pos = NamedTempFile::new().unwrap();
-    let obs = NamedTempFile::new().unwrap();
+    let pos = closed_temp_file();
+    let obs = closed_temp_file();
 
     shogiesa()
         .args([
@@ -872,8 +888,8 @@ fn report_shows_labeled_diagnostics() {
 
 #[test]
 fn report_hides_multipv_coverage_without_multipv() {
-    let pos = NamedTempFile::new().unwrap();
-    let obs = NamedTempFile::new().unwrap();
+    let pos = closed_temp_file();
+    let obs = closed_temp_file();
 
     shogiesa()
         .args([
@@ -910,9 +926,9 @@ fn report_hides_multipv_coverage_without_multipv() {
 
 #[test]
 fn report_shows_engine_disagreement() {
-    let pos = NamedTempFile::new().unwrap();
-    let obs1 = NamedTempFile::new().unwrap();
-    let obs2 = NamedTempFile::new().unwrap();
+    let pos = closed_temp_file();
+    let obs1 = closed_temp_file();
+    let obs2 = closed_temp_file();
 
     shogiesa()
         .args([
@@ -996,7 +1012,7 @@ fn report_eval_bucket_normalizes_to_black_perspective() {
 
 #[test]
 fn validate_clean_data_exits_0() {
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "extract",
@@ -1057,7 +1073,7 @@ fn assert_schema_compat(record: serde_json::Value) {
         .assert()
         .success();
 
-    let packed = NamedTempFile::new().unwrap();
+    let packed = closed_temp_file();
     shogiesa()
         .args([
             "pack",
@@ -1069,7 +1085,7 @@ fn assert_schema_compat(record: serde_json::Value) {
         .assert()
         .success();
 
-    let unpacked = NamedTempFile::new().unwrap();
+    let unpacked = closed_temp_file();
     shogiesa()
         .args([
             "unpack",
@@ -1244,7 +1260,7 @@ fn validate_broken_fixture_has_stable_normal_and_strict_outcomes() {
 
 #[test]
 fn validate_strict_clean_data_exits_0() {
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "extract",
@@ -1372,7 +1388,7 @@ fn label_rejects_malformed_or_ambiguous_search_limits() {
         ("--depths", "4,4", "--depths values must be distinct"),
         ("--nodes", "0", "--nodes values must be greater than zero"),
     ] {
-        let out = NamedTempFile::new().unwrap();
+        let out = closed_temp_file();
         shogiesa()
             .args([
                 "label",
@@ -1399,7 +1415,7 @@ fn label_rejects_zero_runtime_controls() {
         ("--jobs", "--jobs must be greater than zero"),
         ("--multipv", "--multipv must be greater than zero"),
     ] {
-        let out = NamedTempFile::new().unwrap();
+        let out = closed_temp_file();
         shogiesa()
             .args([
                 "label",
@@ -1436,7 +1452,7 @@ fn label_rejects_malformed_duplicate_and_multipv_engine_options() {
         ),
     ];
     for (options, message) in cases {
-        let out = NamedTempFile::new().unwrap();
+        let out = closed_temp_file();
         let mut command = shogiesa();
         command.args([
             "label",
@@ -1458,8 +1474,8 @@ fn label_rejects_malformed_duplicate_and_multipv_engine_options() {
 
 #[test]
 fn label_adds_observations() {
-    let pos = NamedTempFile::new().unwrap();
-    let obs = NamedTempFile::new().unwrap();
+    let pos = closed_temp_file();
+    let obs = closed_temp_file();
 
     // 1. extract 5 positions from sample.csa
     shogiesa()
@@ -1506,8 +1522,8 @@ fn label_adds_observations() {
 
 #[test]
 fn label_multipv_populates_margin() {
-    let pos = NamedTempFile::new().unwrap();
-    let obs = NamedTempFile::new().unwrap();
+    let pos = closed_temp_file();
+    let obs = closed_temp_file();
 
     shogiesa()
         .args([
@@ -1546,9 +1562,9 @@ fn label_multipv_populates_margin() {
 
 #[test]
 fn label_appends_to_existing_observations() {
-    let pos = NamedTempFile::new().unwrap();
-    let obs1 = NamedTempFile::new().unwrap();
-    let obs2 = NamedTempFile::new().unwrap();
+    let pos = closed_temp_file();
+    let obs1 = closed_temp_file();
+    let obs2 = closed_temp_file();
 
     shogiesa()
         .args([
@@ -1602,9 +1618,9 @@ fn label_appends_to_existing_observations() {
 
 #[test]
 fn label_skip_existing_avoids_duplicate() {
-    let pos = NamedTempFile::new().unwrap();
-    let obs1 = NamedTempFile::new().unwrap();
-    let obs2 = NamedTempFile::new().unwrap();
+    let pos = closed_temp_file();
+    let obs1 = closed_temp_file();
+    let obs2 = closed_temp_file();
 
     shogiesa()
         .args([
@@ -1664,10 +1680,10 @@ fn label_skip_existing_avoids_duplicate() {
 
 #[test]
 fn label_existing_policy_distinguishes_multipv_setting() {
-    let pos = NamedTempFile::new().unwrap();
-    let single = NamedTempFile::new().unwrap();
-    let multipv = NamedTempFile::new().unwrap();
-    let replaced = NamedTempFile::new().unwrap();
+    let pos = closed_temp_file();
+    let single = closed_temp_file();
+    let multipv = closed_temp_file();
+    let replaced = closed_temp_file();
 
     shogiesa()
         .args([
@@ -1760,9 +1776,9 @@ fn label_existing_policy_distinguishes_multipv_setting() {
 
 #[test]
 fn label_skip_existing_no_duplicate_on_early_stop_divergence() {
-    let pos = NamedTempFile::new().unwrap();
-    let obs1 = NamedTempFile::new().unwrap();
-    let obs2 = NamedTempFile::new().unwrap();
+    let pos = closed_temp_file();
+    let obs1 = closed_temp_file();
+    let obs2 = closed_temp_file();
 
     shogiesa()
         .args([
@@ -1830,9 +1846,9 @@ fn label_skip_existing_no_duplicate_on_early_stop_divergence() {
 
 #[test]
 fn label_replace_existing_overwrites() {
-    let pos = NamedTempFile::new().unwrap();
-    let obs1 = NamedTempFile::new().unwrap();
-    let obs2 = NamedTempFile::new().unwrap();
+    let pos = closed_temp_file();
+    let obs1 = closed_temp_file();
+    let obs2 = closed_temp_file();
 
     shogiesa()
         .args([
@@ -1928,7 +1944,7 @@ fn label_jobs_2_is_unordered_by_default_and_preserve_order_matches_input_order()
 
     // Default (no flag): interrupt-safe, write-as-completed -- same set of records, but order is
     // not guaranteed to match input order.
-    let unordered_out = NamedTempFile::new().unwrap();
+    let unordered_out = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -1962,7 +1978,7 @@ fn label_jobs_2_is_unordered_by_default_and_preserve_order_matches_input_order()
     );
 
     // --preserve-order: opt-in to strict input-order output (trades interrupt-safety for order).
-    let ordered_out = NamedTempFile::new().unwrap();
+    let ordered_out = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -1992,7 +2008,7 @@ fn label_jobs_2_is_unordered_by_default_and_preserve_order_matches_input_order()
 #[test]
 fn label_skip_and_replace_existing_conflict() {
     let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -2014,8 +2030,8 @@ fn label_skip_and_replace_existing_conflict() {
 #[test]
 fn label_manifest_records_engine_and_depths() {
     let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
-    let out = NamedTempFile::new().unwrap();
-    let manifest_path = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let manifest_path = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -2060,8 +2076,8 @@ fn label_manifest_reports_timeout_salvaged_count() {
     // exercises the salvage path end to end through the real `label` CLI without flaking under
     // scheduler jitter.
     let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
-    let out = NamedTempFile::new().unwrap();
-    let manifest_path = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let manifest_path = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -2101,7 +2117,7 @@ fn label_manifest_reports_timeout_salvaged_count() {
 #[test]
 fn label_nodes_sends_go_nodes_and_populates_requested_nodes() {
     let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -2130,7 +2146,7 @@ fn label_nodes_sends_go_nodes_and_populates_requested_nodes() {
 #[test]
 fn label_depths_and_nodes_conflict() {
     let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -2152,7 +2168,7 @@ fn label_depths_and_nodes_conflict() {
 #[test]
 fn label_requires_depths_or_nodes() {
     let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -2170,7 +2186,7 @@ fn label_requires_depths_or_nodes() {
 #[test]
 fn label_records_seldepth_nps_hashfull() {
     let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -2198,7 +2214,7 @@ fn label_records_seldepth_nps_hashfull() {
 fn label_records_engine_options_hash() {
     let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
     let run = |option: &str| -> String {
-        let out = NamedTempFile::new().unwrap();
+        let out = closed_temp_file();
         shogiesa()
             .args([
                 "label",
@@ -2241,8 +2257,8 @@ fn label_records_engine_options_hash() {
 #[test]
 fn label_weight_file_populates_weight_sha256_on_observations_and_manifest() {
     let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
-    let out = NamedTempFile::new().unwrap();
-    let manifest_path = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let manifest_path = closed_temp_file();
     let mut weight_file = NamedTempFile::new().unwrap();
     weight_file.write_all(b"fake nnue weight bytes").unwrap();
     weight_file.flush().unwrap();
@@ -2284,7 +2300,7 @@ fn label_weight_file_populates_weight_sha256_on_observations_and_manifest() {
 #[test]
 fn label_weight_file_directory_errors_clearly() {
     let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     let weight_dir = TempDir::new().unwrap();
 
     shogiesa()
@@ -2311,8 +2327,8 @@ fn label_weight_file_directory_errors_clearly() {
 #[test]
 fn label_manifest_records_experiment_envelope_fields() {
     let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
-    let out = NamedTempFile::new().unwrap();
-    let manifest_path = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let manifest_path = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -2364,8 +2380,8 @@ fn label_manifest_records_experiment_envelope_fields() {
 #[test]
 fn label_manifest_records_dataset_sha256_matching_raw_file_hash() {
     let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
-    let out = NamedTempFile::new().unwrap();
-    let manifest_path = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let manifest_path = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -2398,8 +2414,8 @@ fn label_manifest_records_dataset_sha256_matching_raw_file_hash() {
 #[test]
 fn label_manifest_records_binary_sha256() {
     let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
-    let out = NamedTempFile::new().unwrap();
-    let manifest_path = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let manifest_path = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -2432,8 +2448,8 @@ fn label_manifest_records_binary_sha256() {
 #[test]
 fn label_manifest_records_engine_threads_and_hash_mb() {
     let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
-    let out = NamedTempFile::new().unwrap();
-    let manifest_path = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let manifest_path = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -2467,7 +2483,7 @@ fn label_usi_strict_off_does_not_flag_illegal_bestmove() {
     // 5i5g is a king "move" two ranks in one step -- not legal for any piece, regardless of
     // board state (see is_legal_bestmove_lite_accepts_drop_and_promotion's own use of it).
     let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -2497,8 +2513,8 @@ fn label_usi_strict_off_does_not_flag_illegal_bestmove() {
 #[test]
 fn label_usi_strict_detects_illegal_bestmove_and_discards_observation() {
     let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
-    let out = NamedTempFile::new().unwrap();
-    let manifest_path = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let manifest_path = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -2546,8 +2562,8 @@ fn label_without_restart_on_protocol_error_keeps_reusing_engine_after_violation(
             serde_json::json!([]),
         ),
     ]);
-    let out = NamedTempFile::new().unwrap();
-    let manifest_path = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let manifest_path = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -2593,8 +2609,8 @@ fn label_restart_on_protocol_error_relaunches_engine_after_violation() {
             serde_json::json!([]),
         ),
     ]);
-    let out = NamedTempFile::new().unwrap();
-    let manifest_path = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let manifest_path = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -2630,7 +2646,7 @@ fn label_restart_on_protocol_error_relaunches_engine_after_violation() {
 #[test]
 fn label_transcript_on_error_writes_a_file() {
     let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     let transcript_dir = TempDir::new().unwrap();
     shogiesa()
         .args([
@@ -2678,8 +2694,8 @@ fn label_restart_engine_every_cycles_without_losing_data() {
             serde_json::json!([]),
         ),
     ]);
-    let out = NamedTempFile::new().unwrap();
-    let manifest_path = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let manifest_path = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -2761,8 +2777,8 @@ fn label_dead_engine_unconditionally_restarts_and_recovers_next_position() {
             serde_json::json!([]),
         ),
     ]);
-    let out = NamedTempFile::new().unwrap();
-    let manifest_path = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let manifest_path = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -2814,8 +2830,8 @@ fn label_cache_dir_distinguishes_depth_and_nodes_at_same_numeric_value() {
     let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
     let cache_dir = TempDir::new().unwrap();
 
-    let out1 = NamedTempFile::new().unwrap();
-    let manifest1 = NamedTempFile::new().unwrap();
+    let out1 = closed_temp_file();
+    let manifest1 = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -2840,8 +2856,8 @@ fn label_cache_dir_distinguishes_depth_and_nodes_at_same_numeric_value() {
 
     // Same numeric value, but --nodes instead of --depths -- must be a full cache miss, not a
     // false hit against the --depths 8 entry cached above.
-    let out2 = NamedTempFile::new().unwrap();
-    let manifest2 = NamedTempFile::new().unwrap();
+    let out2 = closed_temp_file();
+    let manifest2 = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -2871,8 +2887,8 @@ fn label_cache_dir_distinguishes_depth_and_nodes_at_same_numeric_value() {
 #[test]
 fn shuffle_manifest_records_shuffle_seed() {
     let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
-    let out = NamedTempFile::new().unwrap();
-    let manifest_path = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let manifest_path = closed_temp_file();
     shogiesa()
         .args([
             "shuffle",
@@ -2895,7 +2911,7 @@ fn shuffle_manifest_records_shuffle_seed() {
 
 #[test]
 fn label_cache_dir_hits_on_second_run_and_output_matches() {
-    let pos = NamedTempFile::new().unwrap();
+    let pos = closed_temp_file();
     shogiesa()
         .args([
             "extract",
@@ -2908,8 +2924,8 @@ fn label_cache_dir_hits_on_second_run_and_output_matches() {
         .success();
 
     let cache_dir = TempDir::new().unwrap();
-    let out1 = NamedTempFile::new().unwrap();
-    let manifest1 = NamedTempFile::new().unwrap();
+    let out1 = closed_temp_file();
+    let manifest1 = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -2935,8 +2951,8 @@ fn label_cache_dir_hits_on_second_run_and_output_matches() {
     assert_eq!(manifest1["cache_misses"], observations_total);
 
     // Re-run against the same (now-populated) cache dir and input, with a fresh --out.
-    let out2 = NamedTempFile::new().unwrap();
-    let manifest2 = NamedTempFile::new().unwrap();
+    let out2 = closed_temp_file();
+    let manifest2 = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -2972,7 +2988,7 @@ fn label_cache_dir_hits_on_second_run_and_output_matches() {
 
 #[test]
 fn label_manifest_reports_throughput_metrics() {
-    let pos = NamedTempFile::new().unwrap();
+    let pos = closed_temp_file();
     shogiesa()
         .args([
             "extract",
@@ -2984,8 +3000,8 @@ fn label_manifest_reports_throughput_metrics() {
         .assert()
         .success();
 
-    let out = NamedTempFile::new().unwrap();
-    let manifest = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let manifest = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -3028,7 +3044,7 @@ fn label_manifest_reports_throughput_metrics() {
 
 #[test]
 fn label_manifest_preserve_order_flag_is_reported_true_when_passed() {
-    let pos = NamedTempFile::new().unwrap();
+    let pos = closed_temp_file();
     shogiesa()
         .args([
             "extract",
@@ -3040,8 +3056,8 @@ fn label_manifest_preserve_order_flag_is_reported_true_when_passed() {
         .assert()
         .success();
 
-    let out = NamedTempFile::new().unwrap();
-    let manifest = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let manifest = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -3066,7 +3082,7 @@ fn label_manifest_preserve_order_flag_is_reported_true_when_passed() {
 
 #[test]
 fn label_manifest_cache_hit_rate_reflects_hits_and_misses() {
-    let pos = NamedTempFile::new().unwrap();
+    let pos = closed_temp_file();
     shogiesa()
         .args([
             "extract",
@@ -3079,8 +3095,8 @@ fn label_manifest_cache_hit_rate_reflects_hits_and_misses() {
         .success();
 
     let cache_dir = TempDir::new().unwrap();
-    let out1 = NamedTempFile::new().unwrap();
-    let manifest1 = NamedTempFile::new().unwrap();
+    let out1 = closed_temp_file();
+    let manifest1 = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -3106,8 +3122,8 @@ fn label_manifest_cache_hit_rate_reflects_hits_and_misses() {
         "first run: nothing cached yet"
     );
 
-    let out2 = NamedTempFile::new().unwrap();
-    let manifest2 = NamedTempFile::new().unwrap();
+    let out2 = closed_temp_file();
+    let manifest2 = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -3169,7 +3185,7 @@ fn label_resume_from_skips_already_covered_and_labels_the_rest() {
         ),
     ]);
 
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -3240,7 +3256,7 @@ fn label_resume_from_tolerates_an_unreadable_record_and_relabels_it() {
     .unwrap();
     partial_out.flush().unwrap();
 
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -3274,7 +3290,7 @@ fn label_resume_from_tolerates_an_unreadable_record_and_relabels_it() {
 fn label_resume_from_missing_path_is_a_noop() {
     let input = make_labeled_jsonl(&[position_at_ply(1, serde_json::json!([]))]);
     let missing = std::env::temp_dir().join("shogiesa_test_resume_from_does_not_exist.jsonl");
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -3298,7 +3314,7 @@ fn label_resume_from_missing_path_is_a_noop() {
 #[test]
 fn label_resume_from_same_as_out_is_rejected() {
     let input = make_labeled_jsonl(&[position_at_ply(1, serde_json::json!([]))]);
-    let same = NamedTempFile::new().unwrap();
+    let same = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -3330,8 +3346,8 @@ fn label_manifest_reports_resumed_count() {
         1,
         serde_json::json!([obs_with_engine("FakeUsiEngine", "9i9h", 999, 4)]),
     )]);
-    let out = NamedTempFile::new().unwrap();
-    let manifest = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let manifest = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -3366,7 +3382,7 @@ fn label_manifest_reports_resumed_count() {
 /// sharded/atomic file layout `label_cache_path`/`write_cache_entry_atomically` produce, not a
 /// hand-approximated one.
 fn populate_cache_dir() -> TempDir {
-    let pos = NamedTempFile::new().unwrap();
+    let pos = closed_temp_file();
     shogiesa()
         .args([
             "extract",
@@ -3379,7 +3395,7 @@ fn populate_cache_dir() -> TempDir {
         .success();
 
     let cache_dir = TempDir::new().unwrap();
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -3434,7 +3450,7 @@ fn cache_stats_reports_entry_count_and_engine_distribution() {
 
 #[test]
 fn cache_stats_reports_search_limit_kind_distribution() {
-    let pos = NamedTempFile::new().unwrap();
+    let pos = closed_temp_file();
     shogiesa()
         .args([
             "extract",
@@ -3447,7 +3463,7 @@ fn cache_stats_reports_search_limit_kind_distribution() {
         .success();
 
     let cache_dir = TempDir::new().unwrap();
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -3859,7 +3875,7 @@ fn position_with_path_and_phase(
 #[test]
 fn filter_no_observations_excluded() {
     let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "filter",
@@ -3880,7 +3896,7 @@ fn filter_bestmove_agreement_passes() {
         "middlegame",
         serde_json::json!([obs("7g7f", 50, 4), obs("7g7f", 55, 6),]),
     )]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "filter",
@@ -3905,7 +3921,7 @@ fn filter_bestmove_disagreement_excluded() {
             obs("2b3c", 55, 6), // different bestmove
         ]),
     )]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "filter",
@@ -3929,7 +3945,7 @@ fn filter_bestmove_agreement_excludes_resign_from_comparison() {
         "middlegame",
         serde_json::json!([obs("resign", 50, 4), obs("7g7f", 55, 6)]),
     )]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "filter",
@@ -3947,10 +3963,10 @@ fn filter_bestmove_agreement_excludes_resign_from_comparison() {
 
 #[test]
 fn label_then_filter_keeps_record_when_one_engine_resigns() {
-    let pos = NamedTempFile::new().unwrap();
-    let obs1 = NamedTempFile::new().unwrap();
-    let obs2 = NamedTempFile::new().unwrap();
-    let filtered = NamedTempFile::new().unwrap();
+    let pos = closed_temp_file();
+    let obs1 = closed_temp_file();
+    let obs2 = closed_temp_file();
+    let filtered = closed_temp_file();
 
     shogiesa()
         .args([
@@ -4020,9 +4036,9 @@ fn label_then_filter_keeps_record_when_one_engine_resigns() {
 
 #[test]
 fn report_engine_disagreement_excludes_resign() {
-    let pos = NamedTempFile::new().unwrap();
-    let obs1 = NamedTempFile::new().unwrap();
-    let obs2 = NamedTempFile::new().unwrap();
+    let pos = closed_temp_file();
+    let obs1 = closed_temp_file();
+    let obs2 = closed_temp_file();
 
     shogiesa()
         .args([
@@ -4213,7 +4229,7 @@ fn stability_excludes_resign_from_bestmove_agreement() {
         "middlegame",
         serde_json::json!([obs("resign", 50, 4), obs("2b3c", 300, 6)]),
     )]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "stability",
@@ -4242,7 +4258,7 @@ fn filter_score_swing_excluded() {
             obs("7g7f", 300, 6), // swing = 250 cp
         ]),
     )]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "filter",
@@ -4270,7 +4286,7 @@ fn filter_require_engine_agreement_single_engine_passes() {
             obs_with_engine("engineA", "2g2f", 55, 6),
         ]),
     )]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "filter",
@@ -4295,7 +4311,7 @@ fn filter_require_engine_agreement_excludes_disagreement() {
             obs_with_engine("engineB", "2g2f", 55, 4), // different engine, different bestmove
         ]),
     )]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "filter",
@@ -4320,7 +4336,7 @@ fn filter_max_engine_score_swing_cp_excludes_large_cross_engine_swing() {
             obs_with_engine("engineB", "7g7f", 300, 4), // agrees on bestmove, swing = 250cp
         ]),
     )]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "filter",
@@ -4350,7 +4366,7 @@ fn filter_min_policy_margin_cp() {
         ), // high margin, kept
         position("middlegame", serde_json::json!([obs("7g7f", 100, 4)])), // no margin computed, kept
     ]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "filter",
@@ -4375,7 +4391,7 @@ fn filter_require_exact_score_excludes_non_exact() {
         position("middlegame", serde_json::json!([non_exact])),
         position("middlegame", serde_json::json!([obs("8h2b+", 100, 4)])), // exact (default), kept
     ]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "filter",
@@ -4400,7 +4416,7 @@ fn filter_require_policy_margin_excludes_missing_margin() {
             serde_json::json!([obs_with_margin("8h2b+", 100, 4, 50)]),
         ), // has margin, kept
     ]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "filter",
@@ -4423,7 +4439,7 @@ fn filter_min_depth_reached_excludes_shallow_but_exempts_mate() {
         position("middlegame", serde_json::json!([obs("8h2b+", 100, 10)])), // deep enough, kept
         position("middlegame", serde_json::json!([obs_mate("7g7f", 3, 6)])), // shallow mate, kept
     ]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "filter",
@@ -4446,8 +4462,8 @@ fn filter_explain_out_records_rejected_with_full_reasons() {
         position("opening", serde_json::json!([obs("7g7f", 50, 4)])),
         position("opening", serde_json::json!([obs_mate("7g7f", 3, 4)])),
     ]);
-    let out = NamedTempFile::new().unwrap();
-    let explain_out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let explain_out = closed_temp_file();
     shogiesa()
         .args([
             "filter",
@@ -4486,7 +4502,7 @@ fn filter_explain_out_works_standalone_with_dry_run() {
         "opening",
         serde_json::json!([obs_mate("7g7f", 3, 4)]),
     )]);
-    let explain_out = NamedTempFile::new().unwrap();
+    let explain_out = closed_temp_file();
     shogiesa()
         .args([
             "filter",
@@ -4510,7 +4526,7 @@ fn filter_exclude_mate() {
         position("middlegame", serde_json::json!([obs("7g7f", 50, 4)])),
         position("middlegame", serde_json::json!([obs_mate("7g7f", 3, 4)])),
     ]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "filter",
@@ -4535,7 +4551,7 @@ fn filter_exclude_timeout_salvaged() {
             serde_json::json!([obs_timeout_salvaged("7g7f", 50, 4)]),
         ),
     ]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "filter",
@@ -4557,7 +4573,7 @@ fn filter_require_requested_depth_reached_rejects_salvaged_mate_underreach_by_de
         "endgame",
         serde_json::json!([obs_mate_salvaged_underreach("7g7f", 3, 8, 12)]),
     )]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "filter",
@@ -4579,7 +4595,7 @@ fn filter_allow_timeout_salvaged_mate_keeps_the_record() {
         "endgame",
         serde_json::json!([obs_mate_salvaged_underreach("7g7f", 3, 8, 12)]),
     )]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "filter",
@@ -4603,7 +4619,7 @@ fn filter_eval_range() {
         position("middlegame", serde_json::json!([obs("7g7f", 100, 4)])),  // OK
         position("middlegame", serde_json::json!([obs("7g7f", -1500, 4)])), // too low (<-1200)
     ]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "filter",
@@ -4627,7 +4643,7 @@ fn filter_phase() {
         position("middlegame", serde_json::json!([obs("7g7f", 50, 4)])),
         position("endgame", serde_json::json!([obs("7g7f", 50, 4)])),
     ]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "filter",
@@ -4652,7 +4668,7 @@ fn filter_phase_rejects_unknown_empty_and_duplicate_values() {
         ("opening,", "--phase contains an empty value"),
         ("opening,opening", "--phase values must be distinct"),
     ] {
-        let out = NamedTempFile::new().unwrap();
+        let out = closed_temp_file();
         shogiesa()
             .args([
                 "filter",
@@ -4691,7 +4707,7 @@ fn filter_rejects_impossible_quality_ranges() {
         ),
     ];
     for (options, message) in cases {
-        let out = NamedTempFile::new().unwrap();
+        let out = closed_temp_file();
         let mut command = shogiesa();
         command.args([
             "filter",
@@ -4724,7 +4740,7 @@ fn filter_exclude_in_check() {
         position_with_flags(false, false),
         position_with_flags(true, false),
     ]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "filter",
@@ -4746,7 +4762,7 @@ fn filter_exclude_capture() {
         position_with_flags(false, false),
         position_with_flags(false, true),
     ]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "filter",
@@ -4770,8 +4786,8 @@ fn filter_preset_loads_config_from_tune_output() {
     // --preset ...:broad` must produce byte-identical output to an explicit
     // `--min-policy-margin-cp 0` run on the same input.
     let f = pareto_fixture();
-    let tune_out = NamedTempFile::new().unwrap();
-    let preset = NamedTempFile::new().unwrap();
+    let tune_out = closed_temp_file();
+    let preset = closed_temp_file();
     shogiesa()
         .args([
             "tune",
@@ -4791,7 +4807,7 @@ fn filter_preset_loads_config_from_tune_output() {
         .assert()
         .success();
 
-    let via_preset = NamedTempFile::new().unwrap();
+    let via_preset = closed_temp_file();
     shogiesa()
         .args([
             "filter",
@@ -4805,7 +4821,7 @@ fn filter_preset_loads_config_from_tune_output() {
         .assert()
         .success();
 
-    let via_flags = NamedTempFile::new().unwrap();
+    let via_flags = closed_temp_file();
     shogiesa()
         .args([
             "filter",
@@ -4834,8 +4850,8 @@ fn filter_preset_loads_config_from_tune_output() {
 #[test]
 fn filter_preset_unknown_label_errors() {
     let f = pareto_fixture();
-    let tune_out = NamedTempFile::new().unwrap();
-    let preset = NamedTempFile::new().unwrap();
+    let tune_out = closed_temp_file();
+    let preset = closed_temp_file();
     shogiesa()
         .args([
             "tune",
@@ -4855,7 +4871,7 @@ fn filter_preset_unknown_label_errors() {
         .assert()
         .success();
 
-    let filtered_out = NamedTempFile::new().unwrap();
+    let filtered_out = closed_temp_file();
     shogiesa()
         .args([
             "filter",
@@ -4874,9 +4890,9 @@ fn filter_preset_unknown_label_errors() {
 #[test]
 fn filter_preset_conflicts_with_individual_flags() {
     let f = pareto_fixture();
-    let preset = NamedTempFile::new().unwrap();
+    let preset = closed_temp_file();
     std::fs::write(preset.path(), "{}").unwrap();
-    let filtered_out = NamedTempFile::new().unwrap();
+    let filtered_out = closed_temp_file();
     shogiesa()
         .args([
             "filter",
@@ -4896,7 +4912,7 @@ fn filter_preset_conflicts_with_individual_flags() {
 
 #[test]
 fn calibrate_sweep_policy_margin_produces_golden_csv_rows() {
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "calibrate",
@@ -4924,7 +4940,7 @@ fn calibrate_sweep_score_swing_produces_golden_csv_rows() {
         "opening",
         serde_json::json!([obs("7g7f", 50, 4), obs("7g7f", 300, 6)]),
     )]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "calibrate",
@@ -4952,7 +4968,7 @@ fn calibrate_reports_dataset_wide_diagnostics_independent_of_sweep() {
             serde_json::json!([obs_with_margin("7g7f", 50, 4, 80)]),
         ),
     ]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "calibrate",
@@ -4975,7 +4991,7 @@ fn calibrate_reports_dataset_wide_diagnostics_independent_of_sweep() {
 #[test]
 fn calibrate_requires_at_least_one_sweep_flag() {
     let f = make_labeled_jsonl(&[position("opening", serde_json::json!([obs("7g7f", 50, 4)]))]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "calibrate",
@@ -4994,7 +5010,7 @@ fn calibrate_requires_at_least_one_sweep_flag() {
 #[test]
 fn calibrate_sweep_and_hold_flag_on_the_same_field_are_mutually_exclusive() {
     let f = make_labeled_jsonl(&[position("opening", serde_json::json!([obs("7g7f", 50, 4)]))]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "calibrate",
@@ -5027,7 +5043,7 @@ fn calibrate_rejects_duplicate_and_negative_sweep_values() {
             "--sweep-score-swing values must be non-negative",
         ),
     ] {
-        let out = NamedTempFile::new().unwrap();
+        let out = closed_temp_file();
         shogiesa()
             .args([
                 "calibrate",
@@ -5088,7 +5104,7 @@ fn audit_groups_by_engine_not_across_engines() {
             audit_obs("engineB", "7g7f", cp(100), 6, Some(6)),
         ]),
     )]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "audit",
@@ -5145,7 +5161,7 @@ fn audit_rejects_nonpositive_duplicate_or_nonshallower_depths() {
             "--student-depths must all be shallower than --teacher-depth 14",
         ),
     ] {
-        let out = NamedTempFile::new().unwrap();
+        let out = closed_temp_file();
         shogiesa()
             .args([
                 "audit",
@@ -5175,7 +5191,7 @@ fn audit_falls_back_to_achieved_depth_when_requested_depth_is_absent() {
             audit_obs("engineA", "7g7f", cp(80), 6, None),
         ]),
     )]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "audit",
@@ -5208,7 +5224,7 @@ fn audit_uses_a_short_mate_teacher_without_flagging_underreach() {
             audit_obs("engineA", "7g7f", cp(100), 6, Some(6)),
         ]),
     )]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "audit",
@@ -5245,7 +5261,7 @@ fn audit_bestmove_match_is_vacuous_when_student_resigns() {
             audit_obs("engineA", "resign", cp(100), 6, Some(6)),
         ]),
     )]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "audit",
@@ -5278,7 +5294,7 @@ fn audit_score_error_cp_normalizes_through_black_perspective() {
             audit_obs("engineA", "7g7f", cp(-50), 6, Some(6)),
         ]),
     )]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "audit",
@@ -5381,7 +5397,7 @@ fn pareto_fixture() -> NamedTempFile {
 #[test]
 fn tune_csv_grid_has_expected_coverage_and_mismatch_per_threshold() {
     let f = pareto_fixture();
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "tune",
@@ -5475,7 +5491,7 @@ fn cartesian_fixture() -> NamedTempFile {
 #[test]
 fn tune_grid_is_a_full_cartesian_product_of_both_swept_axes() {
     let f = cartesian_fixture();
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "tune",
@@ -5520,7 +5536,7 @@ fn tune_grid_is_a_full_cartesian_product_of_both_swept_axes() {
 #[test]
 fn tune_rejects_a_student_depth_equal_to_the_teacher() {
     let f = cartesian_fixture();
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "tune",
@@ -5545,8 +5561,8 @@ fn tune_rejects_a_student_depth_equal_to_the_teacher() {
 #[test]
 fn tune_report_produces_three_distinct_pareto_candidates() {
     let f = pareto_fixture();
-    let out = NamedTempFile::new().unwrap();
-    let report = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let report = closed_temp_file();
     shogiesa()
         .args([
             "tune",
@@ -5603,8 +5619,8 @@ fn tune_report_collapses_candidates_when_frontier_has_one_point() {
             ]),
         ),
     ]);
-    let out = NamedTempFile::new().unwrap();
-    let report = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let report = closed_temp_file();
     shogiesa()
         .args([
             "tune",
@@ -5631,7 +5647,7 @@ fn tune_report_collapses_candidates_when_frontier_has_one_point() {
 #[test]
 fn tune_requires_at_least_one_sweep_flag() {
     let f = pareto_fixture();
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "tune",
@@ -5654,7 +5670,7 @@ fn tune_requires_at_least_one_sweep_flag() {
 #[test]
 fn tune_no_report_flag_writes_only_csv() {
     let f = pareto_fixture();
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "tune",
@@ -5677,8 +5693,8 @@ fn tune_no_report_flag_writes_only_csv() {
 #[test]
 fn tune_preset_out_writes_three_candidates_with_full_configs() {
     let f = pareto_fixture();
-    let out = NamedTempFile::new().unwrap();
-    let preset = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let preset = closed_temp_file();
     shogiesa()
         .args([
             "tune",
@@ -5738,8 +5754,8 @@ fn tune_preset_out_collapses_like_report_does() {
             ]),
         ),
     ]);
-    let out = NamedTempFile::new().unwrap();
-    let preset = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let preset = closed_temp_file();
     shogiesa()
         .args([
             "tune",
@@ -5770,8 +5786,8 @@ fn tune_preset_out_empty_when_no_audit_pairs() {
     // an empty (not missing, not erroring) presets map, mirroring --report's own "no audit data"
     // informative-but-Ok path.
     let f = pareto_fixture();
-    let out = NamedTempFile::new().unwrap();
-    let preset = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let preset = closed_temp_file();
     shogiesa()
         .args([
             "tune",
@@ -5803,7 +5819,7 @@ fn stability_populates_swing_and_agreement() {
         "middlegame",
         serde_json::json!([obs("7g7f", 50, 4), obs("7g7f", 300, 6)]),
     )]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "stability",
@@ -5827,7 +5843,7 @@ fn stability_detects_disagreement() {
         "middlegame",
         serde_json::json!([obs("7g7f", 50, 4), obs("2b3c", 50, 6)]),
     )]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "stability",
@@ -5848,7 +5864,7 @@ fn stability_detects_disagreement() {
 #[test]
 fn stability_skips_unlabeled() {
     let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "stability",
@@ -5887,7 +5903,7 @@ fn mine_detects_blunder_and_window() {
     // ply1=+50, ply2=+300 → swing=250 > threshold 150
     // window=1 → ply1, ply2, ply3 all included
     let f = make_labeled_jsonl(&[game_pos(1, 50), game_pos(2, 300), game_pos(3, 310)]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "mine",
@@ -5909,7 +5925,7 @@ fn mine_detects_blunder_and_window() {
 #[test]
 fn mine_no_blunder_empty_output() {
     let f = make_labeled_jsonl(&[game_pos(1, 50), game_pos(2, 60)]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "mine",
@@ -5930,7 +5946,7 @@ fn mine_no_blunder_empty_output() {
 fn mine_losing_threshold() {
     // ply2 eval=-600 for black → included with --losing-threshold=500
     let f = make_labeled_jsonl(&[game_pos(1, 100), game_pos(2, -600), game_pos(3, -580)]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "mine",
@@ -5962,7 +5978,7 @@ fn balance_by_phase_defaults_to_min_bucket() {
         position("middlegame", serde_json::json!([obs("7g7f", 120, 4)])),
         position("endgame", serde_json::json!([obs("7g7f", 200, 4)])),
     ]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "balance",
@@ -5990,7 +6006,7 @@ fn balance_target_override() {
         position("middlegame", serde_json::json!([obs("7g7f", 120, 4)])),
         position("endgame", serde_json::json!([obs("7g7f", 200, 4)])),
     ]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "balance",
@@ -6029,7 +6045,7 @@ fn pr8_heap_fixture() -> NamedTempFile {
 #[test]
 fn balance_bounded_heap_resolves_tie_contest_by_earliest_index() {
     let f = pr8_heap_fixture();
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "balance",
@@ -6059,7 +6075,7 @@ fn balance_bounded_heap_auto_target_matches_pre_refactor_golden_output() {
         position_with_path_and_phase("posM1", "b6.csa", "middlegame", serde_json::json!([])),
         position_with_path_and_phase("posM2", "b7.csa", "middlegame", serde_json::json!([])),
     ]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "balance",
@@ -6093,7 +6109,7 @@ fn balance_by_eval_bucket_normalizes_to_black_perspective() {
         position_white_to_move("middlegame", serde_json::json!([obs("3c3d", 250, 4)])),
         position_white_to_move("middlegame", serde_json::json!([obs("3c3d", 260, 4)])),
     ]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "balance",
@@ -6148,7 +6164,7 @@ fn stratify_write_template_writes_observed_bucket_counts() {
         position("opening", serde_json::json!([])),
         position("middlegame", serde_json::json!([])),
     ]);
-    let template = NamedTempFile::new().unwrap();
+    let template = closed_temp_file();
 
     shogiesa()
         .args([
@@ -6184,7 +6200,7 @@ fn stratify_write_template_then_quota_unedited_keeps_everything() {
         position("opening", serde_json::json!([])),
         position("middlegame", serde_json::json!([])),
     ]);
-    let template = NamedTempFile::new().unwrap();
+    let template = closed_temp_file();
     shogiesa()
         .args([
             "stratify",
@@ -6198,7 +6214,7 @@ fn stratify_write_template_then_quota_unedited_keeps_everything() {
         .assert()
         .success();
 
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "stratify",
@@ -6219,7 +6235,7 @@ fn stratify_write_template_then_quota_unedited_keeps_everything() {
 #[test]
 fn stratify_write_template_requires_by() {
     let input = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
-    let template = NamedTempFile::new().unwrap();
+    let template = closed_temp_file();
     shogiesa()
         .args([
             "stratify",
@@ -6244,7 +6260,7 @@ fn stratify_quota_keeps_up_to_each_bucket_quota() {
     }
     let input = make_labeled_jsonl(&records);
     let quota = stratify_quota_file(&["phase"], &[("opening:", 2), ("middlegame:", 1)]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
 
     shogiesa()
         .args([
@@ -6272,8 +6288,8 @@ fn stratify_drops_bucket_not_in_quota_distinctly_from_over_quota() {
         position("endgame", serde_json::json!([])),
     ]);
     let quota = stratify_quota_file(&["phase"], &[("opening:", 1)]);
-    let out = NamedTempFile::new().unwrap();
-    let manifest = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let manifest = closed_temp_file();
 
     shogiesa()
         .args([
@@ -6311,7 +6327,7 @@ fn stratify_preserves_original_file_order() {
         position_with_path_and_phase("sfen-c", "root_c.csa", "opening", serde_json::json!([])),
     ]);
     let quota = stratify_quota_file(&["phase"], &[("opening:", 2)]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
 
     shogiesa()
         .args([
@@ -6369,7 +6385,7 @@ fn stratify_group_aware_quota_fill_diversifies_across_roots() {
         ));
         let input = make_labeled_jsonl(&records);
         let quota = stratify_quota_file(&["phase"], &[("opening:", 2)]);
-        let out = NamedTempFile::new().unwrap();
+        let out = closed_temp_file();
 
         shogiesa()
             .args([
@@ -6408,7 +6424,7 @@ fn stratify_single_root_bucket_keeps_first_n_in_file_order() {
         position_with_path_and_phase("posW", "game.csa", "opening", serde_json::json!([])),
     ]);
     let quota = stratify_quota_file(&["phase"], &[("opening:", 2)]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
 
     shogiesa()
         .args([
@@ -6445,8 +6461,8 @@ fn stratify_manifest_reports_root_diversity_stats() {
         position_with_path_and_phase("s3", "g3.csa", "middlegame", serde_json::json!([])),
     ]);
     let quota = stratify_quota_file(&["phase"], &[("opening:", 2), ("middlegame:", 1)]);
-    let out = NamedTempFile::new().unwrap();
-    let manifest = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let manifest = closed_temp_file();
 
     shogiesa()
         .args([
@@ -6486,7 +6502,7 @@ fn stratify_requires_exactly_one_of_write_template_or_quota() {
 #[test]
 fn stratify_write_template_and_quota_conflict() {
     let input = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
-    let template = NamedTempFile::new().unwrap();
+    let template = closed_temp_file();
     let quota = stratify_quota_file(&["phase"], &[("opening:", 1)]);
     shogiesa()
         .args([
@@ -6507,7 +6523,7 @@ fn stratify_write_template_and_quota_conflict() {
 fn stratify_quota_rejects_by_flag() {
     let input = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
     let quota = stratify_quota_file(&["phase"], &[("opening:", 1)]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "stratify",
@@ -6528,7 +6544,7 @@ fn stratify_quota_rejects_by_flag() {
 #[test]
 fn stratify_quota_loader_error_paths() {
     let input = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
 
     let missing = std::env::temp_dir().join("shogiesa_test_quota_does_not_exist.json");
     shogiesa()
@@ -7185,7 +7201,7 @@ fn sample_returns_exact_count() {
         position("endgame", serde_json::json!([obs("7g7f", 200, 4)])),
         position("endgame", serde_json::json!([obs("7g7f", 210, 4)])),
     ]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "sample",
@@ -7210,8 +7226,8 @@ fn sample_deterministic_with_seed() {
         position("middlegame", serde_json::json!([obs("7g7f", 110, 4)])),
         position("endgame", serde_json::json!([obs("7g7f", 200, 4)])),
     ]);
-    let out1 = NamedTempFile::new().unwrap();
-    let out2 = NamedTempFile::new().unwrap();
+    let out1 = closed_temp_file();
+    let out2 = closed_temp_file();
     for out in [&out1, &out2] {
         shogiesa()
             .args([
@@ -7241,7 +7257,7 @@ fn sample_deterministic_with_seed() {
 fn extract_dedup_zobrist_removes_duplicates() {
     // Extract from the same file twice (concat of two identical paths) would double-count,
     // but --dedup-zobrist removes them. We use --dedup-zobrist on a single file as a smoke test.
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "extract",
@@ -7261,9 +7277,9 @@ fn extract_dedup_zobrist_removes_duplicates() {
 #[test]
 fn filter_end_to_end_with_label() {
     // extract → label (fake engine) → filter with bestmove agreement → all pass
-    let pos = NamedTempFile::new().unwrap();
-    let obs_file = NamedTempFile::new().unwrap();
-    let filtered = NamedTempFile::new().unwrap();
+    let pos = closed_temp_file();
+    let obs_file = closed_temp_file();
+    let filtered = closed_temp_file();
 
     shogiesa()
         .args([
@@ -7316,8 +7332,8 @@ fn filter_manifest_records_drop_reasons_and_config() {
         position("opening", serde_json::json!([obs("7g7f", 50, 4)])),
         position("opening", serde_json::json!([obs_mate("7g7f", 3, 4)])),
     ]);
-    let out = NamedTempFile::new().unwrap();
-    let manifest_path = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let manifest_path = closed_temp_file();
     shogiesa()
         .args([
             "filter",
@@ -7381,7 +7397,7 @@ fn filter_dry_run_with_manifest_writes_manifest_no_output_file() {
         position("opening", serde_json::json!([obs("7g7f", 50, 4)])),
         position("opening", serde_json::json!([obs_mate("7g7f", 3, 4)])),
     ]);
-    let manifest_path = NamedTempFile::new().unwrap();
+    let manifest_path = closed_temp_file();
     shogiesa()
         .args([
             "filter",
@@ -7409,8 +7425,8 @@ fn balance_manifest_records_counts() {
         position("opening", serde_json::json!([obs("7g7f", 60, 4)])),
         position("middlegame", serde_json::json!([obs("7g7f", 100, 4)])),
     ]);
-    let out = NamedTempFile::new().unwrap();
-    let manifest_path = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let manifest_path = closed_temp_file();
     shogiesa()
         .args([
             "balance",
@@ -7468,7 +7484,7 @@ fn select_uncertain_ranks_worst_quality_first() {
     );
 
     let f = make_labeled_jsonl(&[clean, partial.clone(), worst.clone()]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "select",
@@ -7504,7 +7520,7 @@ fn select_hard_prioritizes_blunder_adjacent_position() {
         game_pos(2, 300), // swing 300 from ply1 >= default threshold 200
         game_pos(3, 305), // swing 5 from ply2, not a blunder
     ]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "select",
@@ -7548,7 +7564,7 @@ fn select_hard_breaks_ties_by_per_record_score_swing() {
     let high_swing = multi_obs_position(2, &[120, 600]);
 
     let f = make_labeled_jsonl(&[low_swing, high_swing]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "select",
@@ -7583,7 +7599,7 @@ fn select_hard_grouped_streaming_matches_materialized_for_blunder_adjacency() {
     // Same scenario as select_hard_prioritizes_blunder_adjacent_position, run through the
     // grouped-streaming path instead -- proves the two code paths agree on grouped input.
     let f = make_labeled_jsonl(&[game_pos(1, 0), game_pos(2, 300), game_pos(3, 305)]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "select",
@@ -7629,7 +7645,7 @@ fn select_hard_grouped_streaming_matches_materialized_for_swing_tiebreak() {
     let high_swing = multi_obs_position(2, &[120, 600]);
 
     let f = make_labeled_jsonl(&[low_swing, high_swing]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "select",
@@ -7681,7 +7697,7 @@ fn select_hard_grouped_streaming_ranks_across_group_boundaries() {
     let easier_second = multi_obs_position("gameB.csa", 1, &[100, 110]); // swing 10
 
     let f = make_labeled_jsonl(&[harder_first, easier_second]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "select",
@@ -7720,7 +7736,7 @@ fn select_coverage_prioritizes_thin_bucket() {
     records.push(position("endgame", serde_json::json!([])));
 
     let f = make_labeled_jsonl(&records);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "select",
@@ -7752,8 +7768,8 @@ fn sample_manifest_records_counts() {
         position("opening", serde_json::json!([obs("7g7f", 60, 4)])),
         position("opening", serde_json::json!([obs("7g7f", 70, 4)])),
     ]);
-    let out = NamedTempFile::new().unwrap();
-    let manifest_path = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let manifest_path = closed_temp_file();
     shogiesa()
         .args([
             "sample",
@@ -7809,7 +7825,7 @@ fn source_paths_in_order(content: &str) -> Vec<String> {
 #[test]
 fn sample_bounded_heap_matches_pre_refactor_golden_output() {
     let f = pr7_heap_fixture();
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "sample",
@@ -7835,7 +7851,7 @@ fn sample_bounded_heap_matches_pre_refactor_golden_output() {
 #[test]
 fn select_uncertain_bounded_heap_matches_pre_refactor_golden_output() {
     let f = pr7_heap_fixture();
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "select",
@@ -7863,7 +7879,7 @@ fn select_uncertain_bounded_heap_matches_pre_refactor_golden_output() {
 #[test]
 fn select_coverage_bounded_heap_matches_pre_refactor_golden_output() {
     let f = pr7_heap_fixture();
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "select",
@@ -7890,7 +7906,7 @@ fn select_coverage_bounded_heap_matches_pre_refactor_golden_output() {
 #[test]
 fn sample_count_larger_than_dataset_keeps_everything() {
     let f = pr7_heap_fixture();
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "sample",
@@ -7910,7 +7926,7 @@ fn sample_count_larger_than_dataset_keeps_everything() {
 #[test]
 fn sample_count_zero_selects_nothing() {
     let f = pr7_heap_fixture();
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "sample",
@@ -7930,7 +7946,7 @@ fn sample_count_zero_selects_nothing() {
 #[test]
 fn select_uncertain_count_larger_than_dataset_keeps_everything() {
     let f = pr7_heap_fixture();
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "select",
@@ -7969,7 +7985,7 @@ fn pr7_tie_contest_fixture() -> NamedTempFile {
 #[test]
 fn sample_bounded_heap_resolves_full_tie_contest_by_earliest_index() {
     let f = pr7_tie_contest_fixture();
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "sample",
@@ -7991,7 +8007,7 @@ fn sample_bounded_heap_resolves_full_tie_contest_by_earliest_index() {
 #[test]
 fn select_uncertain_bounded_heap_resolves_full_tie_contest_by_earliest_index() {
     let f = pr7_tie_contest_fixture();
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "select",
@@ -8015,7 +8031,7 @@ fn select_uncertain_bounded_heap_resolves_full_tie_contest_by_earliest_index() {
 #[test]
 fn select_coverage_bounded_heap_resolves_full_tie_contest_by_earliest_index() {
     let f = pr7_tie_contest_fixture();
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "select",
@@ -8042,8 +8058,8 @@ fn pack_manifest_records_counts() {
         position("opening", serde_json::json!([obs("7g7f", 50, 4)])),
         position("opening", serde_json::json!([obs("7g7f", 60, 4)])),
     ]);
-    let out = NamedTempFile::new().unwrap();
-    let manifest_path = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let manifest_path = closed_temp_file();
     shogiesa()
         .args([
             "pack",
@@ -8071,9 +8087,9 @@ fn pack_manifest_records_counts() {
 
 #[test]
 fn pack_fixture_round_trip_and_manifest_hashes_are_stable() {
-    let packed = NamedTempFile::new().unwrap();
-    let unpacked = NamedTempFile::new().unwrap();
-    let manifest_path = NamedTempFile::new().unwrap();
+    let packed = closed_temp_file();
+    let unpacked = closed_temp_file();
+    let manifest_path = closed_temp_file();
 
     shogiesa()
         .args([
@@ -8160,7 +8176,7 @@ fn unpack_corrupt_pack_fixtures_fails_without_output_claim() {
         ("pack_truncated_record.hex", "truncated pack record"),
     ] {
         let corrupt = write_hex_fixture(name);
-        let out = NamedTempFile::new().unwrap();
+        let out = closed_temp_file();
         std::fs::write(out.path(), PREVIOUS_OUTPUT).unwrap();
         shogiesa()
             .args([
@@ -8183,8 +8199,8 @@ fn unpack_corrupt_pack_fixtures_fails_without_output_claim() {
 
 #[test]
 fn pack_mixed_fixture_reports_skipped_line_in_manifest() {
-    let packed = NamedTempFile::new().unwrap();
-    let manifest_path = NamedTempFile::new().unwrap();
+    let packed = closed_temp_file();
+    let manifest_path = closed_temp_file();
     shogiesa()
         .args([
             "pack",
@@ -8217,8 +8233,8 @@ fn same_input_file_produces_same_manifest_input_hash_across_commands() {
         position("opening", serde_json::json!([obs("7g7f", 50, 4)])),
         position("opening", serde_json::json!([obs("7g7f", 60, 4)])),
     ]);
-    let filter_out = NamedTempFile::new().unwrap();
-    let filter_manifest = NamedTempFile::new().unwrap();
+    let filter_out = closed_temp_file();
+    let filter_manifest = closed_temp_file();
     shogiesa()
         .args([
             "filter",
@@ -8232,8 +8248,8 @@ fn same_input_file_produces_same_manifest_input_hash_across_commands() {
         .assert()
         .success();
 
-    let sample_out = NamedTempFile::new().unwrap();
-    let sample_manifest = NamedTempFile::new().unwrap();
+    let sample_out = closed_temp_file();
+    let sample_manifest = closed_temp_file();
     shogiesa()
         .args([
             "sample",
@@ -8249,8 +8265,8 @@ fn same_input_file_produces_same_manifest_input_hash_across_commands() {
         .assert()
         .success();
 
-    let label_out = NamedTempFile::new().unwrap();
-    let label_manifest = NamedTempFile::new().unwrap();
+    let label_out = closed_temp_file();
+    let label_manifest = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -8306,8 +8322,8 @@ fn manifest_common_keys_present_across_commands() {
 
     let mut manifests = Vec::new();
 
-    let label_out = NamedTempFile::new().unwrap();
-    let label_manifest = NamedTempFile::new().unwrap();
+    let label_out = closed_temp_file();
+    let label_manifest = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -8326,8 +8342,8 @@ fn manifest_common_keys_present_across_commands() {
         .success();
     manifests.push(("label", label_manifest));
 
-    let filter_out = NamedTempFile::new().unwrap();
-    let filter_manifest = NamedTempFile::new().unwrap();
+    let filter_out = closed_temp_file();
+    let filter_manifest = closed_temp_file();
     shogiesa()
         .args([
             "filter",
@@ -8342,8 +8358,8 @@ fn manifest_common_keys_present_across_commands() {
         .success();
     manifests.push(("filter", filter_manifest));
 
-    let sample_out = NamedTempFile::new().unwrap();
-    let sample_manifest = NamedTempFile::new().unwrap();
+    let sample_out = closed_temp_file();
+    let sample_manifest = closed_temp_file();
     shogiesa()
         .args([
             "sample",
@@ -8360,8 +8376,8 @@ fn manifest_common_keys_present_across_commands() {
         .success();
     manifests.push(("sample", sample_manifest));
 
-    let balance_out = NamedTempFile::new().unwrap();
-    let balance_manifest = NamedTempFile::new().unwrap();
+    let balance_out = closed_temp_file();
+    let balance_manifest = closed_temp_file();
     shogiesa()
         .args([
             "balance",
@@ -8378,8 +8394,8 @@ fn manifest_common_keys_present_across_commands() {
         .success();
     manifests.push(("balance", balance_manifest));
 
-    let pack_out = NamedTempFile::new().unwrap();
-    let pack_manifest = NamedTempFile::new().unwrap();
+    let pack_out = closed_temp_file();
+    let pack_manifest = closed_temp_file();
     shogiesa()
         .args([
             "pack",
@@ -8410,7 +8426,7 @@ fn manifest_common_keys_present_across_commands() {
 
 #[test]
 fn from_match_extracts_positions_from_startpos_kifu() {
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "from-match",
@@ -8443,7 +8459,7 @@ fn from_match_extracts_positions_from_startpos_kifu() {
 
 #[test]
 fn from_match_losing_side_engine1_keeps_only_engine2_win_games() {
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "from-match",
@@ -8463,7 +8479,7 @@ fn from_match_losing_side_engine1_keeps_only_engine2_win_games() {
 
 #[test]
 fn from_match_losing_side_engine2_keeps_only_engine1_win_games() {
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "from-match",
@@ -8494,7 +8510,7 @@ fn from_match_no_losing_side_keeps_all_games() {
         dir.path().join("match_engine2_wins.txt"),
     )
     .unwrap();
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "from-match",
@@ -8523,7 +8539,7 @@ fn from_match_handles_directory_of_kifu_files() {
         dir.path().join("match_engine2_wins.txt"),
     )
     .unwrap();
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "from-match",
@@ -8554,7 +8570,7 @@ fn from_match_promotion_and_drop_tokens_apply_correctly() {
     // The exact real kifu line verified during planning (34 move tokens, including a promotion
     // "9g5c+" and several drops "B*7e"/"P*9i"/"L*5d"/"S*6h"/"N*5g"). If any token failed to parse
     // or apply, extraction would stop early (fewer than 34 records).
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "from-match",
@@ -8581,7 +8597,7 @@ fn from_match_position_sfen_line_extracts_from_the_given_starting_position() {
     // `startpos`) are parsed via `Board::from_sfen` and replayed from that starting position --
     // not skipped. The fixture's SFEN is the standard initial position (move_count 1), so after
     // one move (`7g7f`) exactly one position (ply 1) is extracted.
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "from-match",
@@ -8615,7 +8631,7 @@ fn from_match_position_sfen_nonstandard_start_continues_ply_from_move_count() {
     // not restart at 0/1 -- otherwise every downstream ply-dependent behavior (phase
     // classification, ply histograms/distribution, --min-ply/--max-ply filters) would silently
     // misclassify every position extracted from a non-startpos game.
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "from-match",
@@ -8645,7 +8661,7 @@ fn from_match_position_sfen_with_king_in_hand_is_skipped_not_crashed() {
     // other unparseable game), not a panic -- `PieceType::hand_idx()` has no entry for King, so
     // without `Sfen::parse` rejecting this up front, `Board::from_sfen` would panic instead of
     // returning an `Err` for `extract_from_match_kifu` to warn-and-skip on.
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "from-match",
@@ -8665,7 +8681,7 @@ fn from_match_position_sfen_with_king_in_hand_is_skipped_not_crashed() {
 #[test]
 fn from_match_no_txt_files_found_errors() {
     let dir = TempDir::new().unwrap();
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "from-match",
@@ -8683,7 +8699,7 @@ fn from_match_no_txt_files_found_errors() {
 fn from_match_output_feeds_into_label_and_filter() {
     // Proves from-match's PositionRecord output is fully compatible with the existing pipeline,
     // end to end: from-match -> label -> filter.
-    let extracted = NamedTempFile::new().unwrap();
+    let extracted = closed_temp_file();
     shogiesa()
         .args([
             "from-match",
@@ -8695,7 +8711,7 @@ fn from_match_output_feeds_into_label_and_filter() {
         .assert()
         .success();
 
-    let labeled = NamedTempFile::new().unwrap();
+    let labeled = closed_temp_file();
     shogiesa()
         .args([
             "label",
@@ -8711,7 +8727,7 @@ fn from_match_output_feeds_into_label_and_filter() {
         .assert()
         .success();
 
-    let filtered = NamedTempFile::new().unwrap();
+    let filtered = closed_temp_file();
     shogiesa()
         .args([
             "filter",
@@ -8750,7 +8766,7 @@ fn merge_observations_keep_both_keeps_all_colliding_observations() {
         position_at_ply(1, serde_json::json!([obs("3c3d", 60, 4)])), // shared, collides with above
         position_at_ply(3, serde_json::json!([obs("8c8d", 20, 4)])), // secondary-only
     ]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "merge-observations",
@@ -8807,7 +8823,7 @@ fn merge_observations_prefer_primary_drops_secondary_on_collision() {
         make_labeled_jsonl(&[position_at_ply(1, serde_json::json!([obs("7g7f", 50, 4)]))]);
     let secondary =
         make_labeled_jsonl(&[position_at_ply(1, serde_json::json!([obs("3c3d", 60, 4)]))]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "merge-observations",
@@ -8835,7 +8851,7 @@ fn merge_observations_prefer_secondary_replaces_primary_on_collision() {
         make_labeled_jsonl(&[position_at_ply(1, serde_json::json!([obs("7g7f", 50, 4)]))]);
     let secondary =
         make_labeled_jsonl(&[position_at_ply(1, serde_json::json!([obs("3c3d", 60, 4)]))]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "merge-observations",
@@ -9092,7 +9108,7 @@ fn make_gate_openings_diversifies_across_roots() {
         }
         records.push(gate_record("R", "gameB.csa", 10));
         let input = make_labeled_jsonl(&records);
-        let out = NamedTempFile::new().unwrap();
+        let out = closed_temp_file();
 
         shogiesa()
             .args([
@@ -9135,7 +9151,7 @@ fn make_gate_openings_dedups_identical_starting_position() {
         gate_record("P", "gameB.csa", 20), // duplicate of the above (same board+side+hand)
         gate_record("L", "gameC.csa", 10),
     ]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
 
     shogiesa()
         .args([
@@ -9184,7 +9200,7 @@ fn make_gate_openings_dedup_does_not_inflate_rank_for_other_records() {
         gate_record("R", "gameB.csa", 20),
         gate_record("B", "gameB.csa", 30),
     ]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
 
     shogiesa()
         .args([
@@ -9225,8 +9241,8 @@ fn make_gate_openings_min_ply_filters_early_positions() {
         gate_record("N", "game.csa", 8),
         gate_record("S", "game.csa", 20),
     ]);
-    let out = NamedTempFile::new().unwrap();
-    let manifest = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let manifest = closed_temp_file();
 
     shogiesa()
         .args([
@@ -9259,8 +9275,8 @@ fn make_gate_openings_max_ply_filters_late_positions() {
         gate_record("L", "game.csa", 50),
         gate_record("N", "game.csa", 100),
     ]);
-    let out = NamedTempFile::new().unwrap();
-    let manifest = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let manifest = closed_temp_file();
 
     shogiesa()
         .args([
@@ -9299,8 +9315,8 @@ fn make_gate_openings_skips_invalid_sfen_without_crashing() {
     )
     .unwrap();
     f.flush().unwrap();
-    let out = NamedTempFile::new().unwrap();
-    let manifest = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let manifest = closed_temp_file();
 
     shogiesa()
         .args([
@@ -9329,7 +9345,7 @@ fn make_gate_openings_skips_invalid_sfen_without_crashing() {
 #[test]
 fn make_gate_openings_writes_plain_sfen_lines_not_jsonl() {
     let input = make_labeled_jsonl(&[gate_record("P", "game.csa", 10)]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
 
     shogiesa()
         .args([
@@ -9363,7 +9379,7 @@ fn make_gate_openings_count_larger_than_dataset_keeps_everything() {
         gate_record("P", "gameA.csa", 10),
         gate_record("L", "gameB.csa", 10),
     ]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
 
     shogiesa()
         .args([
@@ -9387,7 +9403,7 @@ fn make_gate_openings_count_larger_than_dataset_keeps_everything() {
 #[test]
 fn make_gate_openings_count_zero_selects_nothing() {
     let input = make_labeled_jsonl(&[gate_record("P", "gameA.csa", 10)]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
 
     shogiesa()
         .args([
@@ -9414,8 +9430,8 @@ fn make_gate_openings_manifest_reports_root_diversity_stats() {
         gate_record("L", "gameB.csa", 10),
         gate_record("N", "gameC.csa", 10),
     ]);
-    let out = NamedTempFile::new().unwrap();
-    let manifest = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let manifest = closed_temp_file();
 
     shogiesa()
         .args([
@@ -9449,8 +9465,8 @@ fn make_gate_openings_manifest_reports_root_diversity_stats() {
 #[test]
 fn make_gate_openings_manifest_records_selection_seed_and_algorithm_version() {
     let input = make_labeled_jsonl(&[gate_record("-", "gameA.csa", 10)]);
-    let out = NamedTempFile::new().unwrap();
-    let manifest = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let manifest = closed_temp_file();
 
     shogiesa()
         .args([
@@ -9493,8 +9509,8 @@ fn make_gate_openings_manifest_canonical_valid_count_distinct_from_records_kept_
         gate_record("PPP", "gameA.csa", 10),
         gate_record("PPPP", "gameA.csa", 10),
     ]);
-    let out = NamedTempFile::new().unwrap();
-    let manifest = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let manifest = closed_temp_file();
 
     shogiesa()
         .args([
@@ -9528,8 +9544,8 @@ fn make_gate_openings_manifest_output_sha256_is_deterministic_and_changes_with_c
     ]);
 
     let run = |count: &str| -> String {
-        let out = NamedTempFile::new().unwrap();
-        let manifest = NamedTempFile::new().unwrap();
+        let out = closed_temp_file();
+        let manifest = closed_temp_file();
         shogiesa()
             .args([
                 "make-gate-openings",
@@ -9572,8 +9588,8 @@ fn make_gate_openings_manifest_distributions_sum_to_records_kept() {
         gate_record("P", "gameB.csa", 10),
         gate_record("PP", "gameC.csa", 10),
     ]);
-    let out = NamedTempFile::new().unwrap();
-    let manifest = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let manifest = closed_temp_file();
 
     shogiesa()
         .args([
@@ -9640,8 +9656,8 @@ const UNPLAYABLE_MATE_SFEN: &str =
 #[test]
 fn make_gate_openings_keeps_playable_position() {
     let input = make_labeled_jsonl(&[gate_record("P", "game.csa", 10)]);
-    let out = NamedTempFile::new().unwrap();
-    let manifest = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let manifest = closed_temp_file();
 
     shogiesa()
         .args([
@@ -9673,7 +9689,7 @@ fn make_gate_openings_drops_unplayable_position_by_default() {
         gate_record("P", "gameA.csa", 10),
         gate_record_with_sfen(UNPLAYABLE_MATE_SFEN, "gameB.csa", 8),
     ]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
 
     shogiesa()
         .args([
@@ -9708,8 +9724,8 @@ fn make_gate_openings_manifest_reports_unplayable_count() {
         gate_record("P", "gameA.csa", 10),
         gate_record_with_sfen(UNPLAYABLE_MATE_SFEN, "gameB.csa", 8),
     ]);
-    let out = NamedTempFile::new().unwrap();
-    let manifest = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let manifest = closed_temp_file();
 
     shogiesa()
         .args([
@@ -9739,8 +9755,8 @@ fn make_gate_openings_allow_unplayable_keeps_zero_legal_move_position() {
         gate_record("P", "gameA.csa", 10),
         gate_record_with_sfen(UNPLAYABLE_MATE_SFEN, "gameB.csa", 8),
     ]);
-    let out = NamedTempFile::new().unwrap();
-    let manifest = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let manifest = closed_temp_file();
 
     shogiesa()
         .args([
@@ -9790,7 +9806,7 @@ fn lineprior_export(input: &Path, out: &Path, extra: &[&str]) -> assert_cmd::ass
 
 #[test]
 fn lineprior_export_creates_jsonl_from_csa() {
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     lineprior_export(&fixture("sample.csa"), out.path(), &[]).success();
 
     let content = std::fs::read_to_string(out.path()).unwrap();
@@ -9815,7 +9831,7 @@ fn lineprior_export_creates_jsonl_from_csa() {
 
 #[test]
 fn lineprior_export_creates_jsonl_from_kif() {
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     lineprior_export(&fixture("sample.kif"), out.path(), &[]).success();
 
     let content = std::fs::read_to_string(out.path()).unwrap();
@@ -9831,7 +9847,7 @@ fn lineprior_export_creates_jsonl_from_kif() {
 
 #[test]
 fn lineprior_export_max_ply_truncates_but_outcome_still_correct() {
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     lineprior_export(&fixture("sample.csa"), out.path(), &["--max-ply", "3"]).success();
 
     let content = std::fs::read_to_string(out.path()).unwrap();
@@ -9861,7 +9877,7 @@ fn lineprior_export_max_ply_does_not_drop_variation_moves() {
     )
     .unwrap();
 
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     lineprior_export(&kif_path, out.path(), &["--max-ply", "2"]).success();
 
     let content = std::fs::read_to_string(out.path()).unwrap();
@@ -9892,7 +9908,7 @@ fn lineprior_export_max_ply_does_not_drop_variation_moves() {
 
 #[test]
 fn lineprior_export_rejects_invalid_state_format() {
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     lineprior_export(
         &fixture("sample.csa"),
         out.path(),
@@ -9903,8 +9919,8 @@ fn lineprior_export_rejects_invalid_state_format() {
 
 #[test]
 fn lineprior_export_sequence_id_stable_across_repeated_runs() {
-    let out1 = NamedTempFile::new().unwrap();
-    let out2 = NamedTempFile::new().unwrap();
+    let out1 = closed_temp_file();
+    let out2 = closed_temp_file();
     lineprior_export(&fixture("sample.kif"), out1.path(), &[]).success();
     lineprior_export(&fixture("sample.kif"), out2.path(), &[]).success();
 
@@ -9928,8 +9944,8 @@ fn lineprior_export_manifest_shape_and_counts() {
     std::fs::copy(fixture("sample.csa"), dir.path().join("a.csa")).unwrap();
     std::fs::copy(fixture("sample.kif"), dir.path().join("b.kif")).unwrap();
 
-    let out = NamedTempFile::new().unwrap();
-    let manifest = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let manifest = closed_temp_file();
     lineprior_export(
         dir.path(),
         out.path(),
@@ -9958,10 +9974,10 @@ fn lineprior_export_manifest_input_hash_stable_across_repeated_runs() {
     let dir = TempDir::new().unwrap();
     std::fs::copy(fixture("sample.kif"), dir.path().join("a.kif")).unwrap();
 
-    let out1 = NamedTempFile::new().unwrap();
-    let out2 = NamedTempFile::new().unwrap();
-    let manifest1 = NamedTempFile::new().unwrap();
-    let manifest2 = NamedTempFile::new().unwrap();
+    let out1 = closed_temp_file();
+    let out2 = closed_temp_file();
+    let manifest1 = closed_temp_file();
+    let manifest2 = closed_temp_file();
     lineprior_export(
         dir.path(),
         out1.path(),
@@ -10018,8 +10034,8 @@ fn shuffle_same_seed_same_order_and_hash() {
     ]);
 
     let run = || {
-        let out = NamedTempFile::new().unwrap();
-        let manifest = NamedTempFile::new().unwrap();
+        let out = closed_temp_file();
+        let manifest = closed_temp_file();
         shogiesa()
             .args([
                 "shuffle",
@@ -10053,7 +10069,7 @@ fn shuffle_different_seed_different_order() {
     ]);
 
     let run_with_seed = |seed: &str| {
-        let out = NamedTempFile::new().unwrap();
+        let out = closed_temp_file();
         shogiesa()
             .args([
                 "shuffle",
@@ -10079,8 +10095,8 @@ fn shuffle_order_hash_changes_if_any_sample_id_changes() {
             source_record("b.csa", ply),
             source_record("c.csa", 1),
         ]);
-        let out = NamedTempFile::new().unwrap();
-        let manifest = NamedTempFile::new().unwrap();
+        let out = closed_temp_file();
+        let manifest = closed_temp_file();
         shogiesa()
             .args([
                 "shuffle",
@@ -10104,8 +10120,8 @@ fn shuffle_block_id_arithmetic_at_boundaries() {
         .map(|i| source_record(&format!("g{i}.csa"), 1))
         .collect();
     let f = make_labeled_jsonl(&records);
-    let out = NamedTempFile::new().unwrap();
-    let order_manifest = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let order_manifest = closed_temp_file();
     shogiesa()
         .args([
             "shuffle",
@@ -10147,7 +10163,7 @@ fn shuffle_block_id_arithmetic_at_boundaries() {
 #[test]
 fn shuffle_block_size_zero_rejected() {
     let f = make_labeled_jsonl(&[source_record("a.csa", 1)]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "shuffle",
@@ -10169,8 +10185,8 @@ fn shuffle_teacher_flags_omitted_produces_null_columns() {
         1,
         serde_json::json!([obs_with_engine("strong", "7g7f", 50, 10)]),
     )]);
-    let out = NamedTempFile::new().unwrap();
-    let order_manifest = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let order_manifest = closed_temp_file();
     shogiesa()
         .args([
             "shuffle",
@@ -10199,8 +10215,8 @@ fn shuffle_teacher_flags_select_correct_observation() {
             obs_with_engine("strong", "2g2f", 42, 12),
         ]),
     )]);
-    let out = NamedTempFile::new().unwrap();
-    let order_manifest = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let order_manifest = closed_temp_file();
     shogiesa()
         .args([
             "shuffle",
@@ -10226,7 +10242,7 @@ fn shuffle_teacher_flags_select_correct_observation() {
 #[test]
 fn shuffle_teacher_flags_partial_is_rejected() {
     let f = make_labeled_jsonl(&[source_record("a.csa", 1)]);
-    let out = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
     shogiesa()
         .args([
             "shuffle",
@@ -10245,8 +10261,8 @@ fn shuffle_teacher_flags_partial_is_rejected() {
 fn shuffle_split_id_passthrough() {
     let f = make_labeled_jsonl(&[source_record("a.csa", 1), source_record("b.csa", 1)]);
 
-    let out = NamedTempFile::new().unwrap();
-    let order_manifest = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let order_manifest = closed_temp_file();
     shogiesa()
         .args([
             "shuffle",
@@ -10265,8 +10281,8 @@ fn shuffle_split_id_passthrough() {
         assert_eq!(line["split_id"], serde_json::json!("train"));
     }
 
-    let out2 = NamedTempFile::new().unwrap();
-    let order_manifest2 = NamedTempFile::new().unwrap();
+    let out2 = closed_temp_file();
+    let order_manifest2 = closed_temp_file();
     shogiesa()
         .args([
             "shuffle",
@@ -10294,8 +10310,8 @@ fn shuffle_outcome_column_reflects_game_result() {
         "observations": [],
         "game_result": { "outcome": "black_wins", "result_source": "test" }
     })]);
-    let out = NamedTempFile::new().unwrap();
-    let order_manifest = NamedTempFile::new().unwrap();
+    let out = closed_temp_file();
+    let order_manifest = closed_temp_file();
     shogiesa()
         .args([
             "shuffle",
@@ -10315,11 +10331,11 @@ fn shuffle_outcome_column_reflects_game_result() {
 
 #[test]
 fn shuffle_empty_input_deterministic() {
-    let f = NamedTempFile::new().unwrap();
+    let f = closed_temp_file();
 
     let run = || {
-        let out = NamedTempFile::new().unwrap();
-        let manifest = NamedTempFile::new().unwrap();
+        let out = closed_temp_file();
+        let manifest = closed_temp_file();
         shogiesa()
             .args([
                 "shuffle",
@@ -10423,7 +10439,7 @@ fn transform_rejects_colliding_output_and_sidecar_without_overwrite() {
 
 #[test]
 fn filter_rejects_output_aliasing_preset_without_overwrite() {
-    let preset = NamedTempFile::new().unwrap();
+    let preset = closed_temp_file();
     std::fs::write(preset.path(), b"keep preset\n").unwrap();
     let preset_spec = format!("{}:balanced", preset.path().display());
 

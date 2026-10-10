@@ -326,9 +326,9 @@ pub struct Observation {
     /// SHA-256 hex digest of the file passed to `label --weight-file`, if any -- identifies the
     /// NNUE/eval weight file the engine was configured to use, distinct from `engine_options_hash`
     /// (which only covers the *option string*, e.g. an `EvalFile` path -- a retrained net written
-    /// over the same path is invisible to it). SHA-256, not blake3, matching every other field in
-    /// the shared cross-repo "experiment envelope" -- see `RunManifest.weight_sha256` in
-    /// `shogiesa-cli` for the run-level counterpart.
+    /// over the same path is invisible to it). SHA-256, not blake3, so sibling tools can verify
+    /// the exact bytes without sharing shogiesa's manifest schema. See
+    /// `RunManifest.weight_sha256` in `shogiesa-cli` for the run-level counterpart.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weight_sha256: Option<String>,
     /// `true` when `--timeout-ms` elapsed before `bestmove` arrived and this observation is the

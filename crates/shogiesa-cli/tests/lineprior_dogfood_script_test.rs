@@ -97,6 +97,46 @@ fn lineprior_dogfood_script_produces_report() {
     assert!(export_manifest["records_exported"].as_u64().unwrap() > 0);
 }
 
+#[test]
+fn lineprior_dogfood_script_accepts_shogiesa_path_with_spaces() {
+    let temp = TempDir::new().unwrap();
+    let bin_dir = temp.path().join("bin with spaces");
+    std::fs::create_dir(&bin_dir).unwrap();
+    let extension = std::env::consts::EXE_EXTENSION;
+    let file_name = if extension.is_empty() {
+        "shogiesa copy".to_string()
+    } else {
+        format!("shogiesa copy.{extension}")
+    };
+    let copied_bin = bin_dir.join(file_name);
+    std::fs::copy(cargo_bin("shogiesa"), &copied_bin).unwrap();
+
+    let out_dir = temp.path().join("run output");
+    let status = bash_command()
+        .arg(to_bash_path(
+            &repo_root().join("scripts/lineprior_dogfood.sh"),
+        ))
+        .args([
+            "--games",
+            &to_bash_path(&fixtures_dir()),
+            "--lineprior",
+            &to_bash_path(&fixture("fake_lineprior.sh")),
+            "--out",
+            &to_bash_path(&out_dir),
+            "--source",
+            "test dogfood",
+            "--shogiesa",
+            &to_bash_path(&copied_bin),
+        ])
+        .status()
+        .unwrap();
+
+    assert!(status.success());
+    let report = std::fs::read_to_string(out_dir.join("report.md")).unwrap();
+    assert!(report.contains("shogiesa\\ copy"));
+    assert!(report.contains("test\\ dogfood"));
+}
+
 fn run_dogfood(lineprior_stub: &str, out_dir: &Path, extra: &[&str]) -> std::process::ExitStatus {
     run_dogfood_with_omission(lineprior_stub, out_dir, extra, None)
 }
@@ -172,6 +212,39 @@ fn lineprior_dogfood_script_rejects_single_sequence_before_tuning() {
             .contains("requires at least two sequences for a held-out sequence split; got 1")
     );
     assert!(!out_dir.path().join("shogi_tune_report.json").exists());
+}
+
+#[test]
+fn lineprior_dogfood_script_preserves_an_existing_run_bundle() {
+    let out_dir = TempDir::new().unwrap();
+    let report_path = out_dir.path().join("report.md");
+    std::fs::write(&report_path, "previous completed run\n").unwrap();
+
+    let status = run_dogfood("fake_lineprior.sh", out_dir.path(), &[]);
+
+    assert!(!status.success());
+    assert_eq!(
+        std::fs::read_to_string(report_path).unwrap(),
+        "previous completed run\n"
+    );
+    assert!(!out_dir.path().join("shogi_observations.jsonl").exists());
+}
+
+#[test]
+fn lineprior_dogfood_script_reports_a_missing_option_value() {
+    let output = bash_command()
+        .arg(to_bash_path(
+            &repo_root().join("scripts/lineprior_dogfood.sh"),
+        ))
+        .arg("--games")
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "error: --games requires a value\n"
+    );
 }
 
 #[test]

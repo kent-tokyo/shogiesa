@@ -18,9 +18,11 @@ scripts/lineprior_dogfood.sh \
   --strict-report-fields
 ```
 
-The output directory contains the exported observations and manifest, lineprior tune/eval JSON,
-the selected configuration, and `report.md`. The report retains the commands plus the external
-lineprior version and binary SHA-256 needed to identify the run.
+The output directory must not contain artifacts from an earlier run. The script refuses to
+overwrite them, preventing a failed rerun from mixing new observations with stale evaluation
+results. A successful directory contains the exported observations and manifest, lineprior
+tune/eval JSON, the selected configuration, and atomically written `report.md`. The report retains
+shell-quoted rerun commands plus the external lineprior version and binary SHA-256.
 
 At least two distinct sequences are required for the held-out sequence split. Use a larger corpus
 in practice: even with two or more sequences, a deterministic 80/20 assignment can leave one side

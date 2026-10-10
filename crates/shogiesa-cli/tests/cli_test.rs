@@ -2326,7 +2326,7 @@ fn label_weight_file_directory_errors_clearly() {
 }
 
 #[test]
-fn label_manifest_records_experiment_envelope_fields() {
+fn label_manifest_records_owned_provenance_fields() {
     let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
     let out = closed_temp_file();
     let manifest_path = closed_temp_file();

@@ -26,9 +26,8 @@ Required:
   --source NAME       Label written to every exported observation's `source` field
 
 Options:
-  --shogiesa PATH   Path to the shogiesa binary (default: "target/release/shogiesa" --
-                     run `cargo build --release` first, or pass e.g.
-                     "cargo run --quiet --release -p shogiesa-cli --")
+  --shogiesa PATH   Path or command name of the shogiesa binary
+                    (default: "target/release/shogiesa"; run `cargo build --release` first)
   --max-ply N       Max ply to export per game (default: 80)
   --strict-report-fields
                     Fail (after still writing report.md) if any required eval metric
@@ -52,6 +51,14 @@ STRICT_REPORT_FIELDS=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --games|--lineprior|--out|--source|--shogiesa|--max-ply)
+      if (( $# < 2 )); then
+        echo "error: $1 requires a value" >&2
+        exit 1
+      fi
+      ;;
+  esac
+  case "$1" in
     --games) GAMES="$2"; shift 2 ;;
     --lineprior) LINEPRIOR_BIN="$2"; shift 2 ;;
     --out) OUT_DIR="$2"; shift 2 ;;
@@ -73,16 +80,21 @@ if ! command -v jq >/dev/null 2>&1; then
   echo "error: jq is required (used to read manifest/report JSON fields into report.md)" >&2
   exit 1
 fi
-if [[ ! -x "$LINEPRIOR_BIN" ]] && ! command -v "$LINEPRIOR_BIN" >/dev/null 2>&1; then
-  echo "error: --lineprior binary not found or not executable: $LINEPRIOR_BIN" >&2
-  exit 1
-fi
+resolve_executable() {
+  local requested="$1"
+  local option="$2"
+  if [[ -x "$requested" ]]; then
+    printf '%s\n' "$requested"
+  elif command -v "$requested" >/dev/null 2>&1; then
+    command -v "$requested"
+  else
+    echo "error: $option binary not found or not executable: $requested" >&2
+    return 1
+  fi
+}
 
-if [[ -x "$LINEPRIOR_BIN" ]]; then
-  LINEPRIOR_PATH="$LINEPRIOR_BIN"
-else
-  LINEPRIOR_PATH="$(command -v "$LINEPRIOR_BIN")"
-fi
+LINEPRIOR_PATH="$(resolve_executable "$LINEPRIOR_BIN" "--lineprior")"
+SHOGIESA_PATH="$(resolve_executable "$SHOGIESA_BIN" "--shogiesa")"
 
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -95,13 +107,22 @@ sha256_file() {
   fi
 }
 
-LINEPRIOR_VERSION="$("$LINEPRIOR_PATH" --version | tr -d '\r' | head -n 1)"
+if ! LINEPRIOR_VERSION_OUTPUT="$("$LINEPRIOR_PATH" --version)"; then
+  echo "error: cannot read lineprior version from $LINEPRIOR_PATH" >&2
+  exit 1
+fi
+LINEPRIOR_VERSION="${LINEPRIOR_VERSION_OUTPUT%%$'\n'*}"
+LINEPRIOR_VERSION="${LINEPRIOR_VERSION//$'\r'/}"
+if [[ -z "$LINEPRIOR_VERSION" ]]; then
+  echo "error: lineprior --version returned an empty version" >&2
+  exit 1
+fi
 LINEPRIOR_SHA256="$(sha256_file "$LINEPRIOR_PATH")"
 
 mkdir -p "$OUT_DIR"
 echo "run directory: $OUT_DIR"
 
-shogiesa() { $SHOGIESA_BIN "$@"; }
+shogiesa() { "$SHOGIESA_PATH" "$@"; }
 lineprior() { "$LINEPRIOR_PATH" "$@"; }
 
 OBSERVATIONS="$OUT_DIR/shogi_observations.jsonl"
@@ -109,6 +130,18 @@ EXPORT_MANIFEST="$OUT_DIR/export_manifest.json"
 BEST_CONFIG="$OUT_DIR/shogi_best_config.json"
 TUNE_REPORT="$OUT_DIR/shogi_tune_report.json"
 EVAL_REPORT="$OUT_DIR/shogi_eval_report.json"
+REPORT="$OUT_DIR/report.md"
+
+# A run directory is an immutable evidence bundle. Refuse to mix a new partial run with stale
+# outputs from an earlier invocation; callers can choose a new directory explicitly.
+for output in \
+  "$OBSERVATIONS" "$EXPORT_MANIFEST" "$BEST_CONFIG" "$TUNE_REPORT" "$EVAL_REPORT" "$REPORT"
+do
+  if [[ -e "$output" || -L "$output" ]]; then
+    echo "error: output already exists; choose a new --out directory: $output" >&2
+    exit 1
+  fi
+done
 
 echo "== export =="
 shogiesa lineprior export \
@@ -172,8 +205,9 @@ eval_metric() {
 }
 
 echo "== report =="
-report="$OUT_DIR/report.md"
-# Populated below inside the report block -- `{ ... } > "$report"` is a group command, not a
+REPORT_TMP="$OUT_DIR/.report.md.tmp.$$"
+trap 'rm -f "$REPORT_TMP"' EXIT
+# Populated below inside the report block -- `{ ... } > "$REPORT_TMP"` is a group command, not a
 # subshell, so this array's mutations are visible after the block closes.
 missing_fields=()
 {
@@ -219,23 +253,25 @@ missing_fields=()
   echo "## Commands run"
   echo
   echo '```bash'
-  echo "shogiesa lineprior export --input $GAMES --out $OBSERVATIONS \\"
-  echo "  --state-format sfen --action-format usi --max-ply $MAX_PLY \\"
-  echo "  --source $SOURCE_NAME --outcome-mode game-result --score-mode none \\"
-  echo "  --manifest $EXPORT_MANIFEST"
+  printf '%q lineprior export --input %q --out %q \\\n' "$SHOGIESA_PATH" "$GAMES" "$OBSERVATIONS"
+  printf '  --state-format sfen --action-format usi --max-ply %q \\\n' "$MAX_PLY"
+  printf '  --source %q --outcome-mode game-result --score-mode none \\\n' "$SOURCE_NAME"
+  printf '  --manifest %q\n' "$EXPORT_MANIFEST"
   echo
-  echo "$LINEPRIOR_PATH tune $OBSERVATIONS --split-by sequence --train-ratio 0.8 \\"
+  printf '%q tune %q --split-by sequence --train-ratio 0.8 \\\n' "$LINEPRIOR_PATH" "$OBSERVATIONS"
   echo "  --param confidence-mode=heuristic,wilson-lower-bound,hybrid \\"
   echo "  --param min-confidence=0.0,0.3,0.5,0.7 \\"
   echo "  --param smoothing-alpha=1.0,5.0,10.0 \\"
-  echo "  --objective covered-mrr --save-best-config $BEST_CONFIG --out $TUNE_REPORT"
+  printf '  --objective covered-mrr --save-best-config %q --out %q\n' "$BEST_CONFIG" "$TUNE_REPORT"
   echo
-  echo "$LINEPRIOR_PATH eval $OBSERVATIONS --config $BEST_CONFIG \\"
-  echo "  --calibration-bins 10 --thresholds 0.3,0.5,0.7,0.9 --out $EVAL_REPORT"
+  printf '%q eval %q --config %q \\\n' "$LINEPRIOR_PATH" "$OBSERVATIONS" "$BEST_CONFIG"
+  printf '  --calibration-bins 10 --thresholds 0.3,0.5,0.7,0.9 --out %q\n' "$EVAL_REPORT"
   echo '```'
-} > "$report"
+} > "$REPORT_TMP"
+mv "$REPORT_TMP" "$REPORT"
+trap - EXIT
 
-echo "done: $report"
+echo "done: $REPORT"
 
 if [[ -n "$STRICT_REPORT_FIELDS" && ${#missing_fields[@]} -gt 0 ]]; then
   echo "error: --strict-report-fields set and required eval metric(s) missing/n-a: ${missing_fields[*]}" >&2

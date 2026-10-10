@@ -6,10 +6,10 @@ shogiesa turns CSA, KIF, KI2, and match-runner records into inspectable training
 extracts SFEN positions, labels them with USI engines, filters unstable samples, and writes
 reproducible JSONL or binary-pack artifacts for trainers such as Sekirei.
 
-The workspace version and latest verified published release are `0.11.2`. See the
-[GitHub Release](https://github.com/kent-tokyo/shogiesa/releases/tag/v0.11.2), the
+The workspace version and latest verified published release are `0.11.3`. See the
+[GitHub Release](https://github.com/kent-tokyo/shogiesa/releases/tag/v0.11.3), the
 [changelog](CHANGELOG.md), and
-[the v0.11.2 validation log](docs/release_validation_2026-10-10_v0.11.2.md).
+[the v0.11.3 validation log](docs/release_validation_2026-10-11_v0.11.3.md).
 
 ## Scope
 
@@ -110,7 +110,7 @@ See [schema and pack compatibility](docs/design/schema_compatibility.md).
 | Measurement status and artifacts | [measurement_matrix.md](docs/design/measurement_matrix.md), [measurement index](docs/measurements/README.md) |
 | Training comparison protocol | [training_effect_measurement.md](docs/design/training_effect_measurement.md) |
 | Sekirei and lineprior runbooks | [SEKIREI_GATE_EVALUATION.md](docs/SEKIREI_GATE_EVALUATION.md), [LINEPRIOR_DOGFOOD.md](docs/LINEPRIOR_DOGFOOD.md) |
-| Release checks and evidence | [release_checklist.md](docs/release_checklist.md), [v0.11.2 validation](docs/release_validation_2026-10-10_v0.11.2.md) |
+| Release checks and evidence | [release_checklist.md](docs/release_checklist.md), [v0.11.3 validation](docs/release_validation_2026-10-11_v0.11.3.md) |
 
 ## Evidence boundary
 
@@ -121,7 +121,8 @@ See [schema and pack compatibility](docs/design/schema_compatibility.md).
   establish generalization or playing strength.
 - Native GenSfen/rshogi/cshogi/rsshogi/python-shogi adapters, 10M scale, match transfer, and Elo are
   unmeasured.
-- The experiment envelope is a shogiesa-owned draft, not a shared cross-repository standard.
+- Provenance manifests remain producer-owned. Cross-tool chains use explicit hashes and adapters;
+  shogiesa does not publish a shared cross-repository envelope.
 
 ## Development
 

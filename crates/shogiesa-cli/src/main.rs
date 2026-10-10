@@ -373,9 +373,8 @@ struct LabelArgs {
     /// beyond hashing it. Must be a single file, not a directory.
     #[arg(long)]
     weight_file: Option<PathBuf>,
-    /// Opaque tag echoed into --manifest verbatim; shogiesa doesn't interpret or validate it.
-    /// Part of the shared "experiment envelope" vendored across shogiesa/quietset/lineprior/
-    /// veridict -- see schema/experiment_envelope.schema.json.
+    /// Opaque tag echoed into shogiesa's own --manifest verbatim; shogiesa doesn't interpret or
+    /// validate it. Downstream adapters may use it as a join key, but it is not a shared schema.
     #[arg(long)]
     experiment_id: Option<String>,
     /// Opaque tag echoed into --manifest verbatim; shogiesa doesn't interpret or validate it.
@@ -2400,10 +2399,9 @@ fn engine_options_hash_hex(options: &[(String, String)]) -> String {
         .to_string()
 }
 
-/// SHA-256 hex digest of bytes already in memory. SHA-256, not blake3, matching every field in
-/// the shared cross-repo "experiment envelope" (dataset_sha256/binary_sha256/weight_sha256/
-/// output_sha256) -- unlike every other hash in this file, these are meant to be independently
-/// verifiable with plain `shasum -a 256` by sibling repos, so they use the algorithm the name says.
+/// SHA-256 hex digest of bytes already in memory. Unlike every other hash in this file, these
+/// manifest hashes are meant to be independently verifiable with plain `shasum -a 256` by sibling
+/// repositories, without requiring them to adopt shogiesa's manifest schema.
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(bytes);
@@ -3531,9 +3529,9 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
             manifest.cache_misses = Some(misses);
             manifest.engine_fingerprint_mode = Some(engine_fingerprint_mode.as_str());
         }
-        // Experiment envelope (schema/experiment_envelope.schema.json): dataset_sha256/
-        // binary_sha256/weight_sha256/engine_threads/engine_hash_mb are computed here;
-        // everything else is opaque orchestrator-supplied passthrough shogiesa doesn't interpret.
+        // shogiesa-owned provenance fields: dataset_sha256/binary_sha256/weight_sha256/
+        // engine_threads/engine_hash_mb are computed here; everything else is opaque
+        // orchestrator-supplied passthrough that shogiesa doesn't interpret.
         manifest.dataset_sha256 = Some(hash_file_sha256(&args.input)?);
         manifest.binary_sha256 = compute_binary_sha256(&engine_path);
         manifest.weight_sha256 = weight_sha256;
@@ -4302,11 +4300,9 @@ struct RunManifest {
     /// node-limited.
     #[serde(skip_serializing_if = "Option::is_none")]
     nodes: Option<Vec<u64>>,
-    // -- experiment envelope (shared JSON Schema across shogiesa/quietset/lineprior/veridict,
-    // see schema/experiment_envelope.schema.json). Most are opaque orchestrator-supplied
-    // passthrough values shogiesa neither validates nor interprets; dataset_sha256/
-    // binary_sha256/weight_sha256 are computed by shogiesa itself from files this run already
-    // opens. `experiment_id`/`schema_version` above round out the 14-field envelope. --
+    // -- shogiesa-owned provenance. Most values are opaque orchestrator-supplied passthroughs;
+    // dataset_sha256/binary_sha256/weight_sha256 are computed from files this run already opens.
+    // Sibling tools keep their own versioned contracts and may join these artifacts by hash. --
     #[serde(skip_serializing_if = "Option::is_none")]
     candidate_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

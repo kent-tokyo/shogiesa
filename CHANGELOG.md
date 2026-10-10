@@ -5,6 +5,8 @@ Compare links at the end provide the complete commit history.
 
 ## [Unreleased]
 
+## [0.11.3] — 2026-10-11
+
 ### Added
 
 - Run manifests now emit `manifest_schema_version: 1`, independently from the
@@ -12,11 +14,19 @@ Compare links at the end provide the complete commit history.
   label-manifest fixture let downstream consumers accept additive fields while
   failing closed on unknown breaking versions.
 
+### Changed
+
+- Retired the unused nested experiment-envelope draft. Provenance fields remain part of
+  shogiesa-owned manifests, while downstream tools keep versioned, producer-owned contracts and
+  connect artifacts through explicit hashes.
+
 ### Fixed
 
 - The lineprior dogfood report now reads the real `topk_hit_rate` and
   `mean_reciprocal_rank` EvalReport fields, validates missing k=3/k=5/MRR independently, records
   the external binary identity, and rejects single-sequence held-out runs before tuning.
+- The dogfood runner now handles executable paths containing spaces, rejects missing option
+  values cleanly, refuses to mix a rerun with existing artifacts, and writes its report atomically.
 
 ## [0.11.2] — 2026-10-10
 
@@ -285,7 +295,8 @@ Compare links at the end provide the complete commit history.
 - CSA extraction, USI labeling, validation/reporting, shared domain types, CI, fixtures, and dual
   MIT/Apache-2.0 licensing.
 
-[Unreleased]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.2...HEAD
+[Unreleased]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.3...HEAD
+[0.11.3]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/kent-tokyo/shogiesa/compare/v0.10.1...v0.11.0

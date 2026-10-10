@@ -21,7 +21,6 @@ run_check() {
 
 run_check "format" cargo fmt --check
 run_check "diff-check" git diff --check
-run_check "schema-json" jq empty schema/experiment_envelope.schema.json
 run_check "tests" cargo test --workspace
 run_check "clippy" cargo clippy --workspace --all-targets -- -D warnings
 

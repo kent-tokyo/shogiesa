@@ -8,8 +8,8 @@ required_files=(
   README.md
   README_ja.md
   docs/design/schema_compatibility.md
+  docs/design/run_manifest_compatibility.md
   docs/THEORY.md
-  schema/experiment_envelope.schema.json
   docs/design/dataset_recipe_template.md
   docs/design/training_effect_measurement.md
   docs/design/measurement_matrix.md
@@ -23,6 +23,7 @@ required_files=(
   docs/release_validation_2026-10-03_v0.11.0.md
   docs/release_validation_2026-10-10_v0.11.1.md
   docs/release_validation_2026-10-10_v0.11.2.md
+  docs/release_validation_2026-10-11_v0.11.3.md
   scripts/release_readiness.sh
   scripts/run_local_measurement_smoke.sh
   scripts/run_reproducibility_matrix.sh
@@ -60,6 +61,7 @@ required_files=(
   tests/fixtures/recursive_extract/c/game.ki2
   tests/fixtures/recursive_extract/ignored.txt
   tests/fixtures/broken.jsonl
+  tests/fixtures/label_run_manifest_v1.json
   crates/shogiesa-core/tests/fixtures/schema_contract_v11.jsonl
   crates/shogiesa-core/tests/fixtures/schema_contract_v1.jsonl
   tests/fixtures/pack_input.jsonl
@@ -130,9 +132,9 @@ check_marker() {
 
 # These are literal regular expressions; shell expansion is intentionally disabled.
 # shellcheck disable=SC2016
-check_marker README.md 'latest verified published release are `0\.11\.2`' 'English release version'
+check_marker README.md 'latest verified published release are `0\.11\.3`' 'English release version'
 # shellcheck disable=SC2016
-check_marker README_ja.md '最新公開版は`0\.11\.2`' 'Japanese release version'
+check_marker README_ja.md '最新公開版は`0\.11\.3`' 'Japanese release version'
 
 check_marker tests/fixtures/malformed.csa '^\+BAD$' 'malformed CSA token'
 check_marker tests/fixtures/malformed.kif 'これは指し手ではない' 'malformed KIF move'

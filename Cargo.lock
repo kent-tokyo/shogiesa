@@ -416,7 +416,7 @@ dependencies = [
 
 [[package]]
 name = "fake-usi-engine"
-version = "0.11.2"
+version = "0.11.3"
 
 [[package]]
 name = "fastrand"
@@ -923,7 +923,7 @@ dependencies = [
 
 [[package]]
 name = "shogiesa"
-version = "0.11.2"
+version = "0.11.3"
 dependencies = [
  "shogiesa-core",
  "shogiesa-csa",
@@ -934,7 +934,7 @@ dependencies = [
 
 [[package]]
 name = "shogiesa-cli"
-version = "0.11.2"
+version = "0.11.3"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -962,7 +962,7 @@ dependencies = [
 
 [[package]]
 name = "shogiesa-core"
-version = "0.11.2"
+version = "0.11.3"
 dependencies = [
  "criterion",
  "serde",
@@ -972,7 +972,7 @@ dependencies = [
 
 [[package]]
 name = "shogiesa-csa"
-version = "0.11.2"
+version = "0.11.3"
 dependencies = [
  "csa",
  "serde_json",
@@ -983,7 +983,7 @@ dependencies = [
 
 [[package]]
 name = "shogiesa-kif"
-version = "0.11.2"
+version = "0.11.3"
 dependencies = [
  "encoding_rs",
  "serde_json",
@@ -994,14 +994,14 @@ dependencies = [
 
 [[package]]
 name = "shogiesa-pack"
-version = "0.11.2"
+version = "0.11.3"
 dependencies = [
  "shogiesa-core",
 ]
 
 [[package]]
 name = "shogiesa-stratify"
-version = "0.11.2"
+version = "0.11.3"
 dependencies = [
  "serde_json",
  "shogiesa-core",
@@ -1010,7 +1010,7 @@ dependencies = [
 
 [[package]]
 name = "shogiesa-usi"
-version = "0.11.2"
+version = "0.11.3"
 dependencies = [
  "assert_cmd",
  "shogiesa-core",
@@ -1038,7 +1038,7 @@ checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
 
 [[package]]
 name = "stratifykit-core"
-version = "0.11.2"
+version = "0.11.3"
 dependencies = [
  "blake3",
  "serde",

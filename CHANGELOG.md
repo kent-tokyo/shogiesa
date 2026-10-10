@@ -5,6 +5,12 @@ Compare links at the end provide the complete commit history.
 
 ## [Unreleased]
 
+### Fixed
+
+- The lineprior dogfood report now reads the real `topk_hit_rate` and
+  `mean_reciprocal_rank` EvalReport fields, validates missing k=3/k=5/MRR independently, records
+  the external binary identity, and rejects single-sequence held-out runs before tuning.
+
 ## [0.11.2] — 2026-10-10
 
 ### Added

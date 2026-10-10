@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Test-only stand-in for a `lineprior` whose JSON output uses different field names than
-# scripts/lineprior_dogfood.sh's jq expressions expect -- same shape as fake_lineprior.sh, but
-# `eval`'s output is missing top5_hit_rate/mrr, to exercise --strict-report-fields's failure path
-# without needing a real mismatched install anywhere, including in CI.
+# Test-only stand-in for current lineprior's EvalReport shape with one required metric omitted.
+# FAKE_LINEPRIOR_OMIT selects top3, top5, or mrr for fail-closed regression coverage.
+
+if [[ "${1:-}" == "--version" ]]; then
+  echo "lineprior 0.12.3-incomplete-fixture"
+  exit 0
+fi
 
 subcommand="${1:-}"
 shift || true
@@ -25,14 +28,54 @@ case "$subcommand" in
     [[ -n "$out" ]] && echo '{"best_arm":"hybrid"}' > "$out"
     ;;
   eval)
-    [[ -n "$out" ]] && cat > "$out" <<'EOF'
+    case "${FAKE_LINEPRIOR_OMIT:-top5}" in
+      top3)
+        [[ -n "$out" ]] && cat > "$out" <<'EOF'
 {
   "coverage": 0.42,
   "fallback_rate": 0.18,
   "top1_hit_rate": 0.31,
-  "top3_hit_rate": 0.55
+  "topk_hit_rate": [
+    {"k": 1, "hit_rate": 0.31},
+    {"k": 5, "hit_rate": 0.67}
+  ],
+  "mean_reciprocal_rank": 0.44
 }
 EOF
+        ;;
+      top5)
+        [[ -n "$out" ]] && cat > "$out" <<'EOF'
+{
+  "coverage": 0.42,
+  "fallback_rate": 0.18,
+  "top1_hit_rate": 0.31,
+  "topk_hit_rate": [
+    {"k": 1, "hit_rate": 0.31},
+    {"k": 3, "hit_rate": 0.55}
+  ],
+  "mean_reciprocal_rank": 0.44
+}
+EOF
+        ;;
+      mrr)
+        [[ -n "$out" ]] && cat > "$out" <<'EOF'
+{
+  "coverage": 0.42,
+  "fallback_rate": 0.18,
+  "top1_hit_rate": 0.31,
+  "topk_hit_rate": [
+    {"k": 1, "hit_rate": 0.31},
+    {"k": 3, "hit_rate": 0.55},
+    {"k": 5, "hit_rate": 0.67}
+  ]
+}
+EOF
+        ;;
+      *)
+        echo "fake_lineprior_incomplete.sh: unsupported FAKE_LINEPRIOR_OMIT=${FAKE_LINEPRIOR_OMIT}" >&2
+        exit 1
+        ;;
+    esac
     ;;
   *)
     echo "fake_lineprior_incomplete.sh: unknown subcommand $subcommand" >&2

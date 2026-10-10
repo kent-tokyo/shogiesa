@@ -6,6 +6,11 @@ set -euo pipefail
 # (arg-passing, output-file wiring, report.md's jq extraction) without needing the real tool
 # anywhere, including in CI. Writes fixed canned JSON -- it does not compute anything.
 
+if [[ "${1:-}" == "--version" ]]; then
+  echo "lineprior 0.12.3-fixture"
+  exit 0
+fi
+
 subcommand="${1:-}"
 shift || true
 
@@ -30,9 +35,12 @@ case "$subcommand" in
   "coverage": 0.42,
   "fallback_rate": 0.18,
   "top1_hit_rate": 0.31,
-  "top3_hit_rate": 0.55,
-  "top5_hit_rate": 0.67,
-  "mrr": 0.44
+  "topk_hit_rate": [
+    {"k": 1, "hit_rate": 0.31},
+    {"k": 3, "hit_rate": 0.55},
+    {"k": 5, "hit_rate": 0.67}
+  ],
+  "mean_reciprocal_rank": 0.44
 }
 EOF
     ;;

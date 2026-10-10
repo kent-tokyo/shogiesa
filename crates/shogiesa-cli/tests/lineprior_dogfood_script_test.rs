@@ -82,7 +82,11 @@ fn lineprior_dogfood_script_produces_report() {
     assert!(report.contains("# lineprior dogfood report"));
     assert!(report.contains("## Export"));
     assert!(report.contains("## Eval metrics"));
+    assert!(report.contains("lineprior version: lineprior 0.12.3-fixture"));
+    assert!(report.contains("lineprior binary SHA-256:"));
+    assert!(report.contains("top3_hit_rate | 0.55"));
     assert!(report.contains("top5_hit_rate | 0.67"));
+    assert!(report.contains("mrr | 0.44"));
     assert!(report.contains("## Best config"));
     assert!(report.contains("## Commands run"));
 
@@ -94,6 +98,15 @@ fn lineprior_dogfood_script_produces_report() {
 }
 
 fn run_dogfood(lineprior_stub: &str, out_dir: &Path, extra: &[&str]) -> std::process::ExitStatus {
+    run_dogfood_with_omission(lineprior_stub, out_dir, extra, None)
+}
+
+fn run_dogfood_with_omission(
+    lineprior_stub: &str,
+    out_dir: &Path,
+    extra: &[&str],
+    omission: Option<&str>,
+) -> std::process::ExitStatus {
     let mut args = vec![
         "--games".to_string(),
         to_bash_path(&fixtures_dir()),
@@ -107,13 +120,16 @@ fn run_dogfood(lineprior_stub: &str, out_dir: &Path, extra: &[&str]) -> std::pro
         to_bash_path(&cargo_bin("shogiesa")),
     ];
     args.extend(extra.iter().map(|s| s.to_string()));
-    bash_command()
+    let mut command = bash_command();
+    command
         .arg(to_bash_path(
             &repo_root().join("scripts/lineprior_dogfood.sh"),
         ))
-        .args(args)
-        .status()
-        .unwrap()
+        .args(args);
+    if let Some(value) = omission {
+        command.env("FAKE_LINEPRIOR_OMIT", value);
+    }
+    command.status().unwrap()
 }
 
 #[test]
@@ -129,20 +145,80 @@ fn lineprior_dogfood_script_strict_report_fields_passes_with_complete_metrics() 
 }
 
 #[test]
-fn lineprior_dogfood_script_strict_report_fields_fails_on_missing_metrics() {
+fn lineprior_dogfood_script_rejects_single_sequence_before_tuning() {
     let out_dir = TempDir::new().unwrap();
-    let status = run_dogfood(
+    let output = bash_command()
+        .arg(to_bash_path(
+            &repo_root().join("scripts/lineprior_dogfood.sh"),
+        ))
+        .args([
+            "--games",
+            &to_bash_path(&fixture("sample.csa")),
+            "--lineprior",
+            &to_bash_path(&fixture("fake_lineprior.sh")),
+            "--out",
+            &to_bash_path(out_dir.path()),
+            "--source",
+            "test_dogfood",
+            "--shogiesa",
+            &to_bash_path(&cargo_bin("shogiesa")),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("requires at least two sequences for a held-out sequence split; got 1")
+    );
+    assert!(!out_dir.path().join("shogi_tune_report.json").exists());
+}
+
+#[test]
+fn lineprior_dogfood_script_strict_report_fields_fails_on_missing_top3() {
+    let out_dir = TempDir::new().unwrap();
+    let status = run_dogfood_with_omission(
         "fake_lineprior_incomplete.sh",
         out_dir.path(),
         &["--strict-report-fields"],
+        Some("top3"),
     );
-    assert!(
-        !status.success(),
-        "must fail when top5_hit_rate/mrr are missing under --strict-report-fields"
-    );
+    assert!(!status.success(), "must fail when k=3 is missing");
 
-    // report.md is still written for debugging, even though the run itself failed.
     let report = std::fs::read_to_string(out_dir.path().join("report.md")).unwrap();
-    assert!(report.contains("top1_hit_rate | 0.31"));
+    assert!(report.contains("top3_hit_rate | n/a"));
+    assert!(report.contains("top5_hit_rate | 0.67"));
+    assert!(report.contains("mrr | 0.44"));
+}
+
+#[test]
+fn lineprior_dogfood_script_strict_report_fields_fails_on_missing_top5() {
+    let out_dir = TempDir::new().unwrap();
+    let status = run_dogfood_with_omission(
+        "fake_lineprior_incomplete.sh",
+        out_dir.path(),
+        &["--strict-report-fields"],
+        Some("top5"),
+    );
+    assert!(!status.success(), "must fail when k=5 is missing");
+
+    let report = std::fs::read_to_string(out_dir.path().join("report.md")).unwrap();
     assert!(report.contains("top5_hit_rate | n/a"));
+    assert!(report.contains("mrr | 0.44"));
+}
+
+#[test]
+fn lineprior_dogfood_script_strict_report_fields_fails_on_missing_mrr() {
+    let out_dir = TempDir::new().unwrap();
+    let status = run_dogfood_with_omission(
+        "fake_lineprior_incomplete.sh",
+        out_dir.path(),
+        &["--strict-report-fields"],
+        Some("mrr"),
+    );
+    assert!(!status.success(), "must fail when MRR is missing");
+
+    let report = std::fs::read_to_string(out_dir.path().join("report.md")).unwrap();
+    assert!(report.contains("top5_hit_rate | 0.67"));
+    assert!(report.contains("mrr | n/a"));
 }

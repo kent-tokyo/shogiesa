@@ -9,12 +9,8 @@ set -euo pipefail
 # search in any way. `lineprior` is never built or vendored here -- it's the caller's own external
 # binary, passed in by path.
 #
-# The exact `lineprior tune`/`lineprior eval` flag names and JSON output field names below reflect
-# the CLI as described when this script was written, not a verified local install (none exists on
-# this machine at the time of writing). Every report.md field is read via `jq '.field // "n/a"'`,
-# so a field-name mismatch degrades to a readable "n/a" instead of crashing -- if `lineprior`'s
-# actual output uses different keys, the jq expressions in the report-generation step below are
-# the one place to fix it.
+# The report mapping follows lineprior 0.12.3's EvalReport contract: top-k values live in the
+# `topk_hit_rate` array and MRR is `mean_reciprocal_rank`. Strict mode keeps contract drift visible.
 #
 # Requires: jq (for reading manifest/report JSON fields into report.md).
 
@@ -36,7 +32,7 @@ Options:
   --max-ply N       Max ply to export per game (default: 80)
   --strict-report-fields
                     Fail (after still writing report.md) if any required eval metric
-                    (coverage/fallback_rate/top1_hit_rate/top3_hit_rate/top5_hit_rate/mrr) comes
+                    (coverage/fallback_rate/top1_hit_rate/k=3/k=5/mean_reciprocal_rank) comes
                     back missing/"n/a" -- catches a lineprior JSON field-name mismatch that would
                     otherwise silently produce an all-"n/a" report and exit 0. Off by default:
                     a field mismatch should stay non-fatal for exploratory runs, where a partial
@@ -82,11 +78,31 @@ if [[ ! -x "$LINEPRIOR_BIN" ]] && ! command -v "$LINEPRIOR_BIN" >/dev/null 2>&1;
   exit 1
 fi
 
+if [[ -x "$LINEPRIOR_BIN" ]]; then
+  LINEPRIOR_PATH="$LINEPRIOR_BIN"
+else
+  LINEPRIOR_PATH="$(command -v "$LINEPRIOR_BIN")"
+fi
+
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    echo "error: sha256sum or shasum is required to identify the lineprior binary" >&2
+    return 1
+  fi
+}
+
+LINEPRIOR_VERSION="$("$LINEPRIOR_PATH" --version | tr -d '\r' | head -n 1)"
+LINEPRIOR_SHA256="$(sha256_file "$LINEPRIOR_PATH")"
+
 mkdir -p "$OUT_DIR"
 echo "run directory: $OUT_DIR"
 
 shogiesa() { $SHOGIESA_BIN "$@"; }
-lineprior() { "$LINEPRIOR_BIN" "$@"; }
+lineprior() { "$LINEPRIOR_PATH" "$@"; }
 
 OBSERVATIONS="$OUT_DIR/shogi_observations.jsonl"
 EXPORT_MANIFEST="$OUT_DIR/export_manifest.json"
@@ -106,8 +122,14 @@ shogiesa lineprior export \
   --score-mode none \
   --manifest "$EXPORT_MANIFEST"
 
+SEQUENCE_COUNT="$(jq -er '.sequence_count | select(type == "number")' "$EXPORT_MANIFEST")"
+if (( SEQUENCE_COUNT < 2 )); then
+  echo "error: lineprior dogfood requires at least two sequences for a held-out sequence split; got $SEQUENCE_COUNT" >&2
+  exit 2
+fi
+
 echo "== tune =="
-lineprior tune "$OBSERVATIONS" \
+if ! lineprior tune "$OBSERVATIONS" \
   --split-by sequence \
   --train-ratio 0.8 \
   --param confidence-mode=heuristic,wilson-lower-bound,hybrid \
@@ -116,13 +138,38 @@ lineprior tune "$OBSERVATIONS" \
   --objective covered-mrr \
   --save-best-config "$BEST_CONFIG" \
   --out "$TUNE_REPORT"
+then
+  echo "error: lineprior tune failed; verify that the deterministic sequence split has non-empty train and test partitions" >&2
+  exit 1
+fi
 
 echo "== eval =="
-lineprior eval "$OBSERVATIONS" \
+if ! lineprior eval "$OBSERVATIONS" \
   --config "$BEST_CONFIG" \
   --calibration-bins 10 \
   --thresholds 0.3,0.5,0.7,0.9 \
   --out "$EVAL_REPORT"
+then
+  echo "error: lineprior eval failed; verify that the deterministic sequence split has non-empty train and test partitions" >&2
+  exit 1
+fi
+
+eval_metric() {
+  case "$1" in
+    coverage|fallback_rate|top1_hit_rate)
+      jq -r --arg field "$1" '.[$field] | if type == "number" then . else "n/a" end' "$EVAL_REPORT"
+      ;;
+    top3_hit_rate)
+      jq -r '[.topk_hit_rate[]? | select(.k == 3) | .hit_rate | select(type == "number")][0] // "n/a"' "$EVAL_REPORT"
+      ;;
+    top5_hit_rate)
+      jq -r '[.topk_hit_rate[]? | select(.k == 5) | .hit_rate | select(type == "number")][0] // "n/a"' "$EVAL_REPORT"
+      ;;
+    mrr)
+      jq -r '.mean_reciprocal_rank | if type == "number" then . else "n/a" end' "$EVAL_REPORT"
+      ;;
+  esac
+}
 
 echo "== report =="
 report="$OUT_DIR/report.md"
@@ -135,6 +182,8 @@ missing_fields=()
   echo "- generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "- games: \`$GAMES\`"
   echo "- source: $SOURCE_NAME, max-ply: $MAX_PLY"
+  echo "- lineprior version: $LINEPRIOR_VERSION"
+  echo "- lineprior binary SHA-256: \`$LINEPRIOR_SHA256\`"
   echo
   echo "## Export"
   echo
@@ -152,7 +201,7 @@ missing_fields=()
   echo "| metric | value |"
   echo "|---|---|"
   for field in coverage fallback_rate top1_hit_rate top3_hit_rate top5_hit_rate mrr; do
-    value=$(jq -r --arg f "$field" '.[$f] // "n/a"' "$EVAL_REPORT")
+    value="$(eval_metric "$field")"
     echo "| $field | $value |"
     [[ "$value" == "n/a" ]] && missing_fields+=("$field")
   done
@@ -175,13 +224,13 @@ missing_fields=()
   echo "  --source $SOURCE_NAME --outcome-mode game-result --score-mode none \\"
   echo "  --manifest $EXPORT_MANIFEST"
   echo
-  echo "lineprior tune $OBSERVATIONS --split-by sequence --train-ratio 0.8 \\"
+  echo "$LINEPRIOR_PATH tune $OBSERVATIONS --split-by sequence --train-ratio 0.8 \\"
   echo "  --param confidence-mode=heuristic,wilson-lower-bound,hybrid \\"
   echo "  --param min-confidence=0.0,0.3,0.5,0.7 \\"
   echo "  --param smoothing-alpha=1.0,5.0,10.0 \\"
   echo "  --objective covered-mrr --save-best-config $BEST_CONFIG --out $TUNE_REPORT"
   echo
-  echo "lineprior eval $OBSERVATIONS --config $BEST_CONFIG \\"
+  echo "$LINEPRIOR_PATH eval $OBSERVATIONS --config $BEST_CONFIG \\"
   echo "  --calibration-bins 10 --thresholds 0.3,0.5,0.7,0.9 --out $EVAL_REPORT"
   echo '```'
 } > "$report"

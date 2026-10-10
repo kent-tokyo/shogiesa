@@ -58,6 +58,9 @@ report / distribution / validate / dataset-diff
 
 For reproducible runs, retain input hashes, commands, seeds, engine/weight identities, options,
 and generated manifests. Missing identities remain `unknown`.
+Run manifests have their own `manifest_schema_version`, independent from the
+position-record `schema_version`; see
+[`docs/design/run_manifest_compatibility.md`](docs/design/run_manifest_compatibility.md).
 
 ## Commands
 

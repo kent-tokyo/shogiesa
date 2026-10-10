@@ -1,5 +1,9 @@
 # JSONL / pack compatibility
 
+This document covers position JSONL and binary packs. The separately versioned
+`--manifest` contract is documented in
+[`run_manifest_compatibility.md`](run_manifest_compatibility.md).
+
 This table describes the on-disk boundaries implemented by shogiesa. A schema number is
 provenance, not a promise that every older producer had every field listed below.
 

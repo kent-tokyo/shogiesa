@@ -6,10 +6,10 @@ shogiesaはCSA、KIF、KI2、match-runner棋譜を点検可能な学習データ
 SFEN局面の抽出、USI教師によるラベル付け、不安定な局面の除外、JSONLまたはbinary packへの
 書き出しを担当します。
 
-workspaceと検証済みの最新公開版は`0.11.1`です。
-[GitHub Release](https://github.com/kent-tokyo/shogiesa/releases/tag/v0.11.1)、
+workspaceと検証済みの最新公開版は`0.11.2`です。
+[GitHub Release](https://github.com/kent-tokyo/shogiesa/releases/tag/v0.11.2)、
 [CHANGELOG](CHANGELOG.md)、
-[v0.11.1検証記録](docs/release_validation_2026-10-10_v0.11.1.md)を参照してください。
+[v0.11.2検証記録](docs/release_validation_2026-10-10_v0.11.2.md)を参照してください。
 
 ## 役割
 
@@ -106,7 +106,7 @@ binary packはversion付きの転送形式です。点検やdiffではJSONLへ�
 | 測定状況とartifact | [measurement_matrix.md](docs/design/measurement_matrix.md)、[測定索引](docs/measurements/README.md) |
 | 学習比較の手順 | [training_effect_measurement.md](docs/design/training_effect_measurement.md) |
 | Sekirei・lineprior runbook | [SEKIREI_GATE_EVALUATION.md](docs/SEKIREI_GATE_EVALUATION.md)、[LINEPRIOR_DOGFOOD.md](docs/LINEPRIOR_DOGFOOD.md) |
-| release確認と証跡 | [release_checklist.md](docs/release_checklist.md)、[v0.11.1検証](docs/release_validation_2026-10-10_v0.11.1.md) |
+| release確認と証跡 | [release_checklist.md](docs/release_checklist.md)、[v0.11.2検証](docs/release_validation_2026-10-10_v0.11.2.md) |
 
 ## 証拠の境界
 

@@ -64,6 +64,25 @@ struct RecipeVerifyArgs {
 }
 
 pub(crate) fn run(args: RecipeArgs) -> Result<()> {
+    match &args.action {
+        RecipeAction::Plan(args) => {
+            let writes = args
+                .json_out
+                .as_deref()
+                .map(|path| vec![("--json-out", path)])
+                .unwrap_or_default();
+            super::validate_path_roles(&[("--recipe", &args.recipe)], &writes)?;
+        }
+        RecipeAction::Run(args) => {
+            let manifest = run_dir(&args.recipe, args.run_dir.clone()).join("run.json");
+            let mut writes = vec![("run manifest", manifest.as_path())];
+            if let Some(path) = &args.json_out {
+                writes.push(("--json-out", path));
+            }
+            super::validate_path_roles(&[("--recipe", &args.recipe)], &writes)?;
+        }
+        RecipeAction::Verify(_) => {}
+    }
     match args.action {
         RecipeAction::Plan(args) => plan(args),
         RecipeAction::Run(args) => run_recipe(args),
@@ -275,7 +294,7 @@ fn validate_recipe(spec: &RecipeSpec, recipe_dir: &Path) -> Result<BTreeMap<Path
     }
 
     let mut stage_ids = BTreeSet::new();
-    let mut output_producers = BTreeMap::new();
+    let mut output_producers: BTreeMap<PathBuf, usize> = BTreeMap::new();
     for (index, stage) in spec.stages.iter().enumerate() {
         if !valid_stage_id(&stage.id) {
             bail!(
@@ -303,17 +322,6 @@ fn validate_recipe(spec: &RecipeSpec, recipe_dir: &Path) -> Result<BTreeMap<Path
             .iter()
             .map(|path| normalized_recipe_path(recipe_dir, path))
             .collect();
-        if let Some(path) = stage
-            .outputs
-            .iter()
-            .find(|output| inputs.contains(&normalized_recipe_path(recipe_dir, output)))
-        {
-            bail!(
-                "stage {:?} uses {:?} as both input and output",
-                stage.id,
-                path
-            );
-        }
         for output in &stage.outputs {
             if Path::new(output).is_absolute()
                 || Path::new(output)
@@ -327,6 +335,25 @@ fn validate_recipe(spec: &RecipeSpec, recipe_dir: &Path) -> Result<BTreeMap<Path
                 );
             }
             let normalized = normalized_recipe_path(recipe_dir, output);
+            for input in &inputs {
+                if super::paths_collide(input, &normalized)? {
+                    bail!(
+                        "stage {:?} uses {:?} as both input and output",
+                        stage.id,
+                        output
+                    );
+                }
+            }
+            for (previous_output, &previous) in &output_producers {
+                if super::paths_collide(previous_output, &normalized)? {
+                    bail!(
+                        "output {:?} is produced by both {:?} and {:?}",
+                        output,
+                        spec.stages[previous].id,
+                        stage.id
+                    );
+                }
+            }
             if let Some(previous) = output_producers.insert(normalized, index) {
                 bail!(
                     "output {:?} is produced by both {:?} and {:?}",
@@ -366,6 +393,11 @@ fn stage_identity(
 fn build_plan(recipe_path: &Path, spec: RecipeSpec, recipe_hash: String) -> Result<RecipePlan> {
     let recipe_dir = recipe_path.parent().unwrap_or_else(|| Path::new("."));
     let output_producers = validate_recipe(&spec, recipe_dir)?;
+    for output in output_producers.keys() {
+        if super::paths_collide(recipe_path, output)? {
+            bail!("recipe output {output:?} must not overwrite the recipe file");
+        }
+    }
     let mut planned = Vec::<PlannedStage>::new();
     let mut identities = BTreeMap::<String, String>::new();
     let mut statuses = BTreeMap::<String, &'static str>::new();
@@ -477,8 +509,11 @@ fn plan(args: RecipePlanArgs) -> Result<()> {
     let plan = build_plan(&args.recipe, spec, recipe_hash)?;
 
     if let Some(path) = &args.json_out {
-        fs::write(path, serde_json::to_string_pretty(&plan)? + "\n")
-            .with_context(|| format!("cannot write {path:?}"))?;
+        super::atomic_write_bytes(
+            path,
+            (serde_json::to_string_pretty(&plan)? + "\n").as_bytes(),
+        )
+        .with_context(|| format!("cannot write {path:?}"))?;
     }
 
     let mut out = String::new();
@@ -533,13 +568,7 @@ fn run_dir(recipe_path: &Path, requested: Option<PathBuf>) -> PathBuf {
 fn atomic_write(path: &Path, contents: &str) -> Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent).with_context(|| format!("cannot create {parent:?}"))?;
-    let temp = parent.join(format!(
-        ".{}.tmp",
-        path.file_name().unwrap_or_default().to_string_lossy()
-    ));
-    fs::write(&temp, contents).with_context(|| format!("cannot write {temp:?}"))?;
-    fs::rename(&temp, path).with_context(|| format!("cannot atomically replace {path:?}"))?;
-    Ok(())
+    super::atomic_write_bytes(path, contents.as_bytes())
 }
 
 fn load_recipe(path: &Path) -> Result<(RecipeSpec, String)> {

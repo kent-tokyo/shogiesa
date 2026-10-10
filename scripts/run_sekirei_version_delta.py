@@ -16,6 +16,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from artifact_io import atomic_copy, atomic_write_json, validate_path_roles
+
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -182,8 +184,8 @@ def main() -> int:
     parser.add_argument("--sekirei-dir", type=Path, required=True)
     parser.add_argument("--corpus", type=Path, required=True)
     parser.add_argument("--shogiesa", type=Path, default=ROOT / "target/release/shogiesa")
-    parser.add_argument("--baseline-ref", default="v0.3.65")
-    parser.add_argument("--candidate-ref", default="v0.3.66")
+    parser.add_argument("--baseline-ref", default="v0.3.67")
+    parser.add_argument("--candidate-ref", default="v0.3.68")
     parser.add_argument("--nodes", type=int, default=10_000)
     parser.add_argument("--positions", type=int, default=256)
     parser.add_argument("--mine-count", type=int, default=64)
@@ -210,6 +212,16 @@ def main() -> int:
         parser.error(f"corpus does not exist: {corpus}")
     if not shogiesa.is_file():
         parser.error(f"shogiesa binary does not exist: {shogiesa}")
+    writes = [("--out", args.out)]
+    if args.mined_out is not None:
+        writes.append(("--mined-out", args.mined_out))
+    try:
+        validate_path_roles(
+            [("--corpus", corpus), ("--shogiesa", shogiesa)],
+            writes,
+        )
+    except ValueError as error:
+        parser.error(str(error))
 
     dirty = subprocess.run(
         ["git", "-C", str(ROOT), "status", "--porcelain"],
@@ -469,11 +481,9 @@ def main() -> int:
         },
         "steps": steps,
     }
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(artifact, indent=2) + "\n", encoding="utf-8")
     if args.mined_out is not None:
-        args.mined_out.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(mined, args.mined_out)
+        atomic_copy(mined, args.mined_out)
+    atomic_write_json(args.out, artifact)
     print(json.dumps(artifact["delta"], indent=2))
     print(f"artifact: {args.out}")
     if args.mined_out is not None:

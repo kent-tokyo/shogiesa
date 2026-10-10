@@ -15,6 +15,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from artifact_io import atomic_write_json, validate_path_roles
+
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURE = ROOT / "crates/shogiesa-core/tests/fixtures/schema_contract_v11.jsonl"
@@ -153,6 +155,13 @@ def main() -> int:
     binary = args.shogiesa.resolve()
     if not binary.is_file():
         parser.error(f"shogiesa binary not found: {binary}; build it before measuring")
+    try:
+        validate_path_roles(
+            [("fixture", FIXTURE), ("--shogiesa", binary)],
+            [("--out", args.out)],
+        )
+    except ValueError as error:
+        parser.error(str(error))
 
     temporary = None
     if args.keep_work_dir:
@@ -268,8 +277,7 @@ def main() -> int:
             "The regenerable synthetic input is removed after pack and before unpack to bound peak disk use.",
         ],
     }
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(artifact, indent=2) + "\n", encoding="utf-8")
+    atomic_write_json(args.out, artifact)
     print(f"resource baseline: {status.upper()}")
     print(f"  records: {args.records}")
     print(f"  artifact: {args.out}")

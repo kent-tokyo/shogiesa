@@ -131,8 +131,9 @@ for arm in "${ARMS[@]}"; do
 
   if [[ -n "${SEKIREI_TRAIN_CMD:-}" ]]; then
     echo "== $arm: train =="
-    # shellcheck disable=SC2086 -- SEKIREI_TRAIN_CMD is a user-supplied command line, meant to
-    # be word-split (e.g. "python train.py --epochs 3").
+    # SEKIREI_TRAIN_CMD is a user-supplied command line, meant to be word-split (e.g.
+    # "python train.py --epochs 3").
+    # shellcheck disable=SC2086
     $SEKIREI_TRAIN_CMD "$arm_dir/train.jsonl" "$arm_dir" >"$arm_dir/sekirei_train.log" 2>&1
   else
     echo "not configured: SEKIREI_TRAIN_CMD unset, skipping training" | tee "$arm_dir/sekirei_train.log" >/dev/null

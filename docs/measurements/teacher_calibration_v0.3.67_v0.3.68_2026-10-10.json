@@ -1,0 +1,3713 @@
+{
+  "schema": "shogiesa.teacher-calibration.v1",
+  "generated_at": "2026-10-10T10:22:28Z",
+  "status": "candidate",
+  "claim_boundary": "parameter-matrix diagnostics only; no training-effect or playing-strength claim",
+  "shogiesa": {
+    "commit": "aaa5954dac4aa8167828ba47fb19e4302d14d9a9",
+    "dirty": true,
+    "dirty_paths": [
+      " M .github/workflows/ci.yml",
+      " M .gitignore",
+      " M CHANGELOG.md",
+      " M Cargo.lock",
+      " M crates/shogiesa-cli/Cargo.toml",
+      " M crates/shogiesa-cli/src/main.rs",
+      " M crates/shogiesa-cli/src/recipe.rs",
+      " M crates/shogiesa-cli/tests/cli_test.rs",
+      " M docs/competitor_evidence.md",
+      " M docs/design/measurement_matrix.md",
+      " M docs/interop_evidence.md",
+      " M scripts/check_repository_contract.sh",
+      " M scripts/check_sekirei_compat.sh",
+      " M scripts/release_readiness.sh",
+      " M scripts/run_local_measurement_smoke.sh",
+      " M scripts/run_resource_baseline.py",
+      " M scripts/run_sekirei_learning_ablation.py",
+      " M scripts/run_sekirei_version_delta.py",
+      " M scripts/sekirei_dataset_ablation.sh",
+      "?? docs/measurements/sekirei_compat_v0.3.68_2026-10-10.json",
+      "?? docs/measurements/teacher_calibration_v0.3.67_v0.3.68_2026-10-10.json",
+      "?? scripts/artifact_io.py",
+      "?? scripts/report_sekirei_gate.py",
+      "?? scripts/run_teacher_calibration.py",
+      "?? scripts/test_artifact_io.py",
+      "?? scripts/test_report_sekirei_gate.py",
+      "?? tests/fixtures/sekirei_ab_gate_result_v1.json",
+      "?? tests/fixtures/teacher_calibration_positions.jsonl"
+    ],
+    "binary_sha256": "a163458994071f1f918b1ba1cb4ed38e28842e3890c4a4e0bc8343c37c6cf0dd"
+  },
+  "input": {
+    "path": "/Users/k_tanabe/Documents/Documents/oss_rust/shogiesa/docs/measurements/teacher_calibration_corpus_2026-10-10.jsonl",
+    "sha256": "f451d2d6d32d31b7eaf3d0b68e30ae66853cf1c282bd29f170f06b82f9e2fcdc",
+    "sample_seed": 368,
+    "requested_sample_records": 64,
+    "sampled_records": 64,
+    "sampled_sha256": "f451d2d6d32d31b7eaf3d0b68e30ae66853cf1c282bd29f170f06b82f9e2fcdc"
+  },
+  "teachers": [
+    {
+      "name": "sekirei-0.3.67",
+      "binary_sha256": "e3419c1d310969973418c419d2b0e49fa97bd7fa6d1997a9fda900036c372a73",
+      "weight_sha256": "f500c66cf8291292d70ae6fa4df6cb9ccf0a4410a89fb2a5962068c722307cde"
+    },
+    {
+      "name": "sekirei-0.3.68",
+      "binary_sha256": "81adee42f1e73f555e2819982df4bf5df28b6067231891b9b9f905cefa68f332",
+      "weight_sha256": "f500c66cf8291292d70ae6fa4df6cb9ccf0a4410a89fb2a5962068c722307cde"
+    }
+  ],
+  "teacher_preflight": [
+    {
+      "name": "sekirei-0.3.67",
+      "usiok": true,
+      "readyok": true,
+      "engine_name": "Sekirei",
+      "weight_load_acknowledged": true,
+      "evaluator_format": "SEKIRW01",
+      "transcript_sha256": "e24c9510316ef2b552efcd48e61a119208907087dd7363747339ad7ba6192525"
+    },
+    {
+      "name": "sekirei-0.3.68",
+      "usiok": true,
+      "readyok": true,
+      "engine_name": "Sekirei",
+      "weight_load_acknowledged": true,
+      "evaluator_format": "SEKIRW01",
+      "transcript_sha256": "7b1816e6a01cadda03f7a2a943fb1876612ffb0fc094343c46624807c54daf8e"
+    }
+  ],
+  "environment": {
+    "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "processor": "arm",
+    "cpu_count": 10
+  },
+  "matrix": {
+    "depths": [
+      4,
+      8
+    ],
+    "nodes": [
+      1000,
+      10000
+    ],
+    "multipv": [
+      1,
+      3
+    ],
+    "teacher_prefix_order": [
+      "sekirei-0.3.67",
+      "sekirei-0.3.68"
+    ],
+    "engine_options": [
+      "EvalFile=/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/weights.bin",
+      "Threads=1",
+      "SpecTopN=0"
+    ],
+    "timeout_ms": 30000,
+    "quality_profiles": {
+      "exact": [
+        "--require-exact-score",
+        "--exclude-timeout-salvaged"
+      ],
+      "stable150": [
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150"
+      ],
+      "consensus150": [
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150",
+        "--require-engine-agreement",
+        "--max-engine-score-swing-cp",
+        "150"
+      ],
+      "policy50": [
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150",
+        "--require-engine-agreement",
+        "--max-engine-score-swing-cp",
+        "150",
+        "--require-policy-margin",
+        "--min-policy-margin-cp",
+        "50"
+      ]
+    }
+  },
+  "cases": [
+    {
+      "name": "sekirei-0.3.67__depth4__mpv1",
+      "teacher": "sekirei-0.3.67",
+      "limit_kind": "depth",
+      "limit_value": 4,
+      "multipv": 1,
+      "output_sha256": "1fc712eddb3874579224ad63385bacbf2b7aa4e7e5e35c24304e968d3074e2b4",
+      "manifest_sha256": "32e54ab1cb4763da449541ac32dbf53f09824a0b483f5377b8e0799fbafefd74",
+      "metrics": {
+        "input_records": 64,
+        "labeled_records": 64,
+        "coverage_fraction": 1.0,
+        "cp_scores": 64,
+        "mate_scores": 0,
+        "exact_scores": 64,
+        "non_exact_scores": 0,
+        "timeout_salvaged": 0,
+        "requested_depth_underreached": 0,
+        "special_bestmoves": 0,
+        "candidate_coverage": 0,
+        "policy_margin_coverage": 0,
+        "policy_margin_cp": {
+          "mean": null,
+          "median": null,
+          "p10": null
+        },
+        "engine_versions": []
+      }
+    },
+    {
+      "name": "sekirei-0.3.67__depth4__mpv3",
+      "teacher": "sekirei-0.3.67",
+      "limit_kind": "depth",
+      "limit_value": 4,
+      "multipv": 3,
+      "output_sha256": "9803fcc3742522ea6d38a73a16a11e7653d23f6a0e1bc92fd4f62e99ab8d8710",
+      "manifest_sha256": "6f858f936de3731222dc17ec6f94a9f42f7a21f0b2a2193ba55bd0bf3824a21c",
+      "metrics": {
+        "input_records": 64,
+        "labeled_records": 64,
+        "coverage_fraction": 1.0,
+        "cp_scores": 64,
+        "mate_scores": 0,
+        "exact_scores": 64,
+        "non_exact_scores": 0,
+        "timeout_salvaged": 0,
+        "requested_depth_underreached": 0,
+        "special_bestmoves": 0,
+        "candidate_coverage": 64,
+        "policy_margin_coverage": 64,
+        "policy_margin_cp": {
+          "mean": 0.09375,
+          "median": 0.0,
+          "p10": 0.0
+        },
+        "engine_versions": []
+      }
+    },
+    {
+      "name": "sekirei-0.3.67__depth8__mpv1",
+      "teacher": "sekirei-0.3.67",
+      "limit_kind": "depth",
+      "limit_value": 8,
+      "multipv": 1,
+      "output_sha256": "ab8097df4e91071a3f94fcfbbf6432d4e44f10d3f9bf6dd5ed862dd2979d99b8",
+      "manifest_sha256": "e072f2e4b6b9c2bda2e51fb729aaf21d0b403db7969ac1122f18fb9a6775801d",
+      "metrics": {
+        "input_records": 64,
+        "labeled_records": 64,
+        "coverage_fraction": 1.0,
+        "cp_scores": 64,
+        "mate_scores": 0,
+        "exact_scores": 64,
+        "non_exact_scores": 0,
+        "timeout_salvaged": 0,
+        "requested_depth_underreached": 0,
+        "special_bestmoves": 0,
+        "candidate_coverage": 0,
+        "policy_margin_coverage": 0,
+        "policy_margin_cp": {
+          "mean": null,
+          "median": null,
+          "p10": null
+        },
+        "engine_versions": []
+      }
+    },
+    {
+      "name": "sekirei-0.3.67__depth8__mpv3",
+      "teacher": "sekirei-0.3.67",
+      "limit_kind": "depth",
+      "limit_value": 8,
+      "multipv": 3,
+      "output_sha256": "c75ced7b85d1feb48143ed111f81efc88209d1d9bee52866d2f6d6e96a8e78f0",
+      "manifest_sha256": "aed0406c4d2c564cc65e1173806310d95d125ef05de89c225ddd6b741d608702",
+      "metrics": {
+        "input_records": 64,
+        "labeled_records": 64,
+        "coverage_fraction": 1.0,
+        "cp_scores": 64,
+        "mate_scores": 0,
+        "exact_scores": 64,
+        "non_exact_scores": 0,
+        "timeout_salvaged": 0,
+        "requested_depth_underreached": 0,
+        "special_bestmoves": 0,
+        "candidate_coverage": 64,
+        "policy_margin_coverage": 64,
+        "policy_margin_cp": {
+          "mean": 0.234375,
+          "median": 0.0,
+          "p10": 0.0
+        },
+        "engine_versions": []
+      }
+    },
+    {
+      "name": "sekirei-0.3.67__nodes1000__mpv1",
+      "teacher": "sekirei-0.3.67",
+      "limit_kind": "nodes",
+      "limit_value": 1000,
+      "multipv": 1,
+      "output_sha256": "a2dcb6035fee78ae36384f297f9c1e1dd2e3d4bbba49b1e3893b7c1e2d806a8e",
+      "manifest_sha256": "4ef0e9b69ceb3f43edd59840a899d6b095a2a94b5d520ccd7718c6b67309d69b",
+      "metrics": {
+        "input_records": 64,
+        "labeled_records": 64,
+        "coverage_fraction": 1.0,
+        "cp_scores": 64,
+        "mate_scores": 0,
+        "exact_scores": 64,
+        "non_exact_scores": 0,
+        "timeout_salvaged": 0,
+        "requested_depth_underreached": 0,
+        "special_bestmoves": 0,
+        "candidate_coverage": 0,
+        "policy_margin_coverage": 0,
+        "policy_margin_cp": {
+          "mean": null,
+          "median": null,
+          "p10": null
+        },
+        "engine_versions": []
+      }
+    },
+    {
+      "name": "sekirei-0.3.67__nodes1000__mpv3",
+      "teacher": "sekirei-0.3.67",
+      "limit_kind": "nodes",
+      "limit_value": 1000,
+      "multipv": 3,
+      "output_sha256": "e7c0b0c8a4b1c3c45b88bff71300eb6f8189092eea9744a615f819cd69212f28",
+      "manifest_sha256": "8b5e414b9378e786e60ce739a892194dc3197956ad1701ff8748ce2656c25270",
+      "metrics": {
+        "input_records": 64,
+        "labeled_records": 64,
+        "coverage_fraction": 1.0,
+        "cp_scores": 64,
+        "mate_scores": 0,
+        "exact_scores": 64,
+        "non_exact_scores": 0,
+        "timeout_salvaged": 0,
+        "requested_depth_underreached": 0,
+        "special_bestmoves": 0,
+        "candidate_coverage": 17,
+        "policy_margin_coverage": 17,
+        "policy_margin_cp": {
+          "mean": 0.0,
+          "median": 0,
+          "p10": 0.0
+        },
+        "engine_versions": []
+      }
+    },
+    {
+      "name": "sekirei-0.3.67__nodes10000__mpv1",
+      "teacher": "sekirei-0.3.67",
+      "limit_kind": "nodes",
+      "limit_value": 10000,
+      "multipv": 1,
+      "output_sha256": "e93675b5facdc12fa0e528fd6d2017a3df43ed25cab921a08bb1ff6e4b73705b",
+      "manifest_sha256": "4ad012b77187f2d8e4889a9326960a096d867141e5175ae97efcba86ef112ee9",
+      "metrics": {
+        "input_records": 64,
+        "labeled_records": 64,
+        "coverage_fraction": 1.0,
+        "cp_scores": 64,
+        "mate_scores": 0,
+        "exact_scores": 64,
+        "non_exact_scores": 0,
+        "timeout_salvaged": 0,
+        "requested_depth_underreached": 0,
+        "special_bestmoves": 0,
+        "candidate_coverage": 0,
+        "policy_margin_coverage": 0,
+        "policy_margin_cp": {
+          "mean": null,
+          "median": null,
+          "p10": null
+        },
+        "engine_versions": []
+      }
+    },
+    {
+      "name": "sekirei-0.3.67__nodes10000__mpv3",
+      "teacher": "sekirei-0.3.67",
+      "limit_kind": "nodes",
+      "limit_value": 10000,
+      "multipv": 3,
+      "output_sha256": "64662868648025d245751af6737f2e32d8deb1b6ad8fa455b2f18de9a09fe318",
+      "manifest_sha256": "7b9d62fa1e49859d45a25cc824444c4af003639a4e520c08ae3f7cfb0eaa2da8",
+      "metrics": {
+        "input_records": 64,
+        "labeled_records": 64,
+        "coverage_fraction": 1.0,
+        "cp_scores": 64,
+        "mate_scores": 0,
+        "exact_scores": 64,
+        "non_exact_scores": 0,
+        "timeout_salvaged": 0,
+        "requested_depth_underreached": 0,
+        "special_bestmoves": 0,
+        "candidate_coverage": 64,
+        "policy_margin_coverage": 64,
+        "policy_margin_cp": {
+          "mean": 0.203125,
+          "median": 0.0,
+          "p10": 0.0
+        },
+        "engine_versions": []
+      }
+    },
+    {
+      "name": "sekirei-0.3.68__depth4__mpv1",
+      "teacher": "sekirei-0.3.68",
+      "limit_kind": "depth",
+      "limit_value": 4,
+      "multipv": 1,
+      "output_sha256": "619c5f22ca675411bdc67356474d1f824b3fd18f601099d1ebc01fad160007d0",
+      "manifest_sha256": "c001b17fd84cfe8ed4950935cf125b633511abc8e851c15d9fe705f78a96afcf",
+      "metrics": {
+        "input_records": 64,
+        "labeled_records": 64,
+        "coverage_fraction": 1.0,
+        "cp_scores": 64,
+        "mate_scores": 0,
+        "exact_scores": 64,
+        "non_exact_scores": 0,
+        "timeout_salvaged": 0,
+        "requested_depth_underreached": 0,
+        "special_bestmoves": 0,
+        "candidate_coverage": 0,
+        "policy_margin_coverage": 0,
+        "policy_margin_cp": {
+          "mean": null,
+          "median": null,
+          "p10": null
+        },
+        "engine_versions": []
+      }
+    },
+    {
+      "name": "sekirei-0.3.68__depth4__mpv3",
+      "teacher": "sekirei-0.3.68",
+      "limit_kind": "depth",
+      "limit_value": 4,
+      "multipv": 3,
+      "output_sha256": "678716f70ed0a34485986d78a853fd491b6d70363ce7c1f0509d97a816244a94",
+      "manifest_sha256": "dfb1056f872a83aa685909538322110ee610b5b66cb9ecf8b8fa1590f9f450d8",
+      "metrics": {
+        "input_records": 64,
+        "labeled_records": 64,
+        "coverage_fraction": 1.0,
+        "cp_scores": 64,
+        "mate_scores": 0,
+        "exact_scores": 64,
+        "non_exact_scores": 0,
+        "timeout_salvaged": 0,
+        "requested_depth_underreached": 0,
+        "special_bestmoves": 0,
+        "candidate_coverage": 64,
+        "policy_margin_coverage": 64,
+        "policy_margin_cp": {
+          "mean": 0.09375,
+          "median": 0.0,
+          "p10": 0.0
+        },
+        "engine_versions": []
+      }
+    },
+    {
+      "name": "sekirei-0.3.68__depth8__mpv1",
+      "teacher": "sekirei-0.3.68",
+      "limit_kind": "depth",
+      "limit_value": 8,
+      "multipv": 1,
+      "output_sha256": "904eba18a5946a1094e2e94f8bd96cfb9e9622db35a2afadb67e3f536d4e58d0",
+      "manifest_sha256": "d0ad17b8ba6b550dfd465f8c396da21c3fd52870ee9a6a0acdd1992cf4164400",
+      "metrics": {
+        "input_records": 64,
+        "labeled_records": 64,
+        "coverage_fraction": 1.0,
+        "cp_scores": 64,
+        "mate_scores": 0,
+        "exact_scores": 64,
+        "non_exact_scores": 0,
+        "timeout_salvaged": 0,
+        "requested_depth_underreached": 0,
+        "special_bestmoves": 0,
+        "candidate_coverage": 0,
+        "policy_margin_coverage": 0,
+        "policy_margin_cp": {
+          "mean": null,
+          "median": null,
+          "p10": null
+        },
+        "engine_versions": []
+      }
+    },
+    {
+      "name": "sekirei-0.3.68__depth8__mpv3",
+      "teacher": "sekirei-0.3.68",
+      "limit_kind": "depth",
+      "limit_value": 8,
+      "multipv": 3,
+      "output_sha256": "5a3c5789db077136214e3e2239558f2bee2d0e26dbf72e137022570b71f34f60",
+      "manifest_sha256": "f53aee641861a9cc5571659cf91bc8089d1f8675e5a29b5c426a38543a1b06c5",
+      "metrics": {
+        "input_records": 64,
+        "labeled_records": 64,
+        "coverage_fraction": 1.0,
+        "cp_scores": 64,
+        "mate_scores": 0,
+        "exact_scores": 64,
+        "non_exact_scores": 0,
+        "timeout_salvaged": 0,
+        "requested_depth_underreached": 0,
+        "special_bestmoves": 0,
+        "candidate_coverage": 64,
+        "policy_margin_coverage": 64,
+        "policy_margin_cp": {
+          "mean": 0.234375,
+          "median": 0.0,
+          "p10": 0.0
+        },
+        "engine_versions": []
+      }
+    },
+    {
+      "name": "sekirei-0.3.68__nodes1000__mpv1",
+      "teacher": "sekirei-0.3.68",
+      "limit_kind": "nodes",
+      "limit_value": 1000,
+      "multipv": 1,
+      "output_sha256": "3566c647b2a30323ab2bdbe28e91a9bb91088e700287e0808928d0705c375875",
+      "manifest_sha256": "c5b1b5dc07875d0b9aad3284ab48dd7214223ce7798c0d4cee59921a9b794a28",
+      "metrics": {
+        "input_records": 64,
+        "labeled_records": 64,
+        "coverage_fraction": 1.0,
+        "cp_scores": 64,
+        "mate_scores": 0,
+        "exact_scores": 64,
+        "non_exact_scores": 0,
+        "timeout_salvaged": 0,
+        "requested_depth_underreached": 0,
+        "special_bestmoves": 0,
+        "candidate_coverage": 0,
+        "policy_margin_coverage": 0,
+        "policy_margin_cp": {
+          "mean": null,
+          "median": null,
+          "p10": null
+        },
+        "engine_versions": []
+      }
+    },
+    {
+      "name": "sekirei-0.3.68__nodes1000__mpv3",
+      "teacher": "sekirei-0.3.68",
+      "limit_kind": "nodes",
+      "limit_value": 1000,
+      "multipv": 3,
+      "output_sha256": "3a6dc4034d49266133e06ee58d24545ec69e0b4deadadf38c27d127f3ac10e6f",
+      "manifest_sha256": "af43d883d84f4f61257d16873b8918ea29ed7d1d8ecf6ed822a21800aa84bd09",
+      "metrics": {
+        "input_records": 64,
+        "labeled_records": 64,
+        "coverage_fraction": 1.0,
+        "cp_scores": 64,
+        "mate_scores": 0,
+        "exact_scores": 64,
+        "non_exact_scores": 0,
+        "timeout_salvaged": 0,
+        "requested_depth_underreached": 0,
+        "special_bestmoves": 0,
+        "candidate_coverage": 17,
+        "policy_margin_coverage": 17,
+        "policy_margin_cp": {
+          "mean": 0.0,
+          "median": 0,
+          "p10": 0.0
+        },
+        "engine_versions": []
+      }
+    },
+    {
+      "name": "sekirei-0.3.68__nodes10000__mpv1",
+      "teacher": "sekirei-0.3.68",
+      "limit_kind": "nodes",
+      "limit_value": 10000,
+      "multipv": 1,
+      "output_sha256": "1b9201a420dd1e498ac7e4ece697a3a5d6ca10ef5e6170dbcdcd06331748adb5",
+      "manifest_sha256": "72dec08fa5f5f81f8e28a55b98cbeb9912172a24595734fbc67bc9101a3d8087",
+      "metrics": {
+        "input_records": 64,
+        "labeled_records": 64,
+        "coverage_fraction": 1.0,
+        "cp_scores": 64,
+        "mate_scores": 0,
+        "exact_scores": 64,
+        "non_exact_scores": 0,
+        "timeout_salvaged": 0,
+        "requested_depth_underreached": 0,
+        "special_bestmoves": 0,
+        "candidate_coverage": 0,
+        "policy_margin_coverage": 0,
+        "policy_margin_cp": {
+          "mean": null,
+          "median": null,
+          "p10": null
+        },
+        "engine_versions": []
+      }
+    },
+    {
+      "name": "sekirei-0.3.68__nodes10000__mpv3",
+      "teacher": "sekirei-0.3.68",
+      "limit_kind": "nodes",
+      "limit_value": 10000,
+      "multipv": 3,
+      "output_sha256": "19f89569cc370514313a5905e3d16ed8e323f6122cfcc38322bc6da4ee818b8f",
+      "manifest_sha256": "3fd3a456d2107322c733c3549c9ea2d02ac0da660531db9b3c2cf77ddce1e29b",
+      "metrics": {
+        "input_records": 64,
+        "labeled_records": 64,
+        "coverage_fraction": 1.0,
+        "cp_scores": 64,
+        "mate_scores": 0,
+        "exact_scores": 64,
+        "non_exact_scores": 0,
+        "timeout_salvaged": 0,
+        "requested_depth_underreached": 0,
+        "special_bestmoves": 0,
+        "candidate_coverage": 64,
+        "policy_margin_coverage": 64,
+        "policy_margin_cp": {
+          "mean": 0.203125,
+          "median": 0.0,
+          "p10": 0.0
+        },
+        "engine_versions": []
+      }
+    }
+  ],
+  "cohorts": [
+    {
+      "limit_kind": "depth",
+      "limit_value": 4,
+      "multipv": 1,
+      "teachers": [
+        "sekirei-0.3.67"
+      ],
+      "metrics": {
+        "input_records": 64,
+        "teacher_count": 1,
+        "all_teachers_labeled": 64,
+        "all_teachers_coverage_fraction": 1.0,
+        "bestmove_comparable": 0,
+        "bestmove_agreements": 0,
+        "bestmove_disagreements": 0,
+        "bestmove_agreement_fraction": null,
+        "cp_spread": {
+          "pairs": 0,
+          "mean": null,
+          "median": null,
+          "p95": null,
+          "max": null
+        }
+      },
+      "quality_profiles": {
+        "exact": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "7992eb23a5a1fcdde89dee0e9759875ee6e642273e5e7f957b5169f85a30668b"
+        },
+        "stable150": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "025da1d1ae05772cbc39402cd42c8f3ae0f66a69813941090a18386c01c63ebf"
+        },
+        "consensus150": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "4af09242d7f32ecb1626da603bd42c1fe4ea97db13433e17b200b141ed06d33f"
+        },
+        "policy50": {
+          "records_kept": 0,
+          "records_dropped": 64,
+          "drop_reasons": {
+            "missing_policy_margin": 64
+          },
+          "manifest_sha256": "5032fbc26971921aec9d8da7206d9961540bebc5268b6168afea44d63be0c11d"
+        }
+      },
+      "stable_sha256": "cd809ac9ef8c66af27b1f0ef5c4c3ca92e6d95d999b628a5a74897b8202122d1"
+    },
+    {
+      "limit_kind": "depth",
+      "limit_value": 4,
+      "multipv": 1,
+      "teachers": [
+        "sekirei-0.3.67",
+        "sekirei-0.3.68"
+      ],
+      "metrics": {
+        "input_records": 64,
+        "teacher_count": 2,
+        "all_teachers_labeled": 64,
+        "all_teachers_coverage_fraction": 1.0,
+        "bestmove_comparable": 64,
+        "bestmove_agreements": 64,
+        "bestmove_disagreements": 0,
+        "bestmove_agreement_fraction": 1.0,
+        "cp_spread": {
+          "pairs": 64,
+          "mean": 0.0,
+          "median": 0.0,
+          "p95": 0.0,
+          "max": 0.0
+        }
+      },
+      "quality_profiles": {
+        "exact": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "f40581a10baca5963c6feb726d4f92ece654f6a7217d97590b5daaa9ff144f50"
+        },
+        "stable150": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "f9126647a88b1bdbf9d9a01c95e366b57a7525cee88de6db856e599a8d591340"
+        },
+        "consensus150": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "abc058e6c31925b36d9554fbdd542af4dd1e277a750160595aa9c18d7031282d"
+        },
+        "policy50": {
+          "records_kept": 0,
+          "records_dropped": 64,
+          "drop_reasons": {
+            "missing_policy_margin": 64
+          },
+          "manifest_sha256": "1d61b0b899055baa08404cdd97c017950394f7d243b049cbba976249bd0a8c0e"
+        }
+      },
+      "stable_sha256": "b4c8615089ac34b0b8fad07c6af0c4603cbbaada0099385703454f8bcbaacd1e"
+    },
+    {
+      "limit_kind": "depth",
+      "limit_value": 4,
+      "multipv": 3,
+      "teachers": [
+        "sekirei-0.3.67"
+      ],
+      "metrics": {
+        "input_records": 64,
+        "teacher_count": 1,
+        "all_teachers_labeled": 64,
+        "all_teachers_coverage_fraction": 1.0,
+        "bestmove_comparable": 0,
+        "bestmove_agreements": 0,
+        "bestmove_disagreements": 0,
+        "bestmove_agreement_fraction": null,
+        "cp_spread": {
+          "pairs": 0,
+          "mean": null,
+          "median": null,
+          "p95": null,
+          "max": null
+        }
+      },
+      "quality_profiles": {
+        "exact": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "e4a47f987b00cd0948df973ef2f90106efcff1227f6bc0a8b99599fa4300233d"
+        },
+        "stable150": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "d2386bf070cf4841b2cac2359b220773b077fc05f295bdae888fa85378d49d1b"
+        },
+        "consensus150": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "fbfad88081a513d6ffa11d1a8f4c174469d5db08cbeaab97cc5b4944bc93efaa"
+        },
+        "policy50": {
+          "records_kept": 0,
+          "records_dropped": 64,
+          "drop_reasons": {
+            "policy_margin": 64
+          },
+          "manifest_sha256": "d072c296eedf2da3251aee29a41665bdf10ca81d30e547e08209a1f345490347"
+        }
+      },
+      "stable_sha256": "71289e5687da74d44c5d3ad3bfacb29139cfffa375067b19cc9a066f18eed62c"
+    },
+    {
+      "limit_kind": "depth",
+      "limit_value": 4,
+      "multipv": 3,
+      "teachers": [
+        "sekirei-0.3.67",
+        "sekirei-0.3.68"
+      ],
+      "metrics": {
+        "input_records": 64,
+        "teacher_count": 2,
+        "all_teachers_labeled": 64,
+        "all_teachers_coverage_fraction": 1.0,
+        "bestmove_comparable": 64,
+        "bestmove_agreements": 64,
+        "bestmove_disagreements": 0,
+        "bestmove_agreement_fraction": 1.0,
+        "cp_spread": {
+          "pairs": 64,
+          "mean": 0.0,
+          "median": 0.0,
+          "p95": 0.0,
+          "max": 0.0
+        }
+      },
+      "quality_profiles": {
+        "exact": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "295db29bf9dfcb86e9461964470b46d3e3b66f6eb5624702369039fb57ab2a32"
+        },
+        "stable150": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "e0fe3f379d6037582c6c98cfd1d9444185cd5ba5f5109277e845af4aece195b3"
+        },
+        "consensus150": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "68cb9050f5ff777c1bc0018e3100352df77ddab4436f14d45a01faa2b67ab8b4"
+        },
+        "policy50": {
+          "records_kept": 0,
+          "records_dropped": 64,
+          "drop_reasons": {
+            "policy_margin": 64
+          },
+          "manifest_sha256": "16d9f49c08ea83b40e29755080bfc692795e3bda721ae9fa1185a73fbcd530bc"
+        }
+      },
+      "stable_sha256": "c454accda8a55d316fb5a83ecf213e4db3b0cb5f35b21cf6d617bc5bc7a078b1"
+    },
+    {
+      "limit_kind": "depth",
+      "limit_value": 8,
+      "multipv": 1,
+      "teachers": [
+        "sekirei-0.3.67"
+      ],
+      "metrics": {
+        "input_records": 64,
+        "teacher_count": 1,
+        "all_teachers_labeled": 64,
+        "all_teachers_coverage_fraction": 1.0,
+        "bestmove_comparable": 0,
+        "bestmove_agreements": 0,
+        "bestmove_disagreements": 0,
+        "bestmove_agreement_fraction": null,
+        "cp_spread": {
+          "pairs": 0,
+          "mean": null,
+          "median": null,
+          "p95": null,
+          "max": null
+        }
+      },
+      "quality_profiles": {
+        "exact": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "301e1ef39ae05747f534cd2e7b1b4ff2b89aa5ba830865e1c6e510be0476ce61"
+        },
+        "stable150": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "7466abc5f0c85edf14684be81757fdf9f425022148fc6bb896ad89bc8f6994ba"
+        },
+        "consensus150": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "4b0b97329d27731c745f88a34466f2cc506b6c05017189184f24768bf3218cb7"
+        },
+        "policy50": {
+          "records_kept": 0,
+          "records_dropped": 64,
+          "drop_reasons": {
+            "missing_policy_margin": 64
+          },
+          "manifest_sha256": "f0ab5f58199540583989d54bea7c52da0bba066b80f87061ebcd265f04f4e018"
+        }
+      },
+      "stable_sha256": "028fe40b62b92302eb43cf4178ace30182b28c0687b17fa4969774dc6e06d570"
+    },
+    {
+      "limit_kind": "depth",
+      "limit_value": 8,
+      "multipv": 1,
+      "teachers": [
+        "sekirei-0.3.67",
+        "sekirei-0.3.68"
+      ],
+      "metrics": {
+        "input_records": 64,
+        "teacher_count": 2,
+        "all_teachers_labeled": 64,
+        "all_teachers_coverage_fraction": 1.0,
+        "bestmove_comparable": 64,
+        "bestmove_agreements": 64,
+        "bestmove_disagreements": 0,
+        "bestmove_agreement_fraction": 1.0,
+        "cp_spread": {
+          "pairs": 64,
+          "mean": 0.0,
+          "median": 0.0,
+          "p95": 0.0,
+          "max": 0.0
+        }
+      },
+      "quality_profiles": {
+        "exact": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "93ea8ad9f2147da66ea494cc072041f26cdf2cdb3d76b7fa6bb713f9418ee96e"
+        },
+        "stable150": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "938a484e3978fdc3e54880bf1bb53e281c1ac710f4c4647dbd6e3a1f681a0e65"
+        },
+        "consensus150": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "e630d7a7dcc259974ddfa9c1aa380664a95711d50ac0782bbedf8c3ee1dd221c"
+        },
+        "policy50": {
+          "records_kept": 0,
+          "records_dropped": 64,
+          "drop_reasons": {
+            "missing_policy_margin": 64
+          },
+          "manifest_sha256": "81a0096099bd0da9ccec6c78cc99af190bd282d4364b97d9d0fbf2bbf32f279a"
+        }
+      },
+      "stable_sha256": "5f8a915bbd24588b142a1aca1d583ec5e65dbf1416c7003cb472c5be1acfc0ca"
+    },
+    {
+      "limit_kind": "depth",
+      "limit_value": 8,
+      "multipv": 3,
+      "teachers": [
+        "sekirei-0.3.67"
+      ],
+      "metrics": {
+        "input_records": 64,
+        "teacher_count": 1,
+        "all_teachers_labeled": 64,
+        "all_teachers_coverage_fraction": 1.0,
+        "bestmove_comparable": 0,
+        "bestmove_agreements": 0,
+        "bestmove_disagreements": 0,
+        "bestmove_agreement_fraction": null,
+        "cp_spread": {
+          "pairs": 0,
+          "mean": null,
+          "median": null,
+          "p95": null,
+          "max": null
+        }
+      },
+      "quality_profiles": {
+        "exact": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "072433b076a98c4999e20b6e3e1a54b6becff3b458f96630eff655ba99a2ea5e"
+        },
+        "stable150": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "d06c959e58e16c2421aff0cb7a70e72f3715db4f47c114d33064d49127892d54"
+        },
+        "consensus150": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "cd32fe48a372fe412106f7e7111c342c147c83567a3299d9b0e993727442a6bb"
+        },
+        "policy50": {
+          "records_kept": 0,
+          "records_dropped": 64,
+          "drop_reasons": {
+            "policy_margin": 64
+          },
+          "manifest_sha256": "8e170ae43572e78be5be460d806fc7eb3f7a32211fc6a2e0eefe94ab87237087"
+        }
+      },
+      "stable_sha256": "38ab2859cdaff5f2a1ff3e1b6f2e77661100d9e192bb3756ca49a2f95ebe844f"
+    },
+    {
+      "limit_kind": "depth",
+      "limit_value": 8,
+      "multipv": 3,
+      "teachers": [
+        "sekirei-0.3.67",
+        "sekirei-0.3.68"
+      ],
+      "metrics": {
+        "input_records": 64,
+        "teacher_count": 2,
+        "all_teachers_labeled": 64,
+        "all_teachers_coverage_fraction": 1.0,
+        "bestmove_comparable": 64,
+        "bestmove_agreements": 64,
+        "bestmove_disagreements": 0,
+        "bestmove_agreement_fraction": 1.0,
+        "cp_spread": {
+          "pairs": 64,
+          "mean": 0.0,
+          "median": 0.0,
+          "p95": 0.0,
+          "max": 0.0
+        }
+      },
+      "quality_profiles": {
+        "exact": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "2bbede7f4cc1bc919db89459b387c435181305b08f5fe7b224a15f551f7e0866"
+        },
+        "stable150": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "5aff8190913102a3fade9c8a83b61d28c0c8e2981e89045c8f28c44a26080d7f"
+        },
+        "consensus150": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "1c2cfe9e5c450526c36d777853331819da0a9f075e33e1cd6632e2bf15425929"
+        },
+        "policy50": {
+          "records_kept": 0,
+          "records_dropped": 64,
+          "drop_reasons": {
+            "policy_margin": 64
+          },
+          "manifest_sha256": "bdf247e5cbb74a1c11956e52338b1908d8ba69cbb394ebf2a190f1694938c32f"
+        }
+      },
+      "stable_sha256": "ceb27cdee32a50ecffdb4133f1958bc21cd5086812066c00cdd8d3bc0a6118eb"
+    },
+    {
+      "limit_kind": "nodes",
+      "limit_value": 1000,
+      "multipv": 1,
+      "teachers": [
+        "sekirei-0.3.67"
+      ],
+      "metrics": {
+        "input_records": 64,
+        "teacher_count": 1,
+        "all_teachers_labeled": 64,
+        "all_teachers_coverage_fraction": 1.0,
+        "bestmove_comparable": 0,
+        "bestmove_agreements": 0,
+        "bestmove_disagreements": 0,
+        "bestmove_agreement_fraction": null,
+        "cp_spread": {
+          "pairs": 0,
+          "mean": null,
+          "median": null,
+          "p95": null,
+          "max": null
+        }
+      },
+      "quality_profiles": {
+        "exact": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "a585d61ecb3a8173328f294419de457f508f2f7fa16a3c570ce887449ad1ec68"
+        },
+        "stable150": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "77d5404aa5e1410e55decfb051297a0d6ca1c97afcd58d8f9d6df71fea470c2d"
+        },
+        "consensus150": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "c92fac0851bc93400eb62aa698419c539e4f2812ce361f6e81561848875a79e2"
+        },
+        "policy50": {
+          "records_kept": 0,
+          "records_dropped": 64,
+          "drop_reasons": {
+            "missing_policy_margin": 64
+          },
+          "manifest_sha256": "d95fb4b4d0789a0e3abbce4fee4acb822ebedb5545b894cb6116d8492de92b29"
+        }
+      },
+      "stable_sha256": "a0c4cdada2d192f6392086f805ace11616c9c9c21afed007c16fade5a7c57cfe"
+    },
+    {
+      "limit_kind": "nodes",
+      "limit_value": 1000,
+      "multipv": 1,
+      "teachers": [
+        "sekirei-0.3.67",
+        "sekirei-0.3.68"
+      ],
+      "metrics": {
+        "input_records": 64,
+        "teacher_count": 2,
+        "all_teachers_labeled": 64,
+        "all_teachers_coverage_fraction": 1.0,
+        "bestmove_comparable": 64,
+        "bestmove_agreements": 64,
+        "bestmove_disagreements": 0,
+        "bestmove_agreement_fraction": 1.0,
+        "cp_spread": {
+          "pairs": 64,
+          "mean": 0.0,
+          "median": 0.0,
+          "p95": 0.0,
+          "max": 0.0
+        }
+      },
+      "quality_profiles": {
+        "exact": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "a67c4b7b62d0fd1b895165a965c6ddcae978657a1eb78595d98950a7705cb2d7"
+        },
+        "stable150": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "99c879b1540122409330410cf3c217870386ff4139bb842962277b6e0e80eadc"
+        },
+        "consensus150": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "b6fc9be5a1d2ecb39bbd264b006a5ca771d7b768769c1366a81a1dd45e2507d5"
+        },
+        "policy50": {
+          "records_kept": 0,
+          "records_dropped": 64,
+          "drop_reasons": {
+            "missing_policy_margin": 64
+          },
+          "manifest_sha256": "5d02a700e5c41f18a3036d350709f60ddec947c7ccfadf7015f93bbf4362e221"
+        }
+      },
+      "stable_sha256": "35a259386de45d3a2aae73516741cb8176ae130cde626211e75c3301d5762945"
+    },
+    {
+      "limit_kind": "nodes",
+      "limit_value": 1000,
+      "multipv": 3,
+      "teachers": [
+        "sekirei-0.3.67"
+      ],
+      "metrics": {
+        "input_records": 64,
+        "teacher_count": 1,
+        "all_teachers_labeled": 64,
+        "all_teachers_coverage_fraction": 1.0,
+        "bestmove_comparable": 0,
+        "bestmove_agreements": 0,
+        "bestmove_disagreements": 0,
+        "bestmove_agreement_fraction": null,
+        "cp_spread": {
+          "pairs": 0,
+          "mean": null,
+          "median": null,
+          "p95": null,
+          "max": null
+        }
+      },
+      "quality_profiles": {
+        "exact": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "3759a7f8c4d8ae8fe3fc11c5ac116b26acfdb95aa3fb7c10ef477d2c1ef483e9"
+        },
+        "stable150": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "4a6b49196635807e9878a0270c397489e8e7ae365e1186191d5c52a889770fa6"
+        },
+        "consensus150": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "5c9901fe4d2df4e358e59876b120c43af31d0023184962b086e638774107ccb0"
+        },
+        "policy50": {
+          "records_kept": 0,
+          "records_dropped": 64,
+          "drop_reasons": {
+            "missing_policy_margin": 47,
+            "policy_margin": 17
+          },
+          "manifest_sha256": "6f085327650b8dc90366bf9025332aba4b894c9b482b078c241eeaf79f622b79"
+        }
+      },
+      "stable_sha256": "15df73a3b290a8f9d86d20150db46715a3d1ff08509ba5408db98e2b6721b6ed"
+    },
+    {
+      "limit_kind": "nodes",
+      "limit_value": 1000,
+      "multipv": 3,
+      "teachers": [
+        "sekirei-0.3.67",
+        "sekirei-0.3.68"
+      ],
+      "metrics": {
+        "input_records": 64,
+        "teacher_count": 2,
+        "all_teachers_labeled": 64,
+        "all_teachers_coverage_fraction": 1.0,
+        "bestmove_comparable": 64,
+        "bestmove_agreements": 64,
+        "bestmove_disagreements": 0,
+        "bestmove_agreement_fraction": 1.0,
+        "cp_spread": {
+          "pairs": 64,
+          "mean": 0.0,
+          "median": 0.0,
+          "p95": 0.0,
+          "max": 0.0
+        }
+      },
+      "quality_profiles": {
+        "exact": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "906dea3e42e2f3302d88c65a64021afc0c4290ce82279041b5cf6c30ac475e24"
+        },
+        "stable150": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "392fcdf12d1af5f33b922011d21b2dbad1093374802658cc24e1b41ca0c568ac"
+        },
+        "consensus150": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "3215b1aebe1ae28eddb9ddad3a3614dadb964f336472424f44451ca6ff34c33c"
+        },
+        "policy50": {
+          "records_kept": 0,
+          "records_dropped": 64,
+          "drop_reasons": {
+            "missing_policy_margin": 47,
+            "policy_margin": 17
+          },
+          "manifest_sha256": "17b0cb325207c9a4c60d4c68b3bab4a5ddc26f046c2e9b9c857f23bee4be7c57"
+        }
+      },
+      "stable_sha256": "db2ff861416baffc2a3905509e79c2ff19d92d89cf3e0c40740af3b770b14c06"
+    },
+    {
+      "limit_kind": "nodes",
+      "limit_value": 10000,
+      "multipv": 1,
+      "teachers": [
+        "sekirei-0.3.67"
+      ],
+      "metrics": {
+        "input_records": 64,
+        "teacher_count": 1,
+        "all_teachers_labeled": 64,
+        "all_teachers_coverage_fraction": 1.0,
+        "bestmove_comparable": 0,
+        "bestmove_agreements": 0,
+        "bestmove_disagreements": 0,
+        "bestmove_agreement_fraction": null,
+        "cp_spread": {
+          "pairs": 0,
+          "mean": null,
+          "median": null,
+          "p95": null,
+          "max": null
+        }
+      },
+      "quality_profiles": {
+        "exact": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "cd11e8671c4192bb984c9b725fd0158fbdabe1c75dd987d92736c31bfdc444db"
+        },
+        "stable150": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "105acbb84d904d4325101a0db099829594ab95cd727df2163ccf413df8c71e26"
+        },
+        "consensus150": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "b3c3939e6b1d441c74455b7bf5f6a52bcf5d85f614ec98a210e958ee3a4ffe68"
+        },
+        "policy50": {
+          "records_kept": 0,
+          "records_dropped": 64,
+          "drop_reasons": {
+            "missing_policy_margin": 64
+          },
+          "manifest_sha256": "26ea02d927420d7f01734d1a793421d5ffc4a9b90f13771107e4f5edf8a5f622"
+        }
+      },
+      "stable_sha256": "73c3c26902065212fca38dec1dcbbad797b2c5dc8877a9a8a9ace560c4364e48"
+    },
+    {
+      "limit_kind": "nodes",
+      "limit_value": 10000,
+      "multipv": 1,
+      "teachers": [
+        "sekirei-0.3.67",
+        "sekirei-0.3.68"
+      ],
+      "metrics": {
+        "input_records": 64,
+        "teacher_count": 2,
+        "all_teachers_labeled": 64,
+        "all_teachers_coverage_fraction": 1.0,
+        "bestmove_comparable": 64,
+        "bestmove_agreements": 64,
+        "bestmove_disagreements": 0,
+        "bestmove_agreement_fraction": 1.0,
+        "cp_spread": {
+          "pairs": 64,
+          "mean": 0.0,
+          "median": 0.0,
+          "p95": 0.0,
+          "max": 0.0
+        }
+      },
+      "quality_profiles": {
+        "exact": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "757f0f57eb339d089d86b2da83f33d660002482b1207f93861b9bf0a3f7bfbdb"
+        },
+        "stable150": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "05c2d263b2a1beaba72b57dd37599791a062325a2c6b14e9e822be6aa99a65f5"
+        },
+        "consensus150": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "8a54dc5d8bba953b71d55f80f1f27cacd39dfefe6ad24abbe61e2b975628bfa8"
+        },
+        "policy50": {
+          "records_kept": 0,
+          "records_dropped": 64,
+          "drop_reasons": {
+            "missing_policy_margin": 64
+          },
+          "manifest_sha256": "7a38ffdd6576a6afb513cf7896e51f3b2c7abf41b3fd7b11eaba08decc93b6f8"
+        }
+      },
+      "stable_sha256": "66c53e038e9a5f097ef32b7c91282658b83870154c078be77570ca034120d82c"
+    },
+    {
+      "limit_kind": "nodes",
+      "limit_value": 10000,
+      "multipv": 3,
+      "teachers": [
+        "sekirei-0.3.67"
+      ],
+      "metrics": {
+        "input_records": 64,
+        "teacher_count": 1,
+        "all_teachers_labeled": 64,
+        "all_teachers_coverage_fraction": 1.0,
+        "bestmove_comparable": 0,
+        "bestmove_agreements": 0,
+        "bestmove_disagreements": 0,
+        "bestmove_agreement_fraction": null,
+        "cp_spread": {
+          "pairs": 0,
+          "mean": null,
+          "median": null,
+          "p95": null,
+          "max": null
+        }
+      },
+      "quality_profiles": {
+        "exact": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "e1691458d5cb32b0c8ee6b5fd38e29597b3287b1aaa5e994af9ba72ed270b711"
+        },
+        "stable150": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "c613c2a2470f57481d2548337700d6ef9b48205e2a3b3f6b60abf5e6a6e6aa7a"
+        },
+        "consensus150": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "3a2df83bd29ff44f863d118a28fae8399d5c516c9e150d7073901fdbd940591f"
+        },
+        "policy50": {
+          "records_kept": 0,
+          "records_dropped": 64,
+          "drop_reasons": {
+            "policy_margin": 64
+          },
+          "manifest_sha256": "bf274fe0166728bef8246ab61542a047d70da9812a746ace90710b8da165e1d7"
+        }
+      },
+      "stable_sha256": "c71ebbc9f5420b7aaa44127b192799939c65d0d56dde9d77fcd215cd394786ee"
+    },
+    {
+      "limit_kind": "nodes",
+      "limit_value": 10000,
+      "multipv": 3,
+      "teachers": [
+        "sekirei-0.3.67",
+        "sekirei-0.3.68"
+      ],
+      "metrics": {
+        "input_records": 64,
+        "teacher_count": 2,
+        "all_teachers_labeled": 64,
+        "all_teachers_coverage_fraction": 1.0,
+        "bestmove_comparable": 64,
+        "bestmove_agreements": 64,
+        "bestmove_disagreements": 0,
+        "bestmove_agreement_fraction": 1.0,
+        "cp_spread": {
+          "pairs": 64,
+          "mean": 0.0,
+          "median": 0.0,
+          "p95": 0.0,
+          "max": 0.0
+        }
+      },
+      "quality_profiles": {
+        "exact": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "35b602c72cc3704f469e9ee2f70228fb73aa20eb00a156b4304270549742c69d"
+        },
+        "stable150": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "7e28b47af02029bb405cf55a2067b60235dcbf5aa7f47b4846c7b704e3968be2"
+        },
+        "consensus150": {
+          "records_kept": 64,
+          "records_dropped": 0,
+          "drop_reasons": {},
+          "manifest_sha256": "0bc8a437e2ab64b71b6f9e311eb40986fca243af6b0180d5bf3866a20045fdde"
+        },
+        "policy50": {
+          "records_kept": 0,
+          "records_dropped": 64,
+          "drop_reasons": {
+            "policy_margin": 64
+          },
+          "manifest_sha256": "3b2fd7395e1d980a178fe78b85ee103dcb0f262ce64533dbd8660df0098e0198"
+        }
+      },
+      "stable_sha256": "b5893aabb57f5d2845cbbbd0ea7c5b412c08351cb3f5fdcb7149ccfa437c43f4"
+    }
+  ],
+  "steps": [
+    {
+      "name": "validate-input",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "validate",
+        "--strict",
+        "--input",
+        "<shogiesa>/docs/measurements/teacher_calibration_corpus_2026-10-10.jsonl"
+      ],
+      "wall_time_seconds": 0.0227,
+      "exit_code": 0
+    },
+    {
+      "name": "sample",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "sample",
+        "--input",
+        "<shogiesa>/docs/measurements/teacher_calibration_corpus_2026-10-10.jsonl",
+        "--count",
+        "64",
+        "--seed",
+        "368",
+        "--out",
+        "<work>/sampled.jsonl"
+      ],
+      "wall_time_seconds": 0.007366,
+      "exit_code": 0
+    },
+    {
+      "name": "validate-sample",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "validate",
+        "--strict",
+        "--input",
+        "<work>/sampled.jsonl"
+      ],
+      "wall_time_seconds": 0.00274,
+      "exit_code": 0
+    },
+    {
+      "name": "label-sekirei-0-3-67__depth4__mpv1",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "label",
+        "--input",
+        "<work>/sampled.jsonl",
+        "--engine",
+        "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.67/target/release/sekirei",
+        "--engine-name",
+        "sekirei-0.3.67__depth4__mpv1",
+        "--timeout-ms",
+        "30000",
+        "--jobs",
+        "1",
+        "--multipv",
+        "1",
+        "--usi-strict",
+        "--preserve-order",
+        "--manifest",
+        "<work>/sekirei-0-3-67__depth4__mpv1-manifest.json",
+        "--out",
+        "<work>/sekirei-0-3-67__depth4__mpv1.jsonl",
+        "--depths",
+        "4",
+        "--engine-option",
+        "EvalFile=/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/weights.bin",
+        "--engine-option",
+        "Threads=1",
+        "--engine-option",
+        "SpecTopN=0",
+        "--weight-file",
+        "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.67/weights.bin"
+      ],
+      "wall_time_seconds": 0.119351,
+      "exit_code": 0
+    },
+    {
+      "name": "label-sekirei-0-3-67__depth4__mpv3",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "label",
+        "--input",
+        "<work>/sampled.jsonl",
+        "--engine",
+        "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.67/target/release/sekirei",
+        "--engine-name",
+        "sekirei-0.3.67__depth4__mpv3",
+        "--timeout-ms",
+        "30000",
+        "--jobs",
+        "1",
+        "--multipv",
+        "3",
+        "--usi-strict",
+        "--preserve-order",
+        "--manifest",
+        "<work>/sekirei-0-3-67__depth4__mpv3-manifest.json",
+        "--out",
+        "<work>/sekirei-0-3-67__depth4__mpv3.jsonl",
+        "--depths",
+        "4",
+        "--engine-option",
+        "EvalFile=/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/weights.bin",
+        "--engine-option",
+        "Threads=1",
+        "--engine-option",
+        "SpecTopN=0",
+        "--weight-file",
+        "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.67/weights.bin"
+      ],
+      "wall_time_seconds": 0.196353,
+      "exit_code": 0
+    },
+    {
+      "name": "label-sekirei-0-3-67__depth8__mpv1",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "label",
+        "--input",
+        "<work>/sampled.jsonl",
+        "--engine",
+        "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.67/target/release/sekirei",
+        "--engine-name",
+        "sekirei-0.3.67__depth8__mpv1",
+        "--timeout-ms",
+        "30000",
+        "--jobs",
+        "1",
+        "--multipv",
+        "1",
+        "--usi-strict",
+        "--preserve-order",
+        "--manifest",
+        "<work>/sekirei-0-3-67__depth8__mpv1-manifest.json",
+        "--out",
+        "<work>/sekirei-0-3-67__depth8__mpv1.jsonl",
+        "--depths",
+        "8",
+        "--engine-option",
+        "EvalFile=/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/weights.bin",
+        "--engine-option",
+        "Threads=1",
+        "--engine-option",
+        "SpecTopN=0",
+        "--weight-file",
+        "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.67/weights.bin"
+      ],
+      "wall_time_seconds": 0.359624,
+      "exit_code": 0
+    },
+    {
+      "name": "label-sekirei-0-3-67__depth8__mpv3",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "label",
+        "--input",
+        "<work>/sampled.jsonl",
+        "--engine",
+        "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.67/target/release/sekirei",
+        "--engine-name",
+        "sekirei-0.3.67__depth8__mpv3",
+        "--timeout-ms",
+        "30000",
+        "--jobs",
+        "1",
+        "--multipv",
+        "3",
+        "--usi-strict",
+        "--preserve-order",
+        "--manifest",
+        "<work>/sekirei-0-3-67__depth8__mpv3-manifest.json",
+        "--out",
+        "<work>/sekirei-0-3-67__depth8__mpv3.jsonl",
+        "--depths",
+        "8",
+        "--engine-option",
+        "EvalFile=/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/weights.bin",
+        "--engine-option",
+        "Threads=1",
+        "--engine-option",
+        "SpecTopN=0",
+        "--weight-file",
+        "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.67/weights.bin"
+      ],
+      "wall_time_seconds": 0.641371,
+      "exit_code": 0
+    },
+    {
+      "name": "label-sekirei-0-3-67__nodes1000__mpv1",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "label",
+        "--input",
+        "<work>/sampled.jsonl",
+        "--engine",
+        "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.67/target/release/sekirei",
+        "--engine-name",
+        "sekirei-0.3.67__nodes1000__mpv1",
+        "--timeout-ms",
+        "30000",
+        "--jobs",
+        "1",
+        "--multipv",
+        "1",
+        "--usi-strict",
+        "--preserve-order",
+        "--manifest",
+        "<work>/sekirei-0-3-67__nodes1000__mpv1-manifest.json",
+        "--out",
+        "<work>/sekirei-0-3-67__nodes1000__mpv1.jsonl",
+        "--nodes",
+        "1000",
+        "--engine-option",
+        "EvalFile=/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/weights.bin",
+        "--engine-option",
+        "Threads=1",
+        "--engine-option",
+        "SpecTopN=0",
+        "--weight-file",
+        "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.67/weights.bin"
+      ],
+      "wall_time_seconds": 0.095752,
+      "exit_code": 0
+    },
+    {
+      "name": "label-sekirei-0-3-67__nodes1000__mpv3",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "label",
+        "--input",
+        "<work>/sampled.jsonl",
+        "--engine",
+        "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.67/target/release/sekirei",
+        "--engine-name",
+        "sekirei-0.3.67__nodes1000__mpv3",
+        "--timeout-ms",
+        "30000",
+        "--jobs",
+        "1",
+        "--multipv",
+        "3",
+        "--usi-strict",
+        "--preserve-order",
+        "--manifest",
+        "<work>/sekirei-0-3-67__nodes1000__mpv3-manifest.json",
+        "--out",
+        "<work>/sekirei-0-3-67__nodes1000__mpv3.jsonl",
+        "--nodes",
+        "1000",
+        "--engine-option",
+        "EvalFile=/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/weights.bin",
+        "--engine-option",
+        "Threads=1",
+        "--engine-option",
+        "SpecTopN=0",
+        "--weight-file",
+        "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.67/weights.bin"
+      ],
+      "wall_time_seconds": 0.082641,
+      "exit_code": 0
+    },
+    {
+      "name": "label-sekirei-0-3-67__nodes10000__mpv1",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "label",
+        "--input",
+        "<work>/sampled.jsonl",
+        "--engine",
+        "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.67/target/release/sekirei",
+        "--engine-name",
+        "sekirei-0.3.67__nodes10000__mpv1",
+        "--timeout-ms",
+        "30000",
+        "--jobs",
+        "1",
+        "--multipv",
+        "1",
+        "--usi-strict",
+        "--preserve-order",
+        "--manifest",
+        "<work>/sekirei-0-3-67__nodes10000__mpv1-manifest.json",
+        "--out",
+        "<work>/sekirei-0-3-67__nodes10000__mpv1.jsonl",
+        "--nodes",
+        "10000",
+        "--engine-option",
+        "EvalFile=/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/weights.bin",
+        "--engine-option",
+        "Threads=1",
+        "--engine-option",
+        "SpecTopN=0",
+        "--weight-file",
+        "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.67/weights.bin"
+      ],
+      "wall_time_seconds": 0.626327,
+      "exit_code": 0
+    },
+    {
+      "name": "label-sekirei-0-3-67__nodes10000__mpv3",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "label",
+        "--input",
+        "<work>/sampled.jsonl",
+        "--engine",
+        "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.67/target/release/sekirei",
+        "--engine-name",
+        "sekirei-0.3.67__nodes10000__mpv3",
+        "--timeout-ms",
+        "30000",
+        "--jobs",
+        "1",
+        "--multipv",
+        "3",
+        "--usi-strict",
+        "--preserve-order",
+        "--manifest",
+        "<work>/sekirei-0-3-67__nodes10000__mpv3-manifest.json",
+        "--out",
+        "<work>/sekirei-0-3-67__nodes10000__mpv3.jsonl",
+        "--nodes",
+        "10000",
+        "--engine-option",
+        "EvalFile=/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/weights.bin",
+        "--engine-option",
+        "Threads=1",
+        "--engine-option",
+        "SpecTopN=0",
+        "--weight-file",
+        "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.67/weights.bin"
+      ],
+      "wall_time_seconds": 0.375647,
+      "exit_code": 0
+    },
+    {
+      "name": "label-sekirei-0-3-68__depth4__mpv1",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "label",
+        "--input",
+        "<work>/sampled.jsonl",
+        "--engine",
+        "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/target/release/sekirei",
+        "--engine-name",
+        "sekirei-0.3.68__depth4__mpv1",
+        "--timeout-ms",
+        "30000",
+        "--jobs",
+        "1",
+        "--multipv",
+        "1",
+        "--usi-strict",
+        "--preserve-order",
+        "--manifest",
+        "<work>/sekirei-0-3-68__depth4__mpv1-manifest.json",
+        "--out",
+        "<work>/sekirei-0-3-68__depth4__mpv1.jsonl",
+        "--depths",
+        "4",
+        "--engine-option",
+        "EvalFile=/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/weights.bin",
+        "--engine-option",
+        "Threads=1",
+        "--engine-option",
+        "SpecTopN=0",
+        "--weight-file",
+        "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/weights.bin"
+      ],
+      "wall_time_seconds": 0.118119,
+      "exit_code": 0
+    },
+    {
+      "name": "label-sekirei-0-3-68__depth4__mpv3",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "label",
+        "--input",
+        "<work>/sampled.jsonl",
+        "--engine",
+        "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/target/release/sekirei",
+        "--engine-name",
+        "sekirei-0.3.68__depth4__mpv3",
+        "--timeout-ms",
+        "30000",
+        "--jobs",
+        "1",
+        "--multipv",
+        "3",
+        "--usi-strict",
+        "--preserve-order",
+        "--manifest",
+        "<work>/sekirei-0-3-68__depth4__mpv3-manifest.json",
+        "--out",
+        "<work>/sekirei-0-3-68__depth4__mpv3.jsonl",
+        "--depths",
+        "4",
+        "--engine-option",
+        "EvalFile=/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/weights.bin",
+        "--engine-option",
+        "Threads=1",
+        "--engine-option",
+        "SpecTopN=0",
+        "--weight-file",
+        "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/weights.bin"
+      ],
+      "wall_time_seconds": 0.192439,
+      "exit_code": 0
+    },
+    {
+      "name": "label-sekirei-0-3-68__depth8__mpv1",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "label",
+        "--input",
+        "<work>/sampled.jsonl",
+        "--engine",
+        "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/target/release/sekirei",
+        "--engine-name",
+        "sekirei-0.3.68__depth8__mpv1",
+        "--timeout-ms",
+        "30000",
+        "--jobs",
+        "1",
+        "--multipv",
+        "1",
+        "--usi-strict",
+        "--preserve-order",
+        "--manifest",
+        "<work>/sekirei-0-3-68__depth8__mpv1-manifest.json",
+        "--out",
+        "<work>/sekirei-0-3-68__depth8__mpv1.jsonl",
+        "--depths",
+        "8",
+        "--engine-option",
+        "EvalFile=/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/weights.bin",
+        "--engine-option",
+        "Threads=1",
+        "--engine-option",
+        "SpecTopN=0",
+        "--weight-file",
+        "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/weights.bin"
+      ],
+      "wall_time_seconds": 0.342802,
+      "exit_code": 0
+    },
+    {
+      "name": "label-sekirei-0-3-68__depth8__mpv3",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "label",
+        "--input",
+        "<work>/sampled.jsonl",
+        "--engine",
+        "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/target/release/sekirei",
+        "--engine-name",
+        "sekirei-0.3.68__depth8__mpv3",
+        "--timeout-ms",
+        "30000",
+        "--jobs",
+        "1",
+        "--multipv",
+        "3",
+        "--usi-strict",
+        "--preserve-order",
+        "--manifest",
+        "<work>/sekirei-0-3-68__depth8__mpv3-manifest.json",
+        "--out",
+        "<work>/sekirei-0-3-68__depth8__mpv3.jsonl",
+        "--depths",
+        "8",
+        "--engine-option",
+        "EvalFile=/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/weights.bin",
+        "--engine-option",
+        "Threads=1",
+        "--engine-option",
+        "SpecTopN=0",
+        "--weight-file",
+        "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/weights.bin"
+      ],
+      "wall_time_seconds": 0.617691,
+      "exit_code": 0
+    },
+    {
+      "name": "label-sekirei-0-3-68__nodes1000__mpv1",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "label",
+        "--input",
+        "<work>/sampled.jsonl",
+        "--engine",
+        "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/target/release/sekirei",
+        "--engine-name",
+        "sekirei-0.3.68__nodes1000__mpv1",
+        "--timeout-ms",
+        "30000",
+        "--jobs",
+        "1",
+        "--multipv",
+        "1",
+        "--usi-strict",
+        "--preserve-order",
+        "--manifest",
+        "<work>/sekirei-0-3-68__nodes1000__mpv1-manifest.json",
+        "--out",
+        "<work>/sekirei-0-3-68__nodes1000__mpv1.jsonl",
+        "--nodes",
+        "1000",
+        "--engine-option",
+        "EvalFile=/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/weights.bin",
+        "--engine-option",
+        "Threads=1",
+        "--engine-option",
+        "SpecTopN=0",
+        "--weight-file",
+        "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/weights.bin"
+      ],
+      "wall_time_seconds": 0.096442,
+      "exit_code": 0
+    },
+    {
+      "name": "label-sekirei-0-3-68__nodes1000__mpv3",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "label",
+        "--input",
+        "<work>/sampled.jsonl",
+        "--engine",
+        "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/target/release/sekirei",
+        "--engine-name",
+        "sekirei-0.3.68__nodes1000__mpv3",
+        "--timeout-ms",
+        "30000",
+        "--jobs",
+        "1",
+        "--multipv",
+        "3",
+        "--usi-strict",
+        "--preserve-order",
+        "--manifest",
+        "<work>/sekirei-0-3-68__nodes1000__mpv3-manifest.json",
+        "--out",
+        "<work>/sekirei-0-3-68__nodes1000__mpv3.jsonl",
+        "--nodes",
+        "1000",
+        "--engine-option",
+        "EvalFile=/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/weights.bin",
+        "--engine-option",
+        "Threads=1",
+        "--engine-option",
+        "SpecTopN=0",
+        "--weight-file",
+        "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/weights.bin"
+      ],
+      "wall_time_seconds": 0.084614,
+      "exit_code": 0
+    },
+    {
+      "name": "label-sekirei-0-3-68__nodes10000__mpv1",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "label",
+        "--input",
+        "<work>/sampled.jsonl",
+        "--engine",
+        "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/target/release/sekirei",
+        "--engine-name",
+        "sekirei-0.3.68__nodes10000__mpv1",
+        "--timeout-ms",
+        "30000",
+        "--jobs",
+        "1",
+        "--multipv",
+        "1",
+        "--usi-strict",
+        "--preserve-order",
+        "--manifest",
+        "<work>/sekirei-0-3-68__nodes10000__mpv1-manifest.json",
+        "--out",
+        "<work>/sekirei-0-3-68__nodes10000__mpv1.jsonl",
+        "--nodes",
+        "10000",
+        "--engine-option",
+        "EvalFile=/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/weights.bin",
+        "--engine-option",
+        "Threads=1",
+        "--engine-option",
+        "SpecTopN=0",
+        "--weight-file",
+        "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/weights.bin"
+      ],
+      "wall_time_seconds": 0.601003,
+      "exit_code": 0
+    },
+    {
+      "name": "label-sekirei-0-3-68__nodes10000__mpv3",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "label",
+        "--input",
+        "<work>/sampled.jsonl",
+        "--engine",
+        "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/target/release/sekirei",
+        "--engine-name",
+        "sekirei-0.3.68__nodes10000__mpv3",
+        "--timeout-ms",
+        "30000",
+        "--jobs",
+        "1",
+        "--multipv",
+        "3",
+        "--usi-strict",
+        "--preserve-order",
+        "--manifest",
+        "<work>/sekirei-0-3-68__nodes10000__mpv3-manifest.json",
+        "--out",
+        "<work>/sekirei-0-3-68__nodes10000__mpv3.jsonl",
+        "--nodes",
+        "10000",
+        "--engine-option",
+        "EvalFile=/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/weights.bin",
+        "--engine-option",
+        "Threads=1",
+        "--engine-option",
+        "SpecTopN=0",
+        "--weight-file",
+        "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/weights.bin"
+      ],
+      "wall_time_seconds": 0.361559,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth4-mpv1-teachers1-stability",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "stability",
+        "--input",
+        "<work>/cohort-depth4-mpv1-teachers1.jsonl",
+        "--out",
+        "<work>/cohort-depth4-mpv1-teachers1-stable.jsonl"
+      ],
+      "wall_time_seconds": 0.007304,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth4-mpv1-teachers1-filter-exact",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-depth4-mpv1-teachers1-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-depth4-mpv1-teachers1-exact-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged"
+      ],
+      "wall_time_seconds": 0.006912,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth4-mpv1-teachers1-filter-stable150",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-depth4-mpv1-teachers1-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-depth4-mpv1-teachers1-stable150-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150"
+      ],
+      "wall_time_seconds": 0.006828,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth4-mpv1-teachers1-filter-consensus150",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-depth4-mpv1-teachers1-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-depth4-mpv1-teachers1-consensus150-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150",
+        "--require-engine-agreement",
+        "--max-engine-score-swing-cp",
+        "150"
+      ],
+      "wall_time_seconds": 0.006835,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth4-mpv1-teachers1-filter-policy50",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-depth4-mpv1-teachers1-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-depth4-mpv1-teachers1-policy50-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150",
+        "--require-engine-agreement",
+        "--max-engine-score-swing-cp",
+        "150",
+        "--require-policy-margin",
+        "--min-policy-margin-cp",
+        "50"
+      ],
+      "wall_time_seconds": 0.006977,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth4-mpv1-teachers2-merge-2",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "merge-observations",
+        "--primary",
+        "<work>/cohort-depth4-mpv1-teachers2.jsonl",
+        "--secondary",
+        "<work>/sekirei-0-3-68__depth4__mpv1.jsonl",
+        "--out",
+        "<work>/cohort-depth4-mpv1-teachers2-merge-2.jsonl"
+      ],
+      "wall_time_seconds": 0.007543,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth4-mpv1-teachers2-stability",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "stability",
+        "--input",
+        "<work>/cohort-depth4-mpv1-teachers2.jsonl",
+        "--out",
+        "<work>/cohort-depth4-mpv1-teachers2-stable.jsonl"
+      ],
+      "wall_time_seconds": 0.007891,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth4-mpv1-teachers2-filter-exact",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-depth4-mpv1-teachers2-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-depth4-mpv1-teachers2-exact-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged"
+      ],
+      "wall_time_seconds": 0.006897,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth4-mpv1-teachers2-filter-stable150",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-depth4-mpv1-teachers2-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-depth4-mpv1-teachers2-stable150-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150"
+      ],
+      "wall_time_seconds": 0.006841,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth4-mpv1-teachers2-filter-consensus150",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-depth4-mpv1-teachers2-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-depth4-mpv1-teachers2-consensus150-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150",
+        "--require-engine-agreement",
+        "--max-engine-score-swing-cp",
+        "150"
+      ],
+      "wall_time_seconds": 0.006808,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth4-mpv1-teachers2-filter-policy50",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-depth4-mpv1-teachers2-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-depth4-mpv1-teachers2-policy50-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150",
+        "--require-engine-agreement",
+        "--max-engine-score-swing-cp",
+        "150",
+        "--require-policy-margin",
+        "--min-policy-margin-cp",
+        "50"
+      ],
+      "wall_time_seconds": 0.006924,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth4-mpv3-teachers1-stability",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "stability",
+        "--input",
+        "<work>/cohort-depth4-mpv3-teachers1.jsonl",
+        "--out",
+        "<work>/cohort-depth4-mpv3-teachers1-stable.jsonl"
+      ],
+      "wall_time_seconds": 0.007679,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth4-mpv3-teachers1-filter-exact",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-depth4-mpv3-teachers1-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-depth4-mpv3-teachers1-exact-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged"
+      ],
+      "wall_time_seconds": 0.006795,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth4-mpv3-teachers1-filter-stable150",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-depth4-mpv3-teachers1-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-depth4-mpv3-teachers1-stable150-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150"
+      ],
+      "wall_time_seconds": 0.006838,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth4-mpv3-teachers1-filter-consensus150",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-depth4-mpv3-teachers1-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-depth4-mpv3-teachers1-consensus150-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150",
+        "--require-engine-agreement",
+        "--max-engine-score-swing-cp",
+        "150"
+      ],
+      "wall_time_seconds": 0.00688,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth4-mpv3-teachers1-filter-policy50",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-depth4-mpv3-teachers1-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-depth4-mpv3-teachers1-policy50-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150",
+        "--require-engine-agreement",
+        "--max-engine-score-swing-cp",
+        "150",
+        "--require-policy-margin",
+        "--min-policy-margin-cp",
+        "50"
+      ],
+      "wall_time_seconds": 0.006867,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth4-mpv3-teachers2-merge-2",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "merge-observations",
+        "--primary",
+        "<work>/cohort-depth4-mpv3-teachers2.jsonl",
+        "--secondary",
+        "<work>/sekirei-0-3-68__depth4__mpv3.jsonl",
+        "--out",
+        "<work>/cohort-depth4-mpv3-teachers2-merge-2.jsonl"
+      ],
+      "wall_time_seconds": 0.00764,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth4-mpv3-teachers2-stability",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "stability",
+        "--input",
+        "<work>/cohort-depth4-mpv3-teachers2.jsonl",
+        "--out",
+        "<work>/cohort-depth4-mpv3-teachers2-stable.jsonl"
+      ],
+      "wall_time_seconds": 0.007786,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth4-mpv3-teachers2-filter-exact",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-depth4-mpv3-teachers2-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-depth4-mpv3-teachers2-exact-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged"
+      ],
+      "wall_time_seconds": 0.006916,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth4-mpv3-teachers2-filter-stable150",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-depth4-mpv3-teachers2-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-depth4-mpv3-teachers2-stable150-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150"
+      ],
+      "wall_time_seconds": 0.006897,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth4-mpv3-teachers2-filter-consensus150",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-depth4-mpv3-teachers2-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-depth4-mpv3-teachers2-consensus150-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150",
+        "--require-engine-agreement",
+        "--max-engine-score-swing-cp",
+        "150"
+      ],
+      "wall_time_seconds": 0.007917,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth4-mpv3-teachers2-filter-policy50",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-depth4-mpv3-teachers2-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-depth4-mpv3-teachers2-policy50-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150",
+        "--require-engine-agreement",
+        "--max-engine-score-swing-cp",
+        "150",
+        "--require-policy-margin",
+        "--min-policy-margin-cp",
+        "50"
+      ],
+      "wall_time_seconds": 0.007833,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth8-mpv1-teachers1-stability",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "stability",
+        "--input",
+        "<work>/cohort-depth8-mpv1-teachers1.jsonl",
+        "--out",
+        "<work>/cohort-depth8-mpv1-teachers1-stable.jsonl"
+      ],
+      "wall_time_seconds": 0.00734,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth8-mpv1-teachers1-filter-exact",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-depth8-mpv1-teachers1-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-depth8-mpv1-teachers1-exact-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged"
+      ],
+      "wall_time_seconds": 0.006988,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth8-mpv1-teachers1-filter-stable150",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-depth8-mpv1-teachers1-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-depth8-mpv1-teachers1-stable150-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150"
+      ],
+      "wall_time_seconds": 0.006735,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth8-mpv1-teachers1-filter-consensus150",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-depth8-mpv1-teachers1-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-depth8-mpv1-teachers1-consensus150-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150",
+        "--require-engine-agreement",
+        "--max-engine-score-swing-cp",
+        "150"
+      ],
+      "wall_time_seconds": 0.006948,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth8-mpv1-teachers1-filter-policy50",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-depth8-mpv1-teachers1-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-depth8-mpv1-teachers1-policy50-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150",
+        "--require-engine-agreement",
+        "--max-engine-score-swing-cp",
+        "150",
+        "--require-policy-margin",
+        "--min-policy-margin-cp",
+        "50"
+      ],
+      "wall_time_seconds": 0.007053,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth8-mpv1-teachers2-merge-2",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "merge-observations",
+        "--primary",
+        "<work>/cohort-depth8-mpv1-teachers2.jsonl",
+        "--secondary",
+        "<work>/sekirei-0-3-68__depth8__mpv1.jsonl",
+        "--out",
+        "<work>/cohort-depth8-mpv1-teachers2-merge-2.jsonl"
+      ],
+      "wall_time_seconds": 0.007499,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth8-mpv1-teachers2-stability",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "stability",
+        "--input",
+        "<work>/cohort-depth8-mpv1-teachers2.jsonl",
+        "--out",
+        "<work>/cohort-depth8-mpv1-teachers2-stable.jsonl"
+      ],
+      "wall_time_seconds": 0.007876,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth8-mpv1-teachers2-filter-exact",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-depth8-mpv1-teachers2-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-depth8-mpv1-teachers2-exact-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged"
+      ],
+      "wall_time_seconds": 0.007753,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth8-mpv1-teachers2-filter-stable150",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-depth8-mpv1-teachers2-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-depth8-mpv1-teachers2-stable150-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150"
+      ],
+      "wall_time_seconds": 0.006874,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth8-mpv1-teachers2-filter-consensus150",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-depth8-mpv1-teachers2-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-depth8-mpv1-teachers2-consensus150-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150",
+        "--require-engine-agreement",
+        "--max-engine-score-swing-cp",
+        "150"
+      ],
+      "wall_time_seconds": 0.006876,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth8-mpv1-teachers2-filter-policy50",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-depth8-mpv1-teachers2-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-depth8-mpv1-teachers2-policy50-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150",
+        "--require-engine-agreement",
+        "--max-engine-score-swing-cp",
+        "150",
+        "--require-policy-margin",
+        "--min-policy-margin-cp",
+        "50"
+      ],
+      "wall_time_seconds": 0.006762,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth8-mpv3-teachers1-stability",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "stability",
+        "--input",
+        "<work>/cohort-depth8-mpv3-teachers1.jsonl",
+        "--out",
+        "<work>/cohort-depth8-mpv3-teachers1-stable.jsonl"
+      ],
+      "wall_time_seconds": 0.007722,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth8-mpv3-teachers1-filter-exact",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-depth8-mpv3-teachers1-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-depth8-mpv3-teachers1-exact-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged"
+      ],
+      "wall_time_seconds": 0.007796,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth8-mpv3-teachers1-filter-stable150",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-depth8-mpv3-teachers1-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-depth8-mpv3-teachers1-stable150-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150"
+      ],
+      "wall_time_seconds": 0.007839,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth8-mpv3-teachers1-filter-consensus150",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-depth8-mpv3-teachers1-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-depth8-mpv3-teachers1-consensus150-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150",
+        "--require-engine-agreement",
+        "--max-engine-score-swing-cp",
+        "150"
+      ],
+      "wall_time_seconds": 0.006869,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth8-mpv3-teachers1-filter-policy50",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-depth8-mpv3-teachers1-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-depth8-mpv3-teachers1-policy50-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150",
+        "--require-engine-agreement",
+        "--max-engine-score-swing-cp",
+        "150",
+        "--require-policy-margin",
+        "--min-policy-margin-cp",
+        "50"
+      ],
+      "wall_time_seconds": 0.007881,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth8-mpv3-teachers2-merge-2",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "merge-observations",
+        "--primary",
+        "<work>/cohort-depth8-mpv3-teachers2.jsonl",
+        "--secondary",
+        "<work>/sekirei-0-3-68__depth8__mpv3.jsonl",
+        "--out",
+        "<work>/cohort-depth8-mpv3-teachers2-merge-2.jsonl"
+      ],
+      "wall_time_seconds": 0.008567,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth8-mpv3-teachers2-stability",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "stability",
+        "--input",
+        "<work>/cohort-depth8-mpv3-teachers2.jsonl",
+        "--out",
+        "<work>/cohort-depth8-mpv3-teachers2-stable.jsonl"
+      ],
+      "wall_time_seconds": 0.007892,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth8-mpv3-teachers2-filter-exact",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-depth8-mpv3-teachers2-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-depth8-mpv3-teachers2-exact-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged"
+      ],
+      "wall_time_seconds": 0.007791,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth8-mpv3-teachers2-filter-stable150",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-depth8-mpv3-teachers2-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-depth8-mpv3-teachers2-stable150-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150"
+      ],
+      "wall_time_seconds": 0.009298,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth8-mpv3-teachers2-filter-consensus150",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-depth8-mpv3-teachers2-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-depth8-mpv3-teachers2-consensus150-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150",
+        "--require-engine-agreement",
+        "--max-engine-score-swing-cp",
+        "150"
+      ],
+      "wall_time_seconds": 0.007422,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-depth8-mpv3-teachers2-filter-policy50",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-depth8-mpv3-teachers2-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-depth8-mpv3-teachers2-policy50-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150",
+        "--require-engine-agreement",
+        "--max-engine-score-swing-cp",
+        "150",
+        "--require-policy-margin",
+        "--min-policy-margin-cp",
+        "50"
+      ],
+      "wall_time_seconds": 0.007984,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes1000-mpv1-teachers1-stability",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "stability",
+        "--input",
+        "<work>/cohort-nodes1000-mpv1-teachers1.jsonl",
+        "--out",
+        "<work>/cohort-nodes1000-mpv1-teachers1-stable.jsonl"
+      ],
+      "wall_time_seconds": 0.007244,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes1000-mpv1-teachers1-filter-exact",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-nodes1000-mpv1-teachers1-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-nodes1000-mpv1-teachers1-exact-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged"
+      ],
+      "wall_time_seconds": 0.006954,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes1000-mpv1-teachers1-filter-stable150",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-nodes1000-mpv1-teachers1-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-nodes1000-mpv1-teachers1-stable150-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150"
+      ],
+      "wall_time_seconds": 0.007851,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes1000-mpv1-teachers1-filter-consensus150",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-nodes1000-mpv1-teachers1-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-nodes1000-mpv1-teachers1-consensus150-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150",
+        "--require-engine-agreement",
+        "--max-engine-score-swing-cp",
+        "150"
+      ],
+      "wall_time_seconds": 0.007912,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes1000-mpv1-teachers1-filter-policy50",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-nodes1000-mpv1-teachers1-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-nodes1000-mpv1-teachers1-policy50-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150",
+        "--require-engine-agreement",
+        "--max-engine-score-swing-cp",
+        "150",
+        "--require-policy-margin",
+        "--min-policy-margin-cp",
+        "50"
+      ],
+      "wall_time_seconds": 0.007835,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes1000-mpv1-teachers2-merge-2",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "merge-observations",
+        "--primary",
+        "<work>/cohort-nodes1000-mpv1-teachers2.jsonl",
+        "--secondary",
+        "<work>/sekirei-0-3-68__nodes1000__mpv1.jsonl",
+        "--out",
+        "<work>/cohort-nodes1000-mpv1-teachers2-merge-2.jsonl"
+      ],
+      "wall_time_seconds": 0.007516,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes1000-mpv1-teachers2-stability",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "stability",
+        "--input",
+        "<work>/cohort-nodes1000-mpv1-teachers2.jsonl",
+        "--out",
+        "<work>/cohort-nodes1000-mpv1-teachers2-stable.jsonl"
+      ],
+      "wall_time_seconds": 0.00779,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes1000-mpv1-teachers2-filter-exact",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-nodes1000-mpv1-teachers2-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-nodes1000-mpv1-teachers2-exact-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged"
+      ],
+      "wall_time_seconds": 0.007976,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes1000-mpv1-teachers2-filter-stable150",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-nodes1000-mpv1-teachers2-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-nodes1000-mpv1-teachers2-stable150-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150"
+      ],
+      "wall_time_seconds": 0.007785,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes1000-mpv1-teachers2-filter-consensus150",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-nodes1000-mpv1-teachers2-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-nodes1000-mpv1-teachers2-consensus150-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150",
+        "--require-engine-agreement",
+        "--max-engine-score-swing-cp",
+        "150"
+      ],
+      "wall_time_seconds": 0.007959,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes1000-mpv1-teachers2-filter-policy50",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-nodes1000-mpv1-teachers2-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-nodes1000-mpv1-teachers2-policy50-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150",
+        "--require-engine-agreement",
+        "--max-engine-score-swing-cp",
+        "150",
+        "--require-policy-margin",
+        "--min-policy-margin-cp",
+        "50"
+      ],
+      "wall_time_seconds": 0.007815,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes1000-mpv3-teachers1-stability",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "stability",
+        "--input",
+        "<work>/cohort-nodes1000-mpv3-teachers1.jsonl",
+        "--out",
+        "<work>/cohort-nodes1000-mpv3-teachers1-stable.jsonl"
+      ],
+      "wall_time_seconds": 0.007439,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes1000-mpv3-teachers1-filter-exact",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-nodes1000-mpv3-teachers1-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-nodes1000-mpv3-teachers1-exact-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged"
+      ],
+      "wall_time_seconds": 0.007923,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes1000-mpv3-teachers1-filter-stable150",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-nodes1000-mpv3-teachers1-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-nodes1000-mpv3-teachers1-stable150-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150"
+      ],
+      "wall_time_seconds": 0.008031,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes1000-mpv3-teachers1-filter-consensus150",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-nodes1000-mpv3-teachers1-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-nodes1000-mpv3-teachers1-consensus150-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150",
+        "--require-engine-agreement",
+        "--max-engine-score-swing-cp",
+        "150"
+      ],
+      "wall_time_seconds": 0.007676,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes1000-mpv3-teachers1-filter-policy50",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-nodes1000-mpv3-teachers1-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-nodes1000-mpv3-teachers1-policy50-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150",
+        "--require-engine-agreement",
+        "--max-engine-score-swing-cp",
+        "150",
+        "--require-policy-margin",
+        "--min-policy-margin-cp",
+        "50"
+      ],
+      "wall_time_seconds": 0.007914,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes1000-mpv3-teachers2-merge-2",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "merge-observations",
+        "--primary",
+        "<work>/cohort-nodes1000-mpv3-teachers2.jsonl",
+        "--secondary",
+        "<work>/sekirei-0-3-68__nodes1000__mpv3.jsonl",
+        "--out",
+        "<work>/cohort-nodes1000-mpv3-teachers2-merge-2.jsonl"
+      ],
+      "wall_time_seconds": 0.008455,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes1000-mpv3-teachers2-stability",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "stability",
+        "--input",
+        "<work>/cohort-nodes1000-mpv3-teachers2.jsonl",
+        "--out",
+        "<work>/cohort-nodes1000-mpv3-teachers2-stable.jsonl"
+      ],
+      "wall_time_seconds": 0.007853,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes1000-mpv3-teachers2-filter-exact",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-nodes1000-mpv3-teachers2-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-nodes1000-mpv3-teachers2-exact-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged"
+      ],
+      "wall_time_seconds": 0.007848,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes1000-mpv3-teachers2-filter-stable150",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-nodes1000-mpv3-teachers2-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-nodes1000-mpv3-teachers2-stable150-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150"
+      ],
+      "wall_time_seconds": 0.007937,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes1000-mpv3-teachers2-filter-consensus150",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-nodes1000-mpv3-teachers2-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-nodes1000-mpv3-teachers2-consensus150-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150",
+        "--require-engine-agreement",
+        "--max-engine-score-swing-cp",
+        "150"
+      ],
+      "wall_time_seconds": 0.0078,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes1000-mpv3-teachers2-filter-policy50",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-nodes1000-mpv3-teachers2-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-nodes1000-mpv3-teachers2-policy50-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150",
+        "--require-engine-agreement",
+        "--max-engine-score-swing-cp",
+        "150",
+        "--require-policy-margin",
+        "--min-policy-margin-cp",
+        "50"
+      ],
+      "wall_time_seconds": 0.007849,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes10000-mpv1-teachers1-stability",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "stability",
+        "--input",
+        "<work>/cohort-nodes10000-mpv1-teachers1.jsonl",
+        "--out",
+        "<work>/cohort-nodes10000-mpv1-teachers1-stable.jsonl"
+      ],
+      "wall_time_seconds": 0.008434,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes10000-mpv1-teachers1-filter-exact",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-nodes10000-mpv1-teachers1-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-nodes10000-mpv1-teachers1-exact-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged"
+      ],
+      "wall_time_seconds": 0.007843,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes10000-mpv1-teachers1-filter-stable150",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-nodes10000-mpv1-teachers1-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-nodes10000-mpv1-teachers1-stable150-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150"
+      ],
+      "wall_time_seconds": 0.007876,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes10000-mpv1-teachers1-filter-consensus150",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-nodes10000-mpv1-teachers1-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-nodes10000-mpv1-teachers1-consensus150-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150",
+        "--require-engine-agreement",
+        "--max-engine-score-swing-cp",
+        "150"
+      ],
+      "wall_time_seconds": 0.007863,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes10000-mpv1-teachers1-filter-policy50",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-nodes10000-mpv1-teachers1-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-nodes10000-mpv1-teachers1-policy50-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150",
+        "--require-engine-agreement",
+        "--max-engine-score-swing-cp",
+        "150",
+        "--require-policy-margin",
+        "--min-policy-margin-cp",
+        "50"
+      ],
+      "wall_time_seconds": 0.007814,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes10000-mpv1-teachers2-merge-2",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "merge-observations",
+        "--primary",
+        "<work>/cohort-nodes10000-mpv1-teachers2.jsonl",
+        "--secondary",
+        "<work>/sekirei-0-3-68__nodes10000__mpv1.jsonl",
+        "--out",
+        "<work>/cohort-nodes10000-mpv1-teachers2-merge-2.jsonl"
+      ],
+      "wall_time_seconds": 0.008495,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes10000-mpv1-teachers2-stability",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "stability",
+        "--input",
+        "<work>/cohort-nodes10000-mpv1-teachers2.jsonl",
+        "--out",
+        "<work>/cohort-nodes10000-mpv1-teachers2-stable.jsonl"
+      ],
+      "wall_time_seconds": 0.007978,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes10000-mpv1-teachers2-filter-exact",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-nodes10000-mpv1-teachers2-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-nodes10000-mpv1-teachers2-exact-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged"
+      ],
+      "wall_time_seconds": 0.007907,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes10000-mpv1-teachers2-filter-stable150",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-nodes10000-mpv1-teachers2-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-nodes10000-mpv1-teachers2-stable150-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150"
+      ],
+      "wall_time_seconds": 0.007718,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes10000-mpv1-teachers2-filter-consensus150",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-nodes10000-mpv1-teachers2-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-nodes10000-mpv1-teachers2-consensus150-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150",
+        "--require-engine-agreement",
+        "--max-engine-score-swing-cp",
+        "150"
+      ],
+      "wall_time_seconds": 0.007914,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes10000-mpv1-teachers2-filter-policy50",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-nodes10000-mpv1-teachers2-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-nodes10000-mpv1-teachers2-policy50-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150",
+        "--require-engine-agreement",
+        "--max-engine-score-swing-cp",
+        "150",
+        "--require-policy-margin",
+        "--min-policy-margin-cp",
+        "50"
+      ],
+      "wall_time_seconds": 0.007809,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes10000-mpv3-teachers1-stability",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "stability",
+        "--input",
+        "<work>/cohort-nodes10000-mpv3-teachers1.jsonl",
+        "--out",
+        "<work>/cohort-nodes10000-mpv3-teachers1-stable.jsonl"
+      ],
+      "wall_time_seconds": 0.008415,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes10000-mpv3-teachers1-filter-exact",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-nodes10000-mpv3-teachers1-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-nodes10000-mpv3-teachers1-exact-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged"
+      ],
+      "wall_time_seconds": 0.007863,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes10000-mpv3-teachers1-filter-stable150",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-nodes10000-mpv3-teachers1-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-nodes10000-mpv3-teachers1-stable150-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150"
+      ],
+      "wall_time_seconds": 0.007883,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes10000-mpv3-teachers1-filter-consensus150",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-nodes10000-mpv3-teachers1-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-nodes10000-mpv3-teachers1-consensus150-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150",
+        "--require-engine-agreement",
+        "--max-engine-score-swing-cp",
+        "150"
+      ],
+      "wall_time_seconds": 0.00789,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes10000-mpv3-teachers1-filter-policy50",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-nodes10000-mpv3-teachers1-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-nodes10000-mpv3-teachers1-policy50-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150",
+        "--require-engine-agreement",
+        "--max-engine-score-swing-cp",
+        "150",
+        "--require-policy-margin",
+        "--min-policy-margin-cp",
+        "50"
+      ],
+      "wall_time_seconds": 0.007765,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes10000-mpv3-teachers2-merge-2",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "merge-observations",
+        "--primary",
+        "<work>/cohort-nodes10000-mpv3-teachers2.jsonl",
+        "--secondary",
+        "<work>/sekirei-0-3-68__nodes10000__mpv3.jsonl",
+        "--out",
+        "<work>/cohort-nodes10000-mpv3-teachers2-merge-2.jsonl"
+      ],
+      "wall_time_seconds": 0.008591,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes10000-mpv3-teachers2-stability",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "stability",
+        "--input",
+        "<work>/cohort-nodes10000-mpv3-teachers2.jsonl",
+        "--out",
+        "<work>/cohort-nodes10000-mpv3-teachers2-stable.jsonl"
+      ],
+      "wall_time_seconds": 0.008914,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes10000-mpv3-teachers2-filter-exact",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-nodes10000-mpv3-teachers2-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-nodes10000-mpv3-teachers2-exact-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged"
+      ],
+      "wall_time_seconds": 0.007747,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes10000-mpv3-teachers2-filter-stable150",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-nodes10000-mpv3-teachers2-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-nodes10000-mpv3-teachers2-stable150-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150"
+      ],
+      "wall_time_seconds": 0.007823,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes10000-mpv3-teachers2-filter-consensus150",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-nodes10000-mpv3-teachers2-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-nodes10000-mpv3-teachers2-consensus150-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150",
+        "--require-engine-agreement",
+        "--max-engine-score-swing-cp",
+        "150"
+      ],
+      "wall_time_seconds": 0.00785,
+      "exit_code": 0
+    },
+    {
+      "name": "cohort-nodes10000-mpv3-teachers2-filter-policy50",
+      "command": [
+        "<shogiesa>/target/release/shogiesa",
+        "filter",
+        "--input",
+        "<work>/cohort-nodes10000-mpv3-teachers2-stable.jsonl",
+        "--dry-run",
+        "--manifest",
+        "<work>/cohort-nodes10000-mpv3-teachers2-policy50-manifest.json",
+        "--require-exact-score",
+        "--exclude-timeout-salvaged",
+        "--max-score-swing-cp",
+        "150",
+        "--require-engine-agreement",
+        "--max-engine-score-swing-cp",
+        "150",
+        "--require-policy-margin",
+        "--min-policy-margin-cp",
+        "50"
+      ],
+      "wall_time_seconds": 0.007895,
+      "exit_code": 0
+    }
+  ]
+}

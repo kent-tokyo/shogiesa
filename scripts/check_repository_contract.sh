@@ -22,13 +22,19 @@ required_files=(
   docs/release_validation_2026-10-03.md
   docs/release_validation_2026-10-03_v0.11.0.md
   docs/release_validation_2026-10-10_v0.11.1.md
+  docs/release_validation_2026-10-10_v0.11.2.md
   scripts/release_readiness.sh
   scripts/run_local_measurement_smoke.sh
   scripts/run_reproducibility_matrix.sh
   scripts/check_sekirei_compat.sh
+  scripts/artifact_io.py
+  scripts/test_artifact_io.py
   scripts/run_resource_baseline.py
   scripts/run_sekirei_version_delta.py
   scripts/run_sekirei_learning_ablation.py
+  scripts/run_teacher_calibration.py
+  scripts/report_sekirei_gate.py
+  scripts/test_report_sekirei_gate.py
   docs/measurements/README.md
   docs/measurements/reproducibility_matrix_2026-10-03.json
   docs/measurements/resource_baseline_100k_2026-10-09.json
@@ -36,6 +42,11 @@ required_files=(
   docs/measurements/sekirei_delta_v0.3.65_v0.3.66_2026-10-09.json
   docs/measurements/sekirei_delta_v0.3.65_v0.3.66_2026-10-10_mined.jsonl
   docs/measurements/sekirei_learning_ablation_2026-10-10.json
+  docs/measurements/sekirei_compat_v0.3.68_2026-10-10.json
+  docs/measurements/teacher_calibration_corpus_2026-10-10.jsonl
+  docs/measurements/teacher_calibration_v0.3.67_v0.3.68_2026-10-10.json
+  docs/measurements/sekirei_ab_gate_v0.3.68_vs_v0.3.67_2026-10-10.json
+  docs/measurements/sekirei_gate_report_v0.3.68_2026-10-10.json
   tests/fixtures/sample.csa
   tests/fixtures/sample.kif
   tests/fixtures/malformed.csa
@@ -66,6 +77,8 @@ required_files=(
   tests/fixtures/distribution_malformed.golden
   tests/fixtures/calibrate_policy_margin_input.jsonl
   tests/fixtures/calibrate_policy_margin.golden
+  tests/fixtures/teacher_calibration_positions.jsonl
+  tests/fixtures/sekirei_ab_gate_result_v1.json
   tests/fixtures/dataset_diff_baseline.jsonl
   tests/fixtures/dataset_diff_candidate.jsonl
   tests/fixtures/dataset_diff.golden
@@ -115,8 +128,11 @@ check_marker() {
   fi
 }
 
-check_marker README.md 'latest verified published release are `0\.11\.1`' 'English release version'
-check_marker README_ja.md '最新公開版は`0\.11\.1`' 'Japanese release version'
+# These are literal regular expressions; shell expansion is intentionally disabled.
+# shellcheck disable=SC2016
+check_marker README.md 'latest verified published release are `0\.11\.2`' 'English release version'
+# shellcheck disable=SC2016
+check_marker README_ja.md '最新公開版は`0\.11\.2`' 'Japanese release version'
 
 check_marker tests/fixtures/malformed.csa '^\+BAD$' 'malformed CSA token'
 check_marker tests/fixtures/malformed.kif 'これは指し手ではない' 'malformed KIF move'
@@ -147,6 +163,8 @@ check_marker tests/fixtures/distribution_malformed_input.jsonl '^not json$' 'dis
 check_marker tests/fixtures/distribution_malformed.golden '^broken lines: 1$' 'distribution malformed golden'
 check_marker tests/fixtures/calibrate_policy_margin_input.jsonl '"policy_margin_cp":150' 'calibrate policy margin input'
 check_marker tests/fixtures/calibrate_policy_margin.golden '^policy_margin,200,2,0,2,0\.00,policy_margin=2$' 'calibrate policy margin golden'
+check_marker tests/fixtures/teacher_calibration_positions.jsonl '"path":"teacher-calibration\.csa"' 'teacher calibration position input'
+check_marker tests/fixtures/sekirei_ab_gate_result_v1.json '"schema_version": "sekirei\.ab_gate_result\.v1"' 'Sekirei A/B gate result contract'
 check_marker tests/fixtures/dataset_diff_baseline.jsonl '"path":"game-c.kif"' 'dataset diff removed root input'
 check_marker tests/fixtures/dataset_diff_candidate.jsonl '"path":"game-d.csa"' 'dataset diff added root input'
 check_marker tests/fixtures/dataset_diff.golden '^changed records    : 1$' 'dataset diff golden changed count'
@@ -158,9 +176,15 @@ check_marker tests/fixtures/recipe_output_escape.json '"../outside.shgpk"' 'reci
 check_marker crates/shogiesa-cli/tests/cli_test.rs 'fn recipe_run_verify_and_reuse_stage_outputs' 'recipe run verify reuse regression'
 check_marker crates/shogiesa-cli/tests/cli_test.rs 'fn validate_strict_rejects_future_schema_and_reports_version' 'strict validate future-schema regression'
 check_marker scripts/check_sekirei_compat.sh 'shogiesa\.sekirei-compat\.v1' 'Sekirei compatibility artifact schema'
+check_marker scripts/check_sekirei_compat.sh 'SEKIREI_REF="v0\.3\.68"' 'current Sekirei compatibility ref'
+check_marker scripts/check_sekirei_compat.sh 'EXPECTED_SHOGIESA_CORE="0\.11\.1"' 'current Sekirei shogiesa-core dependency'
+check_marker scripts/artifact_io.py 'def atomic_write_json' 'atomic measurement artifact output'
+check_marker scripts/test_artifact_io.py 'failed_replace_preserves_existing_artifact' 'artifact output failure regression'
 check_marker scripts/run_resource_baseline.py 'shogiesa\.resource-baseline\.v1' 'resource baseline artifact schema'
 check_marker scripts/run_sekirei_version_delta.py 'shogiesa\.sekirei-version-delta\.v1' 'Sekirei version delta artifact schema'
 check_marker scripts/run_sekirei_learning_ablation.py 'shogiesa\.sekirei-learning-ablation\.v1' 'Sekirei learning ablation artifact schema'
+check_marker scripts/run_teacher_calibration.py 'shogiesa\.teacher-calibration\.v1' 'teacher calibration artifact schema'
+check_marker scripts/report_sekirei_gate.py 'shogiesa\.sekirei-gate-report\.v1' 'Sekirei gate report artifact schema'
 check_marker docs/measurements/reproducibility_matrix_2026-10-03.json '"overall": "pass"' 'reproducibility matrix result'
 check_marker docs/measurements/reproducibility_matrix_2026-10-03.json '"axis": "worker_count"' 'reproducibility worker-count axis'
 check_marker docs/measurements/resource_baseline_100k_2026-10-09.json '"schema": "shogiesa.resource-baseline.v1"' '100k resource artifact schema'
@@ -168,6 +192,11 @@ check_marker docs/measurements/resource_baseline_1m_2026-10-09.json '"schema": "
 check_marker docs/measurements/sekirei_delta_v0.3.65_v0.3.66_2026-10-09.json '"schema": "shogiesa.sekirei-version-delta.v1"' 'Sekirei delta artifact schema'
 check_marker docs/measurements/sekirei_delta_v0.3.65_v0.3.66_2026-10-10_mined.jsonl '^\{"schema_version":11' 'Sekirei mined position schema'
 check_marker docs/measurements/sekirei_learning_ablation_2026-10-10.json '"schema": "shogiesa.sekirei-learning-ablation.v1"' 'Sekirei ablation artifact schema'
+check_marker docs/measurements/sekirei_compat_v0.3.68_2026-10-10.json '"source": "v0.11.1"' 'clean Sekirei compatibility producer'
+check_marker docs/measurements/teacher_calibration_corpus_2026-10-10.jsonl '^\{"schema_version":11' 'teacher calibration corpus schema'
+check_marker docs/measurements/teacher_calibration_v0.3.67_v0.3.68_2026-10-10.json '"weight_load_acknowledged": true' 'teacher calibration NNUE acknowledgement'
+check_marker docs/measurements/sekirei_ab_gate_v0.3.68_vs_v0.3.67_2026-10-10.json '"schema_version": "sekirei.ab_gate_result.v1"' 'Sekirei upstream gate artifact schema'
+check_marker docs/measurements/sekirei_gate_report_v0.3.68_2026-10-10.json '"schema": "shogiesa.sekirei-gate-report.v1"' 'shogiesa gate report artifact schema'
 check_marker tests/fixtures/pack_bad_magic.hex '^00000000000000000b00$' 'pack bad magic bytes'
 check_marker tests/fixtures/pack_truncated_header.hex '^53484f4749455341$' 'pack truncated header bytes'
 check_marker tests/fixtures/pack_unsupported_version.hex '^53484f4749455341ffff$' 'pack unsupported version bytes'

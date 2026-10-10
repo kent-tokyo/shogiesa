@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
-use std::fmt::Write as _; // writeln! into a String, for cmd_tune's Markdown report
+use std::fmt::{Display, Write as _}; // writeln! into a String, for cmd_tune's Markdown report
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -1095,6 +1096,374 @@ struct CachePruneArgs {
     yes: bool,
 }
 
+/// Reject path aliases before any command opens an output with truncation enabled. Comparing
+/// `Path` values directly is insufficient: `data.jsonl`, `./data.jsonl`, a symlink, and a hard
+/// link can all name the same file. Existing paths use their OS file identity; paths that do not
+/// exist yet use a canonical parent plus file name so ordinary relative aliases are still caught.
+fn paths_collide(left: &Path, right: &Path) -> Result<bool> {
+    if left.exists() && right.exists() {
+        return same_file::is_same_file(left, right)
+            .with_context(|| format!("cannot compare path identity for {left:?} and {right:?}"));
+    }
+
+    fn future_path_key(path: &Path) -> Result<PathBuf> {
+        if path.exists() {
+            return fs::canonicalize(path)
+                .with_context(|| format!("cannot canonicalize existing path {path:?}"));
+        }
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let file_name = path
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("output path has no file name: {path:?}"))?;
+        match fs::canonicalize(parent) {
+            Ok(parent) => Ok(parent.join(file_name)),
+            Err(_) => {
+                let absolute = if path.is_absolute() {
+                    path.to_path_buf()
+                } else {
+                    std::env::current_dir()?.join(path)
+                };
+                let mut normalized = PathBuf::new();
+                for component in absolute.components() {
+                    match component {
+                        std::path::Component::CurDir => {}
+                        std::path::Component::ParentDir => {
+                            normalized.pop();
+                        }
+                        other => normalized.push(other.as_os_str()),
+                    }
+                }
+                Ok(normalized)
+            }
+        }
+    }
+
+    Ok(future_path_key(left)? == future_path_key(right)?)
+}
+
+/// `read_paths` are never allowed to alias a write target, and write targets must be pairwise
+/// distinct. This protects both the source dataset and sidecars: e.g. `--manifest == --out`
+/// would otherwise replace a successfully written dataset with manifest JSON at the end.
+fn validate_path_roles(read_paths: &[(&str, &Path)], write_paths: &[(&str, &Path)]) -> Result<()> {
+    for &(read_name, read_path) in read_paths {
+        for &(write_name, write_path) in write_paths {
+            if paths_collide(read_path, write_path)? {
+                anyhow::bail!("{read_name} must not be the same path as {write_name}");
+            }
+        }
+    }
+    for (index, &(left_name, left_path)) in write_paths.iter().enumerate() {
+        for &(right_name, right_path) in &write_paths[index + 1..] {
+            if paths_collide(left_path, right_path)? {
+                anyhow::bail!("{left_name} must not be the same path as {right_name}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Central path-safety gate for every command that writes a caller-selected file. Keeping this
+/// next to dispatch makes it harder for a new command to accidentally truncate an input before
+/// its own parsing/validation has a chance to run.
+fn validate_command_paths(command: &Commands) -> Result<()> {
+    match command {
+        Commands::Extract(args) => {
+            validate_path_roles(&[("--input", &args.input)], &[("--out", &args.out)])
+        }
+        Commands::FromMatch(args) => {
+            validate_path_roles(&[("--input", &args.input)], &[("--out", &args.out)])
+        }
+        Commands::MergeObservations(args) => validate_path_roles(
+            &[
+                ("--primary", &args.primary),
+                ("--secondary", &args.secondary),
+            ],
+            &[("--out", &args.out)],
+        ),
+        Commands::Label(args) => {
+            let mut reads = vec![
+                ("--input", args.input.as_path()),
+                ("--engine", args.engine.as_path()),
+            ];
+            if let Some(path) = &args.resume_from {
+                reads.push(("--resume-from", path));
+            }
+            if let Some(path) = &args.weight_file {
+                reads.push(("--weight-file", path));
+            }
+            let mut writes = vec![("--out", args.out.as_path())];
+            if let Some(path) = &args.manifest {
+                writes.push(("--manifest", path));
+            }
+            validate_path_roles(&reads, &writes)
+        }
+        Commands::Stability(args) => {
+            validate_path_roles(&[("--input", &args.input)], &[("--out", &args.out)])
+        }
+        Commands::Split(args) => {
+            if let (Some(train), Some(valid), Some(test)) = (&args.train, &args.valid, &args.test) {
+                let manifest = train
+                    .parent()
+                    .unwrap_or(Path::new("."))
+                    .join("manifest.json");
+                validate_path_roles(
+                    &[("--input", &args.input)],
+                    &[
+                        ("--train", train),
+                        ("--valid", valid),
+                        ("--test", test),
+                        ("split manifest", &manifest),
+                    ],
+                )
+            } else if let Some(out_dir) = &args.out_dir {
+                let manifest = out_dir.join("manifest.json");
+                validate_path_roles(
+                    &[("--input", &args.input)],
+                    &[("split manifest", &manifest)],
+                )
+            } else {
+                Ok(())
+            }
+        }
+        Commands::Sample(args) => {
+            let mut writes = vec![("--out", args.out.as_path())];
+            if let Some(path) = &args.manifest {
+                writes.push(("--manifest", path));
+            }
+            validate_path_roles(&[("--input", &args.input)], &writes)
+        }
+        Commands::Shuffle(args) => {
+            let mut writes = vec![("--out", args.out.as_path())];
+            if let Some(path) = &args.order_manifest {
+                writes.push(("--order-manifest", path));
+            }
+            if let Some(path) = &args.manifest {
+                writes.push(("--manifest", path));
+            }
+            validate_path_roles(&[("--input", &args.input)], &writes)
+        }
+        Commands::Mine(args) => {
+            validate_path_roles(&[("--input", &args.input)], &[("--out", &args.out)])
+        }
+        Commands::Balance(args) => {
+            let mut writes = vec![("--out", args.out.as_path())];
+            if let Some(path) = &args.manifest {
+                writes.push(("--manifest", path));
+            }
+            validate_path_roles(&[("--input", &args.input)], &writes)
+        }
+        Commands::Stratify(args) => {
+            let mut reads = vec![("--input", args.input.as_path())];
+            if let Some(path) = &args.quota {
+                reads.push(("--quota", path));
+            }
+            let mut writes = Vec::new();
+            if let Some(path) = &args.write_template {
+                writes.push(("--write-template", path.as_path()));
+            }
+            if let Some(path) = &args.out {
+                writes.push(("--out", path));
+            }
+            if let Some(path) = &args.manifest {
+                writes.push(("--manifest", path));
+            }
+            validate_path_roles(&reads, &writes)
+        }
+        Commands::MakeGateOpenings(args) => {
+            let mut writes = vec![("--out", args.out.as_path())];
+            if let Some(path) = &args.manifest {
+                writes.push(("--manifest", path));
+            }
+            validate_path_roles(&[("--input", &args.input)], &writes)
+        }
+        Commands::Select(args) => {
+            validate_path_roles(&[("--input", &args.input)], &[("--out", &args.out)])
+        }
+        Commands::Pack(args) => {
+            let mut writes = vec![("--out", args.out.as_path())];
+            if let Some(path) = &args.manifest {
+                writes.push(("--manifest", path));
+            }
+            validate_path_roles(&[("--input", &args.input)], &writes)
+        }
+        Commands::Unpack(args) => {
+            validate_path_roles(&[("--input", &args.input)], &[("--out", &args.out)])
+        }
+        Commands::Filter(args) => {
+            let mut reads = vec![("--input", args.input.as_path())];
+            if let Some((preset_path, _)) = args
+                .preset
+                .as_deref()
+                .and_then(|spec| spec.rsplit_once(':'))
+            {
+                reads.push(("--preset", Path::new(preset_path)));
+            }
+            let mut writes = Vec::new();
+            if let Some(path) = &args.out {
+                writes.push(("--out", path.as_path()));
+            }
+            if let Some(path) = &args.explain_out {
+                writes.push(("--explain-out", path));
+            }
+            if let Some(path) = &args.manifest {
+                writes.push(("--manifest", path));
+            }
+            validate_path_roles(&reads, &writes)
+        }
+        Commands::Calibrate(args) => {
+            let mut writes = vec![("--out", args.out.as_path())];
+            if let Some(path) = &args.manifest {
+                writes.push(("--manifest", path));
+            }
+            validate_path_roles(&[("--input", &args.input)], &writes)
+        }
+        Commands::Audit(args) => {
+            let mut writes = vec![("--out", args.out.as_path())];
+            if let Some(path) = &args.manifest {
+                writes.push(("--manifest", path));
+            }
+            validate_path_roles(&[("--input", &args.input)], &writes)
+        }
+        Commands::Tune(args) => {
+            let mut writes = vec![("--out", args.out.as_path())];
+            if let Some(path) = &args.manifest {
+                writes.push(("--manifest", path));
+            }
+            if let Some(path) = &args.report {
+                writes.push(("--report", path));
+            }
+            if let Some(path) = &args.preset_out {
+                writes.push(("--preset-out", path));
+            }
+            validate_path_roles(&[("--input", &args.input)], &writes)
+        }
+        Commands::DatasetDiff(args) => {
+            let writes = args
+                .json_out
+                .as_deref()
+                .map(|path| vec![("--json-out", path)])
+                .unwrap_or_default();
+            validate_path_roles(
+                &[
+                    ("--baseline", &args.baseline),
+                    ("--candidate", &args.candidate),
+                ],
+                &writes,
+            )
+        }
+        Commands::LinePrior(args) => match &args.action {
+            LinePriorAction::Export(args) => {
+                let mut writes = vec![("--out", args.out.as_path())];
+                if let Some(path) = &args.manifest {
+                    writes.push(("--manifest", path));
+                }
+                validate_path_roles(&[("--input", &args.input)], &writes)
+            }
+        },
+        Commands::ConflictReport(_)
+        | Commands::BlockReport(_)
+        | Commands::Report(_)
+        | Commands::Recipe(_)
+        | Commands::Distribution(_)
+        | Commands::Validate(_)
+        | Commands::Cache(_) => Ok(()),
+    }
+}
+
+/// A same-directory temporary output that replaces its destination only after every byte has
+/// been written and flushed successfully. Dropping it without `commit` removes the temporary
+/// file and leaves any pre-existing destination untouched.
+struct AtomicWriter {
+    destination: PathBuf,
+    temp: Option<tempfile::NamedTempFile>,
+    writer: Option<BufWriter<File>>,
+}
+
+impl AtomicWriter {
+    fn new(destination: &Path) -> Result<Self> {
+        // Renaming over a symlink would replace the link itself, unlike File::create's
+        // long-standing follow-the-link behavior. Resolve an existing link first so atomic
+        // output remains compatible with callers that keep a stable symlink to an artifact.
+        let destination = match fs::symlink_metadata(destination) {
+            Ok(metadata) if metadata.file_type().is_symlink() => fs::canonicalize(destination)
+                .with_context(|| format!("cannot resolve output symlink {destination:?}"))?,
+            Ok(_) => destination.to_path_buf(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => destination.to_path_buf(),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("cannot inspect output path {destination:?}"));
+            }
+        };
+        let parent = destination
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let temp = tempfile::NamedTempFile::new_in(parent)
+            .with_context(|| format!("cannot create temporary output in {parent:?}"))?;
+        let file = temp
+            .reopen()
+            .with_context(|| format!("cannot reopen temporary output for {destination:?}"))?;
+        Ok(Self {
+            destination,
+            temp: Some(temp),
+            writer: Some(BufWriter::new(file)),
+        })
+    }
+
+    fn commit(mut self) -> Result<()> {
+        let mut writer = self
+            .writer
+            .take()
+            .expect("atomic writer always owns its buffer before commit");
+        writer
+            .flush()
+            .with_context(|| format!("cannot flush temporary output for {:?}", self.destination))?;
+        writer
+            .get_ref()
+            .sync_all()
+            .with_context(|| format!("cannot sync temporary output for {:?}", self.destination))?;
+        drop(writer);
+
+        let temp = self
+            .temp
+            .take()
+            .expect("atomic writer always owns its temporary file before commit");
+        temp.persist(&self.destination).map_err(|error| {
+            anyhow::anyhow!(
+                "cannot atomically replace {:?}: {}",
+                self.destination,
+                error.error
+            )
+        })?;
+        Ok(())
+    }
+}
+
+impl Write for AtomicWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.writer
+            .as_mut()
+            .expect("atomic writer buffer is present until commit")
+            .write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.writer
+            .as_mut()
+            .expect("atomic writer buffer is present until commit")
+            .flush()
+    }
+}
+
+fn atomic_write_bytes(path: &Path, contents: &[u8]) -> Result<()> {
+    let mut writer = AtomicWriter::new(path)?;
+    writer.write_all(contents)?;
+    writer.commit()
+}
+
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -1102,6 +1471,7 @@ fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+    validate_command_paths(&cli.command)?;
     match cli.command {
         Commands::Extract(args) => cmd_extract(args),
         Commands::Label(args) => cmd_label(*args),
@@ -1216,9 +1586,7 @@ fn cmd_extract(args: ExtractArgs) -> Result<()> {
         );
     }
 
-    let out_file =
-        File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
-    let mut writer = BufWriter::new(out_file);
+    let mut writer = AtomicWriter::new(&args.out)?;
 
     let use_zobrist = args.dedup_zobrist;
     // For Zobrist dedup, disable SFEN dedup in the extractor and handle it here.
@@ -1286,7 +1654,7 @@ fn cmd_extract(args: ExtractArgs) -> Result<()> {
         );
     }
 
-    writer.flush()?;
+    writer.commit()?;
     eprintln!(
         "done: {} games, {} positions extracted, {} skipped → {:?}",
         total_games, total_positions, skipped, args.out
@@ -1613,9 +1981,7 @@ fn cmd_from_match(args: FromMatchArgs) -> Result<()> {
         anyhow::bail!("no .txt kifu files found in {:?}", args.input);
     }
 
-    let out_file =
-        File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
-    let mut writer = BufWriter::new(out_file);
+    let mut writer = AtomicWriter::new(&args.out)?;
     let mut seen: HashSet<String> = HashSet::new();
     let mut total_games = 0usize;
     let mut total_positions = 0usize;
@@ -1638,7 +2004,7 @@ fn cmd_from_match(args: FromMatchArgs) -> Result<()> {
         }
     }
 
-    writer.flush()?;
+    writer.commit()?;
     eprintln!(
         "done: {total_games} games read, {total_positions} positions extracted → {:?}",
         args.out
@@ -1816,9 +2182,7 @@ fn cmd_merge_observations(args: MergeObservationsArgs) -> Result<()> {
     let mut consumed = vec![false; secondary_records.len()];
 
     let (primary_records, _) = load_records(&args.primary)?;
-    let out_file =
-        File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
-    let mut writer = BufWriter::new(out_file);
+    let mut writer = AtomicWriter::new(&args.out)?;
     let (mut both, mut primary_only, mut collisions) = (0usize, 0usize, 0usize);
 
     for mut rec in primary_records {
@@ -1849,7 +2213,7 @@ fn cmd_merge_observations(args: MergeObservationsArgs) -> Result<()> {
             secondary_only += 1;
         }
     }
-    writer.flush()?;
+    writer.commit()?;
 
     eprintln!(
         "done: {} written ({both} merged, {primary_only} primary-only, {secondary_only} \
@@ -2673,6 +3037,63 @@ fn reorder_push(
     ready
 }
 
+/// Parse a comma-separated list of positive, distinct numeric limits without silently dropping
+/// malformed entries. Search budgets are part of label identity, so accepting `4,bad,8` as
+/// `4,8` or running the same budget twice would make the manifest describe a command other than
+/// the one that was actually executed.
+fn parse_positive_csv<T>(value: &str, flag: &str) -> Result<Vec<T>>
+where
+    T: Copy + Default + Display + FromStr + Ord,
+    T::Err: Display,
+{
+    let mut parsed = Vec::new();
+    let mut seen = BTreeSet::new();
+    for raw in value.split(',') {
+        let item = raw.trim();
+        if item.is_empty() {
+            anyhow::bail!("{flag} contains an empty value: {value:?}");
+        }
+        let number = item
+            .parse::<T>()
+            .map_err(|error| anyhow::anyhow!("invalid value {item:?} in {flag}: {error}"))?;
+        if number <= T::default() {
+            anyhow::bail!("{flag} values must be greater than zero, got {number}");
+        }
+        if !seen.insert(number) {
+            anyhow::bail!("{flag} values must be distinct, duplicate {number}");
+        }
+        parsed.push(number);
+    }
+    Ok(parsed)
+}
+
+/// Parse `--engine-option NAME=VALUE` once, preserving the value verbatim while rejecting input
+/// that used to disappear through `filter_map`. MultiPV has a dedicated flag because it also
+/// changes observation/cache identity; accepting both controls would let those identities drift.
+fn parse_engine_options(values: &[String]) -> Result<Vec<(String, String)>> {
+    let mut parsed = Vec::with_capacity(values.len());
+    let mut names = BTreeSet::new();
+    for raw in values {
+        let (name, value) = raw.split_once('=').ok_or_else(|| {
+            anyhow::anyhow!("invalid --engine-option {raw:?}; expected NAME=VALUE")
+        })?;
+        if name.trim().is_empty() {
+            anyhow::bail!("invalid --engine-option {raw:?}; NAME must not be empty");
+        }
+        if name.eq_ignore_ascii_case("MultiPV") {
+            anyhow::bail!(
+                "MultiPV must be configured with --multipv, not --engine-option, so label identity remains consistent"
+            );
+        }
+        let normalized = name.to_ascii_lowercase();
+        if !names.insert(normalized) {
+            anyhow::bail!("duplicate --engine-option name {name:?}");
+        }
+        parsed.push((name.to_string(), value.to_string()));
+    }
+    Ok(parsed)
+}
+
 fn cmd_label(args: LabelArgs) -> Result<()> {
     // Bounded-pipeline changes (worker count, cache usage, ordering) can't be judged without
     // measuring their actual effect on throughput -- this run's wall-clock start, used for
@@ -2681,39 +3102,31 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
     // clap's required_unless_present/conflicts_with on --depths/--nodes guarantees exactly one
     // of these is Some.
     let limits: Vec<SearchLimit> = if let Some(depths) = &args.depths {
-        let depths: Vec<u32> = depths
-            .split(',')
-            .filter_map(|s| s.trim().parse().ok())
-            .collect();
-        if depths.is_empty() {
-            anyhow::bail!("--depths must contain at least one valid integer, e.g. '4,6,8'");
-        }
+        let depths: Vec<u32> = parse_positive_csv(depths, "--depths")?;
         depths.into_iter().map(SearchLimit::Depth).collect()
     } else {
-        let nodes: Vec<u64> = args
-            .nodes
-            .as_ref()
-            .expect("clap guarantees --depths or --nodes")
-            .split(',')
-            .filter_map(|s| s.trim().parse().ok())
-            .collect();
-        if nodes.is_empty() {
-            anyhow::bail!("--nodes must contain at least one valid integer, e.g. '50000,200000'");
-        }
+        let nodes: Vec<u64> = parse_positive_csv(
+            args.nodes
+                .as_ref()
+                .expect("clap guarantees --depths or --nodes"),
+            "--nodes",
+        )?;
         nodes.into_iter().map(SearchLimit::Nodes).collect()
     };
+    if args.timeout_ms == 0 {
+        anyhow::bail!("--timeout-ms must be greater than zero");
+    }
+    if args.jobs == 0 {
+        anyhow::bail!("--jobs must be greater than zero");
+    }
+    if args.multipv == 0 {
+        anyhow::bail!("--multipv must be greater than zero");
+    }
     let weight_sha256 = args
         .weight_file
         .as_ref()
         .map(|path| compute_weight_sha256(path))
         .transpose()?;
-    if args.resume_from.as_ref() == Some(&args.out) {
-        anyhow::bail!(
-            "--resume-from must not be the same path as --out (that would just replay --out's \
-             own current contents back into itself instead of resuming from a separate prior \
-             run's output -- almost certainly not what was intended)"
-        );
-    }
     // See `build_resume_index` for why this is an offset index, not the full-record map
     // `load_records` would give -- a missing path just means "nothing to resume yet" (lets a
     // wrapper script pass --resume-from unconditionally from the very first run), same as before.
@@ -2729,15 +3142,8 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
     let engine_path = args.engine.clone();
     let engine_name = args.engine_name.clone().unwrap_or_default();
     let timeout_ms = args.timeout_ms;
-    let jobs = args.jobs.max(1);
-    let mut engine_options: Vec<(String, String)> = args
-        .engine_options
-        .iter()
-        .filter_map(|s| {
-            let (k, v) = s.split_once('=')?;
-            Some((k.to_string(), v.to_string()))
-        })
-        .collect();
+    let jobs = args.jobs;
+    let mut engine_options = parse_engine_options(&args.engine_options)?;
     if args.multipv > 1 {
         engine_options.push(("MultiPV".to_string(), args.multipv.to_string()));
     }
@@ -3153,9 +3559,7 @@ fn cmd_stability(args: StabilityArgs) -> Result<()> {
     let reader = BufReader::new(
         File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
     );
-    let out_file =
-        File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
-    let mut writer = BufWriter::new(out_file);
+    let mut writer = AtomicWriter::new(&args.out)?;
 
     let mut total = 0usize;
     let mut enriched = 0usize;
@@ -3183,7 +3587,7 @@ fn cmd_stability(args: StabilityArgs) -> Result<()> {
         writer.write_all(b"\n")?;
     }
 
-    writer.flush()?;
+    writer.commit()?;
     eprintln!(
         "done: {total} read, {enriched} enriched with stability, {skipped} skipped → {:?}",
         args.out
@@ -3274,6 +3678,241 @@ impl WriterPool {
     }
 }
 
+struct SplitBundleEntry {
+    staged: PathBuf,
+    destination: PathBuf,
+    prepared_temp: Option<tempfile::TempPath>,
+    backup: Option<tempfile::TempPath>,
+    committed: bool,
+}
+
+fn rollback_split_bundle(entries: &mut [SplitBundleEntry]) -> Vec<String> {
+    let mut errors = Vec::new();
+    for entry in entries.iter_mut().rev() {
+        if entry.committed {
+            if let Err(error) = fs::remove_file(&entry.destination) {
+                let mut message = format!(
+                    "cannot remove partially committed {:?}: {error}",
+                    entry.destination
+                );
+                if let Some(backup) = entry.backup.take() {
+                    let backup_path = backup.to_path_buf();
+                    match backup.keep() {
+                        Ok(path) => {
+                            message.push_str(&format!("; previous output retained at {path:?}"));
+                        }
+                        Err(keep_error) => {
+                            message.push_str(&format!(
+                                "; could not retain previous output at {backup_path:?}: {keep_error}"
+                            ));
+                        }
+                    }
+                }
+                errors.push(message);
+                continue;
+            }
+            entry.committed = false;
+        }
+        if let Some(backup) = entry.backup.take() {
+            let backup_path = backup.to_path_buf();
+            if let Err(error) = fs::rename(&backup_path, &entry.destination) {
+                let retention = match backup.keep() {
+                    Ok(path) => format!("previous output retained at {path:?}"),
+                    Err(keep_error) => {
+                        format!("could not retain previous output at {backup_path:?}: {keep_error}")
+                    }
+                };
+                errors.push(format!(
+                    "cannot restore backup for {:?}: {error}; {retention}",
+                    entry.destination,
+                ));
+            }
+        }
+    }
+    errors
+}
+
+/// Commit all per-source files and their manifest as one recoverable bundle. Each destination is
+/// backed up before replacement; any later failure restores every earlier destination in reverse
+/// order. Existing symlinks are resolved so their targets are updated without replacing the link.
+fn commit_split_bundle(staged_files: &[(PathBuf, PathBuf)]) -> Result<()> {
+    commit_split_bundle_with(staged_files, |_| Ok(()))
+}
+
+fn commit_split_bundle_with<F>(
+    staged_files: &[(PathBuf, PathBuf)],
+    mut before_commit: F,
+) -> Result<()>
+where
+    F: FnMut(usize) -> Result<()>,
+{
+    let mut entries = Vec::with_capacity(staged_files.len());
+    let mut destinations = HashSet::with_capacity(staged_files.len());
+
+    // Complete every fallible preparation step before moving an existing destination. A symlink
+    // target may live on another filesystem, so copy that staged file to a temporary neighbor;
+    // the final replacement can then use a same-filesystem rename.
+    for (staged, requested_destination) in staged_files {
+        let destination = match fs::symlink_metadata(requested_destination) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                fs::canonicalize(requested_destination).with_context(|| {
+                    format!("cannot resolve split output symlink {requested_destination:?}")
+                })?
+            }
+            Ok(metadata) if metadata.is_dir() => {
+                anyhow::bail!("split output destination is a directory: {requested_destination:?}")
+            }
+            Ok(_) => requested_destination.clone(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                requested_destination.clone()
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("cannot inspect split output {requested_destination:?}")
+                });
+            }
+        };
+        if !destinations.insert(destination.clone()) {
+            anyhow::bail!("split outputs resolve to the same destination: {destination:?}");
+        }
+
+        let mut prepared_temp = None;
+        let prepared_staged = if destination != *requested_destination {
+            let parent = destination.parent().unwrap_or(Path::new("."));
+            let temp = tempfile::NamedTempFile::new_in(parent).with_context(|| {
+                format!("cannot stage split output beside symlink target {destination:?}")
+            })?;
+            fs::copy(staged, temp.path()).with_context(|| {
+                format!("cannot stage split output for symlink target {destination:?}")
+            })?;
+            temp.as_file()
+                .sync_all()
+                .with_context(|| format!("cannot sync staged split output for {destination:?}"))?;
+            let temp = temp.into_temp_path();
+            let path = temp.to_path_buf();
+            prepared_temp = Some(temp);
+            path
+        } else {
+            File::open(staged)
+                .with_context(|| format!("cannot open staged split output {staged:?}"))?
+                .sync_all()
+                .with_context(|| format!("cannot sync staged split output {staged:?}"))?;
+            staged.clone()
+        };
+
+        entries.push(SplitBundleEntry {
+            staged: prepared_staged,
+            destination,
+            prepared_temp,
+            backup: None,
+            committed: false,
+        });
+    }
+
+    for index in 0..entries.len() {
+        if let Err(error) = before_commit(index) {
+            let rollback_errors = rollback_split_bundle(&mut entries);
+            let suffix = if rollback_errors.is_empty() {
+                String::new()
+            } else {
+                format!("; rollback incomplete: {}", rollback_errors.join("; "))
+            };
+            anyhow::bail!("split bundle commit interrupted: {error}{suffix}");
+        }
+        let destination = entries[index].destination.clone();
+        if destination.exists() {
+            let parent = destination.parent().unwrap_or(Path::new("."));
+            let backup = match tempfile::NamedTempFile::new_in(parent) {
+                Ok(file) => file.into_temp_path(),
+                Err(error) => {
+                    let rollback_errors = rollback_split_bundle(&mut entries);
+                    let suffix = if rollback_errors.is_empty() {
+                        String::new()
+                    } else {
+                        format!("; rollback incomplete: {}", rollback_errors.join("; "))
+                    };
+                    anyhow::bail!(
+                        "cannot create backup beside split output {destination:?}: {error}{suffix}"
+                    );
+                }
+            };
+            let backup_path = backup.to_path_buf();
+            if let Err(error) =
+                fs::remove_file(&backup_path).and_then(|()| fs::rename(&destination, &backup_path))
+            {
+                let rollback_errors = rollback_split_bundle(&mut entries);
+                let suffix = if rollback_errors.is_empty() {
+                    String::new()
+                } else {
+                    format!("; rollback incomplete: {}", rollback_errors.join("; "))
+                };
+                anyhow::bail!("cannot back up split output {destination:?}: {error}{suffix}");
+            }
+            entries[index].backup = Some(backup);
+        }
+
+        if let Err(error) = fs::rename(&entries[index].staged, &destination) {
+            let rollback_errors = rollback_split_bundle(&mut entries);
+            let suffix = if rollback_errors.is_empty() {
+                String::new()
+            } else {
+                format!("; rollback incomplete: {}", rollback_errors.join("; "))
+            };
+            anyhow::bail!("cannot commit split output {destination:?}: {error}{suffix}");
+        }
+        entries[index].committed = true;
+    }
+
+    for entry in &mut entries {
+        if let Some(backup) = entry.backup.take()
+            && let Err(error) = backup.close()
+        {
+            tracing::warn!(
+                destination = ?entry.destination,
+                "cannot remove old split output backup: {error}"
+            );
+        }
+        // Keep the guard alive through the rename; dropping it now only tries to remove the old,
+        // no-longer-existing temporary path.
+        entry.prepared_temp.take();
+    }
+    Ok(())
+}
+
+/// Keep the long-standing readable file name when it is unique, but disambiguate two source
+/// paths that sanitize to the same name (`a/b` and `a_b`, for example). The suffix is based on
+/// the original source identity, so it is deterministic and does not depend on process state.
+fn allocate_split_file_name(source: &str, owners: &mut HashMap<String, String>) -> Result<String> {
+    let safe: String = source
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '.' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let plain = format!("{safe}.jsonl");
+    let file_name = match owners.get(&plain) {
+        None => plain,
+        Some(owner) if owner == source => plain,
+        Some(_) => {
+            let digest = blake3::hash(source.as_bytes()).to_hex();
+            format!("{safe}--{}.jsonl", &digest[..16])
+        }
+    };
+    if let Some(owner) = owners.get(&file_name)
+        && owner != source
+    {
+        anyhow::bail!(
+            "source paths {owner:?} and {source:?} map to the same split output {file_name:?}"
+        );
+    }
+    owners.insert(file_name.clone(), source.to_string());
+    Ok(file_name)
+}
+
 fn cmd_split(args: SplitArgs) -> Result<()> {
     if args.train.is_some() || args.valid.is_some() || args.test.is_some() {
         return cmd_split_train_valid_test(args);
@@ -3287,6 +3926,12 @@ fn cmd_split(args: SplitArgs) -> Result<()> {
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("--out-dir is required with --by-source"))?;
     fs::create_dir_all(out_dir).with_context(|| format!("cannot create {out_dir:?}"))?;
+    let manifest_path = out_dir.join("manifest.json");
+    let staging = tempfile::Builder::new()
+        .prefix(".shogiesa-split-")
+        .tempdir_in(out_dir)
+        .with_context(|| format!("cannot create split staging directory in {out_dir:?}"))?;
+    let staging_dir = staging.path();
 
     let reader = BufReader::new(
         File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
@@ -3295,6 +3940,7 @@ fn cmd_split(args: SplitArgs) -> Result<()> {
     // Group records by source path, writing into per-source output files via a bounded LRU pool
     let mut pool = WriterPool::new(args.max_open_writers.max(1));
     let mut file_names: HashMap<String, String> = HashMap::new();
+    let mut file_name_owners: HashMap<String, String> = HashMap::new();
     let mut file_counts: BTreeMap<String, usize> = BTreeMap::new();
     let mut total = 0usize;
 
@@ -3312,32 +3958,32 @@ fn cmd_split(args: SplitArgs) -> Result<()> {
         };
 
         let key = rec.source.path.clone();
-        let file_name = file_names
-            .entry(key.clone())
-            .or_insert_with(|| {
-                let safe: String = key
-                    .chars()
-                    .map(|c| {
-                        if c.is_alphanumeric() || c == '.' || c == '-' {
-                            c
-                        } else {
-                            '_'
-                        }
-                    })
-                    .collect();
-                format!("{safe}.jsonl")
-            })
-            .clone();
+        let file_name = match file_names.get(&key) {
+            Some(file_name) => file_name.clone(),
+            None => {
+                let file_name = allocate_split_file_name(&key, &mut file_name_owners)?;
+                file_names.insert(key.clone(), file_name.clone());
+                file_name
+            }
+        };
         let out_path = out_dir.join(&file_name);
-        pool.write_line(&out_path, &key, &rec)?;
+        validate_path_roles(
+            &[("--input", &args.input)],
+            &[
+                ("split output", &out_path),
+                ("split manifest", &manifest_path),
+            ],
+        )?;
+        pool.write_line(&staging_dir.join(&file_name), &key, &rec)?;
         *file_counts.entry(file_name).or_default() += 1;
         total += 1;
     }
     pool.flush_all()?;
+    drop(pool);
 
     let output_hashes: BTreeMap<String, String> = file_counts
         .keys()
-        .map(|file_name| Ok((file_name.clone(), hash_file(&out_dir.join(file_name))?)))
+        .map(|file_name| Ok((file_name.clone(), hash_file(&staging_dir.join(file_name))?)))
         .collect::<Result<_>>()?;
 
     let manifest = serde_json::json!({
@@ -3351,9 +3997,21 @@ fn cmd_split(args: SplitArgs) -> Result<()> {
         "files": file_counts,
         "output_hashes": output_hashes,
     });
-    let manifest_path = out_dir.join("manifest.json");
-    fs::write(&manifest_path, serde_json::to_string_pretty(&manifest)?)
-        .with_context(|| format!("cannot write {manifest_path:?}"))?;
+    let staged_manifest = staging_dir.join("manifest.json");
+    atomic_write_bytes(
+        &staged_manifest,
+        serde_json::to_string_pretty(&manifest)?.as_bytes(),
+    )
+    .with_context(|| format!("cannot write staged split manifest {staged_manifest:?}"))?;
+
+    let mut staged_files: Vec<(PathBuf, PathBuf)> = file_counts
+        .keys()
+        .map(|file_name| (staging_dir.join(file_name), out_dir.join(file_name)))
+        .collect();
+    // The manifest is committed last, so readers never see it claim a new bundle before every
+    // referenced file is in place. A failure still rolls the earlier file replacements back.
+    staged_files.push((staged_manifest, manifest_path));
+    commit_split_bundle(&staged_files)?;
 
     eprintln!(
         "done: {total} positions split into {} files → {:?}",
@@ -3419,15 +4077,9 @@ fn cmd_split_train_valid_test(args: SplitArgs) -> Result<()> {
         File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
     );
 
-    let mut train_writer = BufWriter::new(
-        File::create(train_path).with_context(|| format!("cannot create {train_path:?}"))?,
-    );
-    let mut valid_writer = BufWriter::new(
-        File::create(valid_path).with_context(|| format!("cannot create {valid_path:?}"))?,
-    );
-    let mut test_writer = BufWriter::new(
-        File::create(test_path).with_context(|| format!("cannot create {test_path:?}"))?,
-    );
+    let mut train_writer = AtomicWriter::new(train_path)?;
+    let mut valid_writer = AtomicWriter::new(valid_path)?;
+    let mut test_writer = AtomicWriter::new(test_path)?;
 
     let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
     let mut sources: HashMap<&'static str, HashSet<String>> = HashMap::new();
@@ -3467,9 +4119,9 @@ fn cmd_split_train_valid_test(args: SplitArgs) -> Result<()> {
         total += 1;
     }
 
-    train_writer.flush()?;
-    valid_writer.flush()?;
-    test_writer.flush()?;
+    train_writer.commit()?;
+    valid_writer.commit()?;
+    test_writer.commit()?;
 
     let split_manifest = |name: &str, path: &PathBuf, output_hash: &str| {
         let mut source_root_ids: Vec<String> = roots
@@ -3508,8 +4160,11 @@ fn cmd_split_train_valid_test(args: SplitArgs) -> Result<()> {
         .parent()
         .unwrap_or(Path::new("."))
         .join("manifest.json");
-    fs::write(&manifest_path, serde_json::to_string_pretty(&manifest)?)
-        .with_context(|| format!("cannot write {manifest_path:?}"))?;
+    atomic_write_bytes(
+        &manifest_path,
+        serde_json::to_string_pretty(&manifest)?.as_bytes(),
+    )
+    .with_context(|| format!("cannot write {manifest_path:?}"))?;
 
     eprintln!(
         "done: {total} positions split (seed={}) → train={}, valid={}, test={}",
@@ -3822,7 +4477,7 @@ fn record_manifest_provenance(
 }
 
 fn write_manifest(path: &Path, manifest: &RunManifest) -> Result<()> {
-    fs::write(path, serde_json::to_string_pretty(manifest)?)
+    atomic_write_bytes(path, serde_json::to_string_pretty(manifest)?.as_bytes())
         .with_context(|| format!("cannot write {path:?}"))
 }
 
@@ -3989,14 +4644,12 @@ fn cmd_sample(args: SampleArgs) -> Result<()> {
         return Err(e.into());
     }
 
-    let out_file =
-        File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
-    let mut writer = BufWriter::new(out_file);
+    let mut writer = AtomicWriter::new(&args.out)?;
     for record in &kept {
         serde_json::to_writer(&mut writer, record)?;
         writer.write_all(b"\n")?;
     }
-    writer.flush()?;
+    writer.commit()?;
     eprintln!(
         "done: {}/{total} sampled (seed={seed}) → {:?}",
         kept.len(),
@@ -4095,19 +4748,15 @@ fn cmd_shuffle(args: ShuffleArgs) -> Result<()> {
     });
     let sample_ids: Vec<String> = ordered.iter().map(sample_id).collect();
 
-    let out_file =
-        File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
-    let mut writer = BufWriter::new(out_file);
+    let mut writer = AtomicWriter::new(&args.out)?;
     for record in &ordered {
         serde_json::to_writer(&mut writer, record)?;
         writer.write_all(b"\n")?;
     }
-    writer.flush()?;
+    writer.commit()?;
 
     if let Some(order_manifest_path) = &args.order_manifest {
-        let order_file = File::create(order_manifest_path)
-            .with_context(|| format!("cannot create {order_manifest_path:?}"))?;
-        let mut order_writer = BufWriter::new(order_file);
+        let mut order_writer = AtomicWriter::new(order_manifest_path)?;
         for (i, rec) in ordered.iter().enumerate() {
             let teacher = match (&args.teacher_engine, args.teacher_depth) {
                 (Some(engine), Some(depth)) => select_teacher(rec, engine, depth),
@@ -4140,7 +4789,7 @@ fn cmd_shuffle(args: ShuffleArgs) -> Result<()> {
             serde_json::to_writer(&mut order_writer, &line)?;
             order_writer.write_all(b"\n")?;
         }
-        order_writer.flush()?;
+        order_writer.commit()?;
     }
 
     eprintln!(
@@ -4259,9 +4908,7 @@ fn cmd_mine(args: MineArgs) -> Result<()> {
         }
     }
 
-    let out_file =
-        File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
-    let mut writer = BufWriter::new(out_file);
+    let mut writer = AtomicWriter::new(&args.out)?;
     let mut mined = 0usize;
     for (i, rec) in records.iter().enumerate() {
         if keep.contains(&i) {
@@ -4270,7 +4917,7 @@ fn cmd_mine(args: MineArgs) -> Result<()> {
             mined += 1;
         }
     }
-    writer.flush()?;
+    writer.commit()?;
     eprintln!(
         "done: {mined}/{total} hard positions mined → {:?}",
         args.out
@@ -4349,14 +4996,12 @@ fn cmd_balance(args: BalanceArgs) -> Result<()> {
         heaps.into_values().flat_map(|h| h.into_vec()).collect();
     kept.sort_by_key(|e| e.index);
 
-    let out_file =
-        File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
-    let mut writer = BufWriter::new(out_file);
+    let mut writer = AtomicWriter::new(&args.out)?;
     for entry in &kept {
         serde_json::to_writer(&mut writer, &entry.record)?;
         writer.write_all(b"\n")?;
     }
-    writer.flush()?;
+    writer.commit()?;
     eprintln!(
         "done: {}/{total} selected (target {target}/bucket, {} buckets) → {:?}",
         kept.len(),
@@ -4442,8 +5087,11 @@ fn cmd_stratify_write_template(args: &StratifyArgs, template_path: &Path) -> Res
         by: args.by.clone(),
         quotas: bucket_sizes.into_iter().collect(),
     };
-    fs::write(template_path, serde_json::to_string_pretty(&file)?)
-        .with_context(|| format!("cannot write {template_path:?}"))?;
+    atomic_write_bytes(
+        template_path,
+        serde_json::to_string_pretty(&file)?.as_bytes(),
+    )
+    .with_context(|| format!("cannot write {template_path:?}"))?;
     eprintln!(
         "done: {} bucket(s) observed → {:?} (edit \"quotas\" counts down, then run `stratify --quota`)",
         file.quotas.len(),
@@ -4492,13 +5140,12 @@ fn cmd_stratify_apply(args: &StratifyArgs, quota_path: &Path, out: &Path) -> Res
         return Err(e.into());
     }
 
-    let out_file = File::create(out).with_context(|| format!("cannot create {out:?}"))?;
-    let mut writer = BufWriter::new(out_file);
+    let mut writer = AtomicWriter::new(out)?;
     for record in &result.kept {
         serde_json::to_writer(&mut writer, record)?;
         writer.write_all(b"\n")?;
     }
-    writer.flush()?;
+    writer.commit()?;
 
     let over_quota = result.quota_candidates - result.kept.len();
     eprintln!(
@@ -4809,14 +5456,12 @@ fn cmd_make_gate_openings(args: MakeGateOpeningsArgs) -> Result<()> {
     );
     let kept = result.kept;
 
-    let out_file =
-        File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
-    let mut writer = BufWriter::new(out_file);
+    let mut writer = AtomicWriter::new(&args.out)?;
     for record in &kept {
         writer.write_all(record.sfen.as_bytes())?;
         writer.write_all(b"\n")?;
     }
-    writer.flush()?;
+    writer.commit()?;
 
     let over_count = result.quota_candidates - kept.len();
     eprintln!("done: {}/{total} kept → {:?}", kept.len(), args.out);
@@ -5251,9 +5896,7 @@ fn cmd_lineprior_export(args: LinePriorExportArgs) -> Result<()> {
         anyhow::bail!("no .csa or .kif files found in {:?}", args.input);
     }
 
-    let out_file =
-        File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
-    let mut writer = BufWriter::new(out_file);
+    let mut writer = AtomicWriter::new(&args.out)?;
 
     let mut total_games = 0usize;
     let mut total_moves = 0usize;
@@ -5325,7 +5968,7 @@ fn cmd_lineprior_export(args: LinePriorExportArgs) -> Result<()> {
         }
     }
 
-    writer.flush()?;
+    writer.commit()?;
 
     if let Some(manifest_path) = &args.manifest {
         let unknown_outcome_count = outcome_distribution.get("unknown").copied().unwrap_or(0);
@@ -5349,8 +5992,11 @@ fn cmd_lineprior_export(args: LinePriorExportArgs) -> Result<()> {
             tag_distribution,
             unknown_outcome_count,
         };
-        fs::write(manifest_path, serde_json::to_string_pretty(&manifest)?)
-            .with_context(|| format!("cannot write {manifest_path:?}"))?;
+        atomic_write_bytes(
+            manifest_path,
+            serde_json::to_string_pretty(&manifest)?.as_bytes(),
+        )
+        .with_context(|| format!("cannot write {manifest_path:?}"))?;
     }
 
     eprintln!(
@@ -5377,14 +6023,12 @@ fn cmd_select(args: SelectArgs) -> Result<()> {
     // Output in ranked order (most-worth-a-look first), unlike `sample`/`balance` which restore
     // input order -- a re-labeling queue is more useful read top-to-bottom by priority than by
     // original file position.
-    let out_file =
-        File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
-    let mut writer = BufWriter::new(out_file);
+    let mut writer = AtomicWriter::new(&args.out)?;
     for rec in &ranked_records {
         serde_json::to_writer(&mut writer, rec)?;
         writer.write_all(b"\n")?;
     }
-    writer.flush()?;
+    writer.commit()?;
     eprintln!(
         "done: {}/{total} selected (strategy={}, seed={}) → {:?}",
         ranked_records.len(),
@@ -5399,9 +6043,7 @@ fn cmd_pack(args: PackArgs) -> Result<()> {
     let reader = BufReader::new(
         File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
     );
-    let out_file =
-        File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
-    let mut writer = BufWriter::new(out_file);
+    let mut writer = AtomicWriter::new(&args.out)?;
 
     pack::write_header(&mut writer)?;
 
@@ -5435,7 +6077,7 @@ fn cmd_pack(args: PackArgs) -> Result<()> {
             }
         }
     }
-    writer.flush()?;
+    writer.commit()?;
     eprintln!("done: {total} packed, {skipped} skipped → {:?}", args.out);
     if let (Some(mut m), Some(manifest_path)) = (manifest, &args.manifest) {
         m.input_hash = input_hasher.finalize().to_hex().to_string();
@@ -5452,9 +6094,7 @@ fn cmd_unpack(args: UnpackArgs) -> Result<()> {
     let mut reader = BufReader::new(
         File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
     );
-    let out_file =
-        File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
-    let mut writer = BufWriter::new(out_file);
+    let mut writer = AtomicWriter::new(&args.out)?;
 
     pack::read_header(&mut reader)?;
 
@@ -5478,28 +6118,58 @@ fn cmd_unpack(args: UnpackArgs) -> Result<()> {
             Err(e) => return Err(e.into()),
         }
     }
-    writer.flush()?;
+    writer.commit()?;
     eprintln!("done: {total} unpacked → {:?}", args.out);
     Ok(())
 }
 
 /// Parses `--phase`'s comma-separated `opening,middlegame,endgame` list into `QualityConfig`'s
-/// `allowed_phases` -- shared by `filter` and `calibrate` so both interpret the same flag
-/// identically instead of keeping two copies of the same match arms.
-fn parse_allowed_phases(phase: Option<&str>) -> Option<Vec<GamePhase>> {
-    phase.map(|s| {
-        s.split(',')
-            .filter_map(|p| match p.trim() {
-                "opening" => Some(GamePhase::Opening),
-                "middlegame" => Some(GamePhase::Middlegame),
-                "endgame" => Some(GamePhase::Endgame),
-                other => {
-                    tracing::warn!("unknown phase {other:?}, ignoring");
-                    None
-                }
-            })
-            .collect()
-    })
+/// `allowed_phases` -- shared by `filter`, `calibrate`, and `tune`. Unknown or duplicate entries
+/// fail closed: silently ignoring a typo can produce a different training dataset than requested.
+fn parse_allowed_phases(phase: Option<&str>) -> Result<Option<Vec<GamePhase>>> {
+    let Some(value) = phase else {
+        return Ok(None);
+    };
+    let mut phases = Vec::new();
+    let mut seen = BTreeSet::new();
+    for raw in value.split(',') {
+        let name = raw.trim();
+        let parsed = match name {
+            "opening" => GamePhase::Opening,
+            "middlegame" => GamePhase::Middlegame,
+            "endgame" => GamePhase::Endgame,
+            "" => anyhow::bail!("--phase contains an empty value: {value:?}"),
+            other => anyhow::bail!(
+                "unknown --phase value {other:?}; expected opening, middlegame, or endgame"
+            ),
+        };
+        if !seen.insert(name) {
+            anyhow::bail!("--phase values must be distinct, duplicate {name:?}");
+        }
+        phases.push(parsed);
+    }
+    Ok(Some(phases))
+}
+
+fn validate_quality_config(config: &QualityConfig) -> Result<()> {
+    if config.max_score_swing_cp.is_some_and(|value| value < 0) {
+        anyhow::bail!("--max-score-swing-cp must be non-negative");
+    }
+    if config
+        .max_engine_score_swing_cp
+        .is_some_and(|value| value < 0)
+    {
+        anyhow::bail!("--max-engine-score-swing-cp must be non-negative");
+    }
+    if config.min_depth_reached == Some(0) {
+        anyhow::bail!("--min-depth-reached must be greater than zero");
+    }
+    if let (Some(minimum), Some(maximum)) = (config.eval_min, config.eval_max)
+        && minimum > maximum
+    {
+        anyhow::bail!("--eval-min must be less than or equal to --eval-max");
+    }
+    Ok(())
 }
 
 fn build_quality_config(
@@ -5552,26 +6222,21 @@ fn cmd_filter(args: FilterArgs) -> Result<()> {
     let config = match &args.preset {
         Some(spec) => load_quality_config_preset(spec)?,
         None => {
-            let allowed_phases = parse_allowed_phases(args.phase.as_deref());
+            let allowed_phases = parse_allowed_phases(args.phase.as_deref())?;
             build_quality_config(&args, allowed_phases)
         }
     };
+    validate_quality_config(&config)?;
 
     let reader = BufReader::new(
         File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
     );
-    let mut writer = match &args.out {
-        Some(out) => Some(BufWriter::new(
-            File::create(out).with_context(|| format!("cannot create {out:?}"))?,
-        )),
-        None => None,
-    };
-    let mut explain_writer = match &args.explain_out {
-        Some(path) => Some(BufWriter::new(
-            File::create(path).with_context(|| format!("cannot create {path:?}"))?,
-        )),
-        None => None,
-    };
+    let mut writer = args.out.as_deref().map(AtomicWriter::new).transpose()?;
+    let mut explain_writer = args
+        .explain_out
+        .as_deref()
+        .map(AtomicWriter::new)
+        .transpose()?;
 
     let mut total = 0usize;
     let mut passed = 0usize;
@@ -5630,11 +6295,11 @@ fn cmd_filter(args: FilterArgs) -> Result<()> {
         }
     }
 
-    if let Some(w) = &mut writer {
-        w.flush()?;
+    if let Some(w) = writer {
+        w.commit()?;
     }
-    if let Some(w) = &mut explain_writer {
-        w.flush()?;
+    if let Some(w) = explain_writer {
+        w.commit()?;
     }
     match &args.out {
         Some(out) => eprintln!("done: {total} read, {passed} passed, {skipped} filtered → {out:?}"),
@@ -5722,14 +6387,31 @@ impl SweepRow {
     }
 }
 
-fn parse_int_list(s: &str) -> Result<Vec<i32>> {
-    s.split(',')
-        .map(|p| {
-            p.trim()
-                .parse::<i32>()
-                .with_context(|| format!("invalid integer {p:?} in sweep list"))
-        })
-        .collect()
+fn parse_distinct_int_list(value: &str, flag: &str) -> Result<Vec<i32>> {
+    let mut parsed = Vec::new();
+    let mut seen = BTreeSet::new();
+    for raw in value.split(',') {
+        let item = raw.trim();
+        if item.is_empty() {
+            anyhow::bail!("{flag} contains an empty value: {value:?}");
+        }
+        let number = item
+            .parse::<i32>()
+            .with_context(|| format!("invalid integer {item:?} in {flag}"))?;
+        if !seen.insert(number) {
+            anyhow::bail!("{flag} values must be distinct, duplicate {number}");
+        }
+        parsed.push(number);
+    }
+    Ok(parsed)
+}
+
+fn parse_score_swing_list(value: &str, flag: &str) -> Result<Vec<i32>> {
+    let parsed = parse_distinct_int_list(value, flag)?;
+    if let Some(negative) = parsed.iter().find(|&&number| number < 0) {
+        anyhow::bail!("{flag} values must be non-negative, got {negative}");
+    }
+    Ok(parsed)
 }
 
 /// Dataset-wide diagnostics independent of any swept/gridded threshold -- accumulated once per
@@ -5836,7 +6518,7 @@ fn cmd_calibrate(args: CalibrateArgs) -> Result<()> {
         );
     }
 
-    let allowed_phases = parse_allowed_phases(args.phase.as_deref());
+    let allowed_phases = parse_allowed_phases(args.phase.as_deref())?;
     // Why the held values feed straight into the base config: `--sweep-x`/its `--min-x`(or
     // `--max-x`) hold counterpart are a clap `conflicts_with` pair, so at most one of "sweep this
     // field" and "hold this field at a fixed value" is ever active for a given field -- the base
@@ -5863,16 +6545,17 @@ fn cmd_calibrate(args: CalibrateArgs) -> Result<()> {
         require_requested_depth_reached: args.require_requested_depth_reached,
         allow_timeout_salvaged_mate: args.allow_timeout_salvaged_mate,
     };
+    validate_quality_config(&base_config)?;
 
     let mut policy_margin_rows: Vec<SweepRow> = match &args.sweep_policy_margin {
-        Some(s) => parse_int_list(s)?
+        Some(s) => parse_distinct_int_list(s, "--sweep-policy-margin")?
             .into_iter()
             .map(|v| SweepRow::new("policy_margin", v))
             .collect(),
         None => Vec::new(),
     };
     let mut score_swing_rows: Vec<SweepRow> = match &args.sweep_score_swing {
-        Some(s) => parse_int_list(s)?
+        Some(s) => parse_score_swing_list(s, "--sweep-score-swing")?
             .into_iter()
             .map(|v| SweepRow::new("score_swing", v))
             .collect(),
@@ -5927,9 +6610,7 @@ fn cmd_calibrate(args: CalibrateArgs) -> Result<()> {
         diagnostics.record(&rec);
     }
 
-    let out_file =
-        File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
-    let mut writer = BufWriter::new(out_file);
+    let mut writer = AtomicWriter::new(&args.out)?;
     writeln!(
         writer,
         "sweep_param,sweep_value,total,kept,dropped,coverage_pct,drop_reasons"
@@ -5947,7 +6628,7 @@ fn cmd_calibrate(args: CalibrateArgs) -> Result<()> {
             row.coverage.drop_reasons_csv_cell()
         )?;
     }
-    writer.flush()?;
+    writer.commit()?;
 
     if let Some(manifest_path) = &args.manifest {
         let mut manifest = RunManifest::new("calibrate", &args.input);
@@ -5986,14 +6667,17 @@ fn find_at_depth<'a>(
         .copied()
 }
 
-fn parse_u32_list(s: &str) -> Result<Vec<u32>> {
-    s.split(',')
-        .map(|p| {
-            p.trim()
-                .parse::<u32>()
-                .with_context(|| format!("invalid unsigned integer {p:?} in depth list"))
-        })
-        .collect()
+fn parse_student_depths(value: &str, teacher_depth: u32) -> Result<Vec<u32>> {
+    if teacher_depth == 0 {
+        anyhow::bail!("--teacher-depth must be greater than zero");
+    }
+    let depths: Vec<u32> = parse_positive_csv(value, "--student-depths")?;
+    if let Some(invalid) = depths.iter().find(|&&depth| depth >= teacher_depth) {
+        anyhow::bail!(
+            "--student-depths must all be shallower than --teacher-depth {teacher_depth}, got {invalid}"
+        );
+    }
+    Ok(depths)
 }
 
 /// Aggregate stats for one student depth (or overall, across every student depth) -- shared
@@ -6169,14 +6853,12 @@ fn compute_audit_pairs<'a>(
 }
 
 fn cmd_audit(args: AuditArgs) -> Result<()> {
-    let student_depths = parse_u32_list(&args.student_depths)?;
+    let student_depths = parse_student_depths(&args.student_depths, args.teacher_depth)?;
 
     let reader = BufReader::new(
         File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
     );
-    let out_file =
-        File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
-    let mut writer = BufWriter::new(out_file);
+    let mut writer = AtomicWriter::new(&args.out)?;
 
     let mut total_records = 0usize;
     let mut overall = AuditStats::default();
@@ -6235,7 +6917,7 @@ fn cmd_audit(args: AuditArgs) -> Result<()> {
         }
     }
 
-    writer.flush()?;
+    writer.commit()?;
     if let Some(manifest_path) = &args.manifest {
         let mut manifest = RunManifest::new("audit", &args.input);
         manifest.input_hash = hash_file(&args.input)?;
@@ -6519,7 +7201,7 @@ fn write_tune_report(path: &Path, args: &TuneArgs, total: usize, grid: &[TuneCel
              `--student-depths` against what's actually in the data. Pareto analysis skipped; \
              see the CSV for coverage-only results."
         )?;
-        fs::write(path, report)?;
+        atomic_write_bytes(path, report.as_bytes())?;
         return Ok(());
     }
 
@@ -6639,7 +7321,7 @@ fn write_tune_report(path: &Path, args: &TuneArgs, total: usize, grid: &[TuneCel
         )?;
     }
 
-    fs::write(path, report)?;
+    atomic_write_bytes(path, report.as_bytes())?;
     Ok(())
 }
 
@@ -6720,7 +7402,7 @@ fn write_tune_preset(
         student_depths: args.student_depths.clone(),
         presets,
     };
-    fs::write(path, serde_json::to_string_pretty(&file)?)?;
+    atomic_write_bytes(path, serde_json::to_string_pretty(&file)?.as_bytes())?;
     Ok(())
 }
 
@@ -6728,9 +7410,9 @@ fn cmd_tune(args: TuneArgs) -> Result<()> {
     if args.sweep_policy_margin.is_none() && args.sweep_score_swing.is_none() {
         anyhow::bail!("tune requires at least one of --sweep-policy-margin/--sweep-score-swing");
     }
-    let student_depths = parse_u32_list(&args.student_depths)?;
+    let student_depths = parse_student_depths(&args.student_depths, args.teacher_depth)?;
 
-    let allowed_phases = parse_allowed_phases(args.phase.as_deref());
+    let allowed_phases = parse_allowed_phases(args.phase.as_deref())?;
     // Same convention as calibrate: a field currently being swept is always None here (overridden
     // per grid cell below); Some only when that field is instead held fixed while the OTHER
     // dimension sweeps (enforced by clap's conflicts_with on the sweep/hold pairs).
@@ -6754,16 +7436,23 @@ fn cmd_tune(args: TuneArgs) -> Result<()> {
         require_requested_depth_reached: args.require_requested_depth_reached,
         allow_timeout_salvaged_mate: args.allow_timeout_salvaged_mate,
     };
+    validate_quality_config(&base_config)?;
 
     // A held-but-not-swept axis becomes a single-value list (possibly `None`, meaning "gate
     // inactive") -- this makes `tune` a strict superset of `calibrate`'s shape: a 1xN or Nx1 grid
     // degenerates to exactly calibrate's independent-sweep behavior, not a divergent second mode.
     let policy_values: Vec<Option<i32>> = match &args.sweep_policy_margin {
-        Some(s) => parse_int_list(s)?.into_iter().map(Some).collect(),
+        Some(s) => parse_distinct_int_list(s, "--sweep-policy-margin")?
+            .into_iter()
+            .map(Some)
+            .collect(),
         None => vec![args.min_policy_margin_cp],
     };
     let swing_values: Vec<Option<i32>> = match &args.sweep_score_swing {
-        Some(s) => parse_int_list(s)?.into_iter().map(Some).collect(),
+        Some(s) => parse_score_swing_list(s, "--sweep-score-swing")?
+            .into_iter()
+            .map(Some)
+            .collect(),
         None => vec![args.max_score_swing_cp],
     };
 
@@ -6828,9 +7517,7 @@ fn cmd_tune(args: TuneArgs) -> Result<()> {
         }
     }
 
-    let out_file =
-        File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
-    let mut writer = BufWriter::new(out_file);
+    let mut writer = AtomicWriter::new(&args.out)?;
     writeln!(
         writer,
         "policy_margin,score_swing,total,kept,dropped,coverage_pct,drop_reasons,audit_pairs,\
@@ -6841,7 +7528,7 @@ fn cmd_tune(args: TuneArgs) -> Result<()> {
     for cell in &grid {
         writeln!(writer, "{}", cell.to_csv_row())?;
     }
-    writer.flush()?;
+    writer.commit()?;
 
     eprintln!(
         "done: {total} read, {} grid configurations → {:?}",
@@ -7534,8 +8221,11 @@ fn cmd_dataset_diff(args: DatasetDiffArgs) -> Result<()> {
     };
 
     if let Some(path) = &args.json_out {
-        fs::write(path, serde_json::to_string_pretty(&report)? + "\n")
-            .with_context(|| format!("cannot write {path:?}"))?;
+        atomic_write_bytes(
+            path,
+            (serde_json::to_string_pretty(&report)? + "\n").as_bytes(),
+        )
+        .with_context(|| format!("cannot write {path:?}"))?;
     }
 
     let mut out = String::new();
@@ -9281,6 +9971,119 @@ mod tune_pareto_tests {
         let frontier = pareto_frontier_indices(&cells);
         assert_eq!(pick_broad(&cells, &frontier), 0);
         assert_eq!(pick_strict(&cells, &frontier), 1);
+    }
+}
+
+#[cfg(test)]
+mod atomic_writer_tests {
+    use super::*;
+
+    #[test]
+    fn drop_without_commit_preserves_existing_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("output.bin");
+        fs::write(&path, b"previous").unwrap();
+
+        {
+            let mut writer = AtomicWriter::new(&path).unwrap();
+            writer.write_all(b"partial replacement").unwrap();
+        }
+
+        assert_eq!(fs::read(&path).unwrap(), b"previous");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn commit_replaces_existing_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("output.bin");
+        fs::write(&path, b"previous").unwrap();
+
+        let mut writer = AtomicWriter::new(&path).unwrap();
+        writer.write_all(b"complete replacement").unwrap();
+        writer.commit().unwrap();
+
+        assert_eq!(fs::read(&path).unwrap(), b"complete replacement");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commit_follows_existing_output_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.bin");
+        let link = dir.path().join("output.bin");
+        fs::write(&target, b"previous").unwrap();
+        symlink(&target, &link).unwrap();
+
+        let mut writer = AtomicWriter::new(&link).unwrap();
+        writer.write_all(b"replacement").unwrap();
+        writer.commit().unwrap();
+
+        assert_eq!(fs::read(&target).unwrap(), b"replacement");
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[test]
+    fn split_bundle_rolls_back_earlier_replacements() {
+        let dir = tempfile::tempdir().unwrap();
+        let staged_a = dir.path().join("staged-a");
+        let staged_b = dir.path().join("staged-b");
+        let destination_a = dir.path().join("destination-a");
+        let destination_b = dir.path().join("destination-b");
+        fs::write(&staged_a, b"new-a").unwrap();
+        fs::write(&staged_b, b"new-b").unwrap();
+        fs::write(&destination_a, b"old-a").unwrap();
+        fs::write(&destination_b, b"old-b").unwrap();
+
+        let error = commit_split_bundle_with(
+            &[
+                (staged_a, destination_a.clone()),
+                (staged_b, destination_b.clone()),
+            ],
+            |index| {
+                if index == 1 {
+                    anyhow::bail!("injected failure");
+                }
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("injected failure"));
+        assert_eq!(fs::read(destination_a).unwrap(), b"old-a");
+        assert_eq!(fs::read(destination_b).unwrap(), b"old-b");
+    }
+
+    #[test]
+    fn failed_split_bundle_rollback_retains_previous_output_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("destination");
+        fs::create_dir(&destination).unwrap();
+        let mut backup = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+        backup.write_all(b"previous output").unwrap();
+        backup.as_file().sync_all().unwrap();
+        let backup_path = backup.path().to_path_buf();
+
+        let mut entries = [SplitBundleEntry {
+            staged: dir.path().join("staged"),
+            destination,
+            prepared_temp: None,
+            backup: Some(backup.into_temp_path()),
+            committed: true,
+        }];
+        let errors = rollback_split_bundle(&mut entries);
+
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("previous output retained"));
+        assert_eq!(fs::read(backup_path).unwrap(), b"previous output");
     }
 }
 

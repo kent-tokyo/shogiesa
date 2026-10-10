@@ -1,0 +1,23 @@
+{
+  "schema": "shogiesa.sekirei-compat.v1",
+  "generated_at": "2026-10-10T10:17:15Z",
+  "producer": {
+    "repository": "kent-tokyo/shogiesa",
+    "commit": "9459fd3d6972a7328becdd0d0d48078abf4c9268",
+    "source": "v0.11.1",
+    "working_tree_dirty": false,
+    "schema_version": 11,
+    "fixture_sha256": "83e7460c8b3d106bfc2cfb6d99e31a36ac2e3f5ad0334e324fcc91a84ff9fba2"
+  },
+  "consumer": {
+    "repository": "kent-tokyo/sekirei",
+    "ref": "v0.3.68",
+    "commit": "6b00f0eaea9b3bc1153c25f4b6ddcd33a0cfdbc7",
+    "shogiesa_core_dependency": "0.11.1",
+    "vendored_fixture_sha256": "83e7460c8b3d106bfc2cfb6d99e31a36ac2e3f5ad0334e324fcc91a84ff9fba2"
+  },
+  "checks": {
+    "canonical_fixture_byte_identity": "pass",
+    "typed_positions_tests": "pass"
+  }
+}

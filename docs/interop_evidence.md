@@ -12,7 +12,8 @@ the formats are semantically identical.
 | SFEN -> core/pack | `tests/fixtures/match_position_sfen_*.txt`, pack round-trip tests | SFEN records survive validation and pack/unpack | arbitrary producer-specific metadata |
 | JSONL -> pack -> JSONL | `tests/fixtures/pack_input.jsonl`, `malformed_mixed.jsonl`, `pack_bad_magic.hex`, `pack_truncated_header.hex`, `pack_unsupported_version.hex`, `pack_trailing_bytes.hex`, `pack_wrong_endian_version.hex`, `pack_truncated_record.hex`, `shogiesa-pack` unit tests, and CLI schema fixtures v1-v11 | current format 11 round-trips through JSONL; malformed input is counted and corrupt/unsupported/trailing/wrong-endian/truncated-record bytes fail with stable diagnostic classes; library batch decode distinguishes clean EOF from truncated records; pack manifest records artifact hash and counts | editing pack as a primary format |
 | JSONL -> USI label | `fake-usi-engine` and USI tests | direct USI boundary, limits, timeout/restart diagnostics | any particular engine's strength |
-| JSONL -> Sekirei trainer | pinned schema check and 2026-10-10 three-seed pilot | Sekirei 0.3.66 reads typed records; four dataset arms complete one-epoch runs | generalization, match transfer, or Elo improvement |
+| JSONL -> Sekirei trainer | pinned 0.3.68 schema check and 2026-10-10 three-seed pilot | Sekirei 0.3.68 reads schema-11 typed records through `shogiesa-core` 0.11.1; the historical 0.3.66 pilot completed four one-epoch dataset arms | generalization, match transfer, or Elo improvement |
+| Sekirei A/B result -> shogiesa gate report | `sekirei.ab_gate_result.v1` fixture and 2026-10-10 four-game smoke | complete upstream evidence, runner/binary/weight/opening identities, and status pass-through validate without stdout scraping | a four-game Elo or release-strength conclusion |
 | GenSfen/rshogi/cshogi/rsshogi/python-shogi | no external adapter in this checkout | only shared SFEN/JSONL boundary is proposed | native import/export compatibility |
 
 The named native-format row remains an explicit gap. Claim compatibility only after a round-trip
@@ -23,8 +24,9 @@ Run the Sekirei check against an immutable tag without modifying its checkout:
 ```bash
 scripts/check_sekirei_compat.sh \
   --sekirei-dir ../sekirei \
-  --ref v0.3.66 \
-  --out /tmp/sekirei-v0.3.66-compat.json
+  --ref v0.3.68 \
+  --shogiesa-ref v0.11.1 \
+  --out /tmp/sekirei-v0.3.68-compat.json
 ```
 
 The schema check proves ingestion only. The fixed-node delta and training pilot are indexed in

@@ -458,6 +458,56 @@ fn recipe_plan_rejects_output_outside_recipe_directory() {
 }
 
 #[test]
+fn recipe_plan_rejects_json_output_aliasing_recipe_without_overwrite() {
+    let dir = TempDir::new().unwrap();
+    let recipe = dir.path().join("recipe.json");
+    std::fs::copy(fixture("recipe_plan.json"), &recipe).unwrap();
+    let before = std::fs::read(&recipe).unwrap();
+
+    shogiesa()
+        .args([
+            "recipe",
+            "plan",
+            "--recipe",
+            recipe.to_str().unwrap(),
+            "--json-out",
+            recipe.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--recipe must not be the same path as --json-out",
+        ));
+
+    assert_eq!(std::fs::read(&recipe).unwrap(), before);
+}
+
+#[test]
+fn recipe_plan_rejects_stage_output_overwriting_recipe() {
+    let dir = TempDir::new().unwrap();
+    let recipe = dir.path().join("recipe.json");
+    let spec = serde_json::json!({
+        "recipe_version": 1,
+        "stages": [{
+            "id": "overwrite-recipe",
+            "command": "report",
+            "args": [],
+            "inputs": [],
+            "outputs": ["recipe.json"]
+        }]
+    });
+    std::fs::write(&recipe, serde_json::to_vec_pretty(&spec).unwrap()).unwrap();
+
+    shogiesa()
+        .args(["recipe", "plan", "--recipe", recipe.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "must not overwrite the recipe file",
+        ));
+}
+
+#[test]
 fn recipe_run_verify_and_reuse_stage_outputs() {
     let dir = TempDir::new().unwrap();
     let baseline = fixture("dataset_diff_baseline.jsonl");
@@ -1312,6 +1362,99 @@ fn validate_strict_tag_mismatch_exits_1() {
 }
 
 // --- label ---
+
+#[test]
+fn label_rejects_malformed_or_ambiguous_search_limits() {
+    let input = fixture("teacher_calibration_positions.jsonl");
+    for (flag, value, message) in [
+        ("--depths", "4,bad,8", "invalid value \"bad\" in --depths"),
+        ("--depths", "4,", "--depths contains an empty value"),
+        ("--depths", "4,4", "--depths values must be distinct"),
+        ("--nodes", "0", "--nodes values must be greater than zero"),
+    ] {
+        let out = NamedTempFile::new().unwrap();
+        shogiesa()
+            .args([
+                "label",
+                "--input",
+                input.to_str().unwrap(),
+                "--engine",
+                "unused-engine",
+                flag,
+                value,
+                "--out",
+                out.path().to_str().unwrap(),
+            ])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains(message));
+    }
+}
+
+#[test]
+fn label_rejects_zero_runtime_controls() {
+    let input = fixture("teacher_calibration_positions.jsonl");
+    for (flag, message) in [
+        ("--timeout-ms", "--timeout-ms must be greater than zero"),
+        ("--jobs", "--jobs must be greater than zero"),
+        ("--multipv", "--multipv must be greater than zero"),
+    ] {
+        let out = NamedTempFile::new().unwrap();
+        shogiesa()
+            .args([
+                "label",
+                "--input",
+                input.to_str().unwrap(),
+                "--engine",
+                "unused-engine",
+                "--depths",
+                "4",
+                flag,
+                "0",
+                "--out",
+                out.path().to_str().unwrap(),
+            ])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains(message));
+    }
+}
+
+#[test]
+fn label_rejects_malformed_duplicate_and_multipv_engine_options() {
+    let input = fixture("teacher_calibration_positions.jsonl");
+    let cases: &[(&[&str], &str)] = &[
+        (&["--engine-option", "Hash"], "expected NAME=VALUE"),
+        (&["--engine-option", "=64"], "NAME must not be empty"),
+        (
+            &["--engine-option", "Hash=64", "--engine-option", "hash=128"],
+            "duplicate --engine-option name",
+        ),
+        (
+            &["--engine-option", "MultiPV=2"],
+            "MultiPV must be configured with --multipv",
+        ),
+    ];
+    for (options, message) in cases {
+        let out = NamedTempFile::new().unwrap();
+        let mut command = shogiesa();
+        command.args([
+            "label",
+            "--input",
+            input.to_str().unwrap(),
+            "--engine",
+            "unused-engine",
+            "--depths",
+            "4",
+        ]);
+        command.args(*options);
+        command.args(["--out", out.path().to_str().unwrap()]);
+        command
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains(*message));
+    }
+}
 
 #[test]
 fn label_adds_observations() {
@@ -4501,6 +4644,70 @@ fn filter_phase() {
     assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 2);
 }
 
+#[test]
+fn filter_phase_rejects_unknown_empty_and_duplicate_values() {
+    let f = make_labeled_jsonl(&[position("opening", serde_json::json!([obs("7g7f", 50, 4)]))]);
+    for (phase, message) in [
+        ("opening,typo", "unknown --phase value \"typo\""),
+        ("opening,", "--phase contains an empty value"),
+        ("opening,opening", "--phase values must be distinct"),
+    ] {
+        let out = NamedTempFile::new().unwrap();
+        shogiesa()
+            .args([
+                "filter",
+                "--input",
+                f.path().to_str().unwrap(),
+                "--out",
+                out.path().to_str().unwrap(),
+                "--phase",
+                phase,
+            ])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains(message));
+    }
+}
+
+#[test]
+fn filter_rejects_impossible_quality_ranges() {
+    let f = make_labeled_jsonl(&[position("opening", serde_json::json!([obs("7g7f", 50, 4)]))]);
+    let cases: &[(&[&str], &str)] = &[
+        (
+            &["--eval-min", "100", "--eval-max=-100"],
+            "--eval-min must be less than or equal to --eval-max",
+        ),
+        (
+            &["--max-score-swing-cp=-1"],
+            "--max-score-swing-cp must be non-negative",
+        ),
+        (
+            &["--max-engine-score-swing-cp=-1"],
+            "--max-engine-score-swing-cp must be non-negative",
+        ),
+        (
+            &["--min-depth-reached", "0"],
+            "--min-depth-reached must be greater than zero",
+        ),
+    ];
+    for (options, message) in cases {
+        let out = NamedTempFile::new().unwrap();
+        let mut command = shogiesa();
+        command.args([
+            "filter",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+        ]);
+        command.args(*options);
+        command
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains(*message));
+    }
+}
+
 fn position_with_flags(in_check: bool, has_capture: bool) -> serde_json::Value {
     serde_json::json!({
         "schema_version": 1,
@@ -4805,6 +5012,37 @@ fn calibrate_sweep_and_hold_flag_on_the_same_field_are_mutually_exclusive() {
         .stderr(predicate::str::contains("cannot be used with"));
 }
 
+#[test]
+fn calibrate_rejects_duplicate_and_negative_sweep_values() {
+    let f = make_labeled_jsonl(&[position("opening", serde_json::json!([obs("7g7f", 50, 4)]))]);
+    for (flag, values, message) in [
+        (
+            "--sweep-policy-margin",
+            "0,0",
+            "--sweep-policy-margin values must be distinct",
+        ),
+        (
+            "--sweep-score-swing",
+            "-1,100",
+            "--sweep-score-swing values must be non-negative",
+        ),
+    ] {
+        let out = NamedTempFile::new().unwrap();
+        shogiesa()
+            .args([
+                "calibrate",
+                "--input",
+                f.path().to_str().unwrap(),
+                &format!("{flag}={values}"),
+                "--out",
+                out.path().to_str().unwrap(),
+            ])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains(message));
+    }
+}
+
 // --- audit ---
 
 /// Full-control observation builder for `audit` tests -- unlike `obs`/`obs_mate`/`obs_with_margin`
@@ -4885,6 +5123,45 @@ fn audit_groups_by_engine_not_across_engines() {
     assert_eq!(by_engine["engineA"]["score_error_cp"], 0);
     assert_eq!(by_engine["engineB"]["bestmove_match"], false);
     assert_eq!(by_engine["engineB"]["score_error_cp"], -600);
+}
+
+#[test]
+fn audit_rejects_nonpositive_duplicate_or_nonshallower_depths() {
+    let f = make_labeled_jsonl(&[position(
+        "opening",
+        serde_json::json!([audit_obs("engineA", "7g7f", cp(100), 14, Some(14))]),
+    )]);
+    for (teacher, students, message) in [
+        ("0", "1", "--teacher-depth must be greater than zero"),
+        (
+            "14",
+            "0",
+            "--student-depths values must be greater than zero",
+        ),
+        ("14", "6,6", "--student-depths values must be distinct"),
+        (
+            "14",
+            "6,14",
+            "--student-depths must all be shallower than --teacher-depth 14",
+        ),
+    ] {
+        let out = NamedTempFile::new().unwrap();
+        shogiesa()
+            .args([
+                "audit",
+                "--input",
+                f.path().to_str().unwrap(),
+                "--teacher-depth",
+                teacher,
+                "--student-depths",
+                students,
+                "--out",
+                out.path().to_str().unwrap(),
+            ])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains(message));
+    }
 }
 
 #[test]
@@ -5238,6 +5515,31 @@ fn tune_grid_is_a_full_cartesian_product_of_both_swept_axes() {
     assert_eq!(kept_for("0", "250"), 4); // margin>=0 & swing<=250: all 4 records
     assert_eq!(kept_for("300", "50"), 1); // margin>=300 & swing<=50: only the margin=500,swing=0 record
     assert_eq!(kept_for("300", "250"), 2); // margin>=300 & swing<=250: both margin=500 records
+}
+
+#[test]
+fn tune_rejects_a_student_depth_equal_to_the_teacher() {
+    let f = cartesian_fixture();
+    let out = NamedTempFile::new().unwrap();
+    shogiesa()
+        .args([
+            "tune",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--teacher-depth",
+            "14",
+            "--student-depths",
+            "14",
+            "--sweep-policy-margin",
+            "0,100",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--student-depths must all be shallower than --teacher-depth 14",
+        ));
 }
 
 #[test]
@@ -6326,6 +6628,146 @@ fn split_by_source_creates_one_file_per_game() {
     assert_eq!(manifest["total_positions"], 2);
     assert_eq!(manifest["files"]["game_a.csa.jsonl"], 1);
     assert_eq!(manifest["files"]["game_b.csa.jsonl"], 1);
+}
+
+#[test]
+fn split_by_source_disambiguates_sanitized_file_name_collisions() {
+    let input = make_labeled_jsonl(&[source_record("a/b", 1), source_record("a_b", 2)]);
+    let out_dir = TempDir::new().unwrap();
+
+    shogiesa()
+        .args([
+            "split",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--by-source",
+            "--out-dir",
+            out_dir.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(out_dir.path().join("manifest.json")).unwrap(),
+    )
+    .unwrap();
+    let files = manifest["files"].as_object().unwrap();
+    assert_eq!(files.len(), 2);
+    assert!(files.contains_key("a_b.jsonl"));
+    assert!(
+        files
+            .keys()
+            .any(|name| name.starts_with("a_b--") && name.ends_with(".jsonl"))
+    );
+    assert!(files.values().all(|count| count == 1));
+}
+
+#[test]
+fn split_by_source_rejects_generated_output_aliasing_input() {
+    let dir = TempDir::new().unwrap();
+    let input = dir.path().join("a_b.jsonl");
+    std::fs::write(&input, format!("{}\n", source_record("a/b", 1))).unwrap();
+    let before = std::fs::read(&input).unwrap();
+
+    shogiesa()
+        .args([
+            "split",
+            "--input",
+            input.to_str().unwrap(),
+            "--by-source",
+            "--out-dir",
+            dir.path().to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--input must not be the same path as split output",
+        ));
+
+    assert_eq!(std::fs::read(&input).unwrap(), before);
+}
+
+#[test]
+fn split_by_source_preserves_existing_bundle_when_input_read_fails() {
+    let dir = TempDir::new().unwrap();
+    let input = dir.path().join("input.jsonl");
+    let out_dir = dir.path().join("split");
+    std::fs::create_dir(&out_dir).unwrap();
+
+    let mut input_bytes = format!("{}\n", source_record("game.csa", 1)).into_bytes();
+    input_bytes.extend_from_slice(&[0xff, b'\n']);
+    std::fs::write(&input, input_bytes).unwrap();
+
+    let split_output = out_dir.join("game.csa.jsonl");
+    let manifest = out_dir.join("manifest.json");
+    let old_output = b"OLD SPLIT OUTPUT\n";
+    let old_manifest = b"OLD SPLIT MANIFEST\n";
+    std::fs::write(&split_output, old_output).unwrap();
+    std::fs::write(&manifest, old_manifest).unwrap();
+
+    shogiesa()
+        .args([
+            "split",
+            "--input",
+            input.to_str().unwrap(),
+            "--by-source",
+            "--out-dir",
+            out_dir.to_str().unwrap(),
+        ])
+        .assert()
+        .failure();
+
+    assert_eq!(std::fs::read(&split_output).unwrap(), old_output);
+    assert_eq!(std::fs::read(&manifest).unwrap(), old_manifest);
+    let mut names: Vec<_> = std::fs::read_dir(&out_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            std::ffi::OsString::from("game.csa.jsonl"),
+            std::ffi::OsString::from("manifest.json"),
+        ]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn split_by_source_updates_existing_output_symlink_target() {
+    use std::os::unix::fs::symlink;
+
+    let input = make_labeled_jsonl(&[source_record("game.csa", 1)]);
+    let dir = TempDir::new().unwrap();
+    let out_dir = dir.path().join("split");
+    std::fs::create_dir(&out_dir).unwrap();
+    let target = dir.path().join("target.jsonl");
+    let link = out_dir.join("game.csa.jsonl");
+    std::fs::write(&target, b"OLD TARGET\n").unwrap();
+    symlink(&target, &link).unwrap();
+
+    shogiesa()
+        .args([
+            "split",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--by-source",
+            "--out-dir",
+            out_dir.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    assert!(
+        std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    let record: serde_json::Value =
+        serde_json::from_str(std::fs::read_to_string(&target).unwrap().trim()).unwrap();
+    assert_eq!(record["source"]["path"], "game.csa");
 }
 
 fn source_record(path: &str, ply: u32) -> serde_json::Value {
@@ -7702,6 +8144,7 @@ fn write_hex_fixture(name: &str) -> NamedTempFile {
 
 #[test]
 fn unpack_corrupt_pack_fixtures_fails_without_output_claim() {
+    const PREVIOUS_OUTPUT: &[u8] = b"previous valid output\n";
     for (name, expected_error) in [
         ("pack_bad_magic.hex", "bad magic"),
         ("pack_truncated_header.hex", "failed to fill whole buffer"),
@@ -7718,6 +8161,7 @@ fn unpack_corrupt_pack_fixtures_fails_without_output_claim() {
     ] {
         let corrupt = write_hex_fixture(name);
         let out = NamedTempFile::new().unwrap();
+        std::fs::write(out.path(), PREVIOUS_OUTPUT).unwrap();
         shogiesa()
             .args([
                 "unpack",
@@ -7729,9 +8173,10 @@ fn unpack_corrupt_pack_fixtures_fails_without_output_claim() {
             .assert()
             .failure()
             .stderr(predicate::str::contains(expected_error));
-        assert!(
-            std::fs::metadata(out.path()).unwrap().len() == 0,
-            "corrupt fixture {name} must not produce records"
+        assert_eq!(
+            std::fs::read(out.path()).unwrap(),
+            PREVIOUS_OUTPUT,
+            "corrupt fixture {name} must preserve the previous output"
         );
     }
 }
@@ -9897,6 +10342,108 @@ fn shuffle_empty_input_deterministic() {
     assert_eq!(content, "");
     assert_eq!(content2, "");
     assert_eq!(hash1, hash2);
+}
+
+// --- output path safety ---
+
+#[test]
+fn transform_rejects_input_as_output_without_truncating_it() {
+    let dir = TempDir::new().unwrap();
+    let input = dir.path().join("positions.jsonl");
+    std::fs::copy(fixture("pack_input.jsonl"), &input).unwrap();
+    let before = std::fs::read(&input).unwrap();
+
+    shogiesa()
+        .args([
+            "stability",
+            "--input",
+            input.to_str().unwrap(),
+            "--out",
+            input.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--input must not be the same path as --out",
+        ));
+
+    assert_eq!(std::fs::read(&input).unwrap(), before);
+}
+
+#[test]
+fn transform_rejects_hard_link_output_alias_without_truncating_input() {
+    let dir = TempDir::new().unwrap();
+    let input = dir.path().join("positions.jsonl");
+    let alias = dir.path().join("positions.shgpk");
+    std::fs::copy(fixture("pack_input.jsonl"), &input).unwrap();
+    std::fs::hard_link(&input, &alias).unwrap();
+    let before = std::fs::read(&input).unwrap();
+
+    shogiesa()
+        .args([
+            "pack",
+            "--input",
+            input.to_str().unwrap(),
+            "--out",
+            alias.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--input must not be the same path as --out",
+        ));
+
+    assert_eq!(std::fs::read(&input).unwrap(), before);
+}
+
+#[test]
+fn transform_rejects_colliding_output_and_sidecar_without_overwrite() {
+    let dir = TempDir::new().unwrap();
+    let output = dir.path().join("output.jsonl");
+    std::fs::write(&output, b"keep me\n").unwrap();
+
+    shogiesa()
+        .args([
+            "shuffle",
+            "--input",
+            fixture("pack_input.jsonl").to_str().unwrap(),
+            "--out",
+            output.to_str().unwrap(),
+            "--manifest",
+            output.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--out must not be the same path as --manifest",
+        ));
+
+    assert_eq!(std::fs::read(&output).unwrap(), b"keep me\n");
+}
+
+#[test]
+fn filter_rejects_output_aliasing_preset_without_overwrite() {
+    let preset = NamedTempFile::new().unwrap();
+    std::fs::write(preset.path(), b"keep preset\n").unwrap();
+    let preset_spec = format!("{}:balanced", preset.path().display());
+
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            fixture("pack_input.jsonl").to_str().unwrap(),
+            "--preset",
+            &preset_spec,
+            "--out",
+            preset.path().to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--preset must not be the same path as --out",
+        ));
+
+    assert_eq!(std::fs::read(preset.path()).unwrap(), b"keep preset\n");
 }
 
 // --- help smoke test ---

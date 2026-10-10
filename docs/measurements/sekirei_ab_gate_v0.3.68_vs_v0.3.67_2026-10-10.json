@@ -1,0 +1,153 @@
+{
+  "ci": 1310.5868777772314,
+  "configuration": {
+    "byoyomi_ms": 10,
+    "fv_scale": 24,
+    "games_limit": 4,
+    "hash_mb": 16,
+    "name": "shogiesa-v0368-v0367-smoke",
+    "nodes_limit": null,
+    "options": {
+      "a": [],
+      "b": []
+    },
+    "search_mode": {
+      "a": "Speculative",
+      "b": "Speculative"
+    },
+    "spec_top_n": {
+      "a": 0,
+      "b": 0
+    },
+    "sprt": null,
+    "threads": {
+      "a": 1,
+      "b": 1
+    }
+  },
+  "elo": -88.73949984654253,
+  "evidence": {
+    "command": [
+      "/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/target/release/sekirei-match",
+      "--engine1",
+      "/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/target/release/sekirei",
+      "--engine2",
+      "/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.67/target/release/sekirei",
+      "--games",
+      "4",
+      "--byoyomi",
+      "10",
+      "--positions",
+      "/tmp/shogiesa-roadmap.U5e9H4/sekirei-v0.3.68-worktree/docs/experiments/book_ab_v0.3.67/heldout_openings.sfen",
+      "--json",
+      "/tmp/shogiesa-roadmap.U5e9H4/gate/shogiesa-v0368-v0367-smoke.json",
+      "--output",
+      "/tmp/shogiesa-roadmap.U5e9H4/gate/kifu_shogiesa-v0368-v0367-smoke",
+      "--engine-option1",
+      "EvalFile=/tmp/shogiesa-roadmap.U5e9H4/sekirei-v0.3.68-worktree/weights.bin",
+      "--engine-option1",
+      "FV_SCALE=24",
+      "--engine-option1",
+      "Threads=1",
+      "--engine-option1",
+      "SearchMode=Speculative",
+      "--engine-option1",
+      "SpecTopN=0",
+      "--engine-option1",
+      "Hash=16",
+      "--engine-option2",
+      "EvalFile=/tmp/shogiesa-roadmap.U5e9H4/sekirei-v0.3.68-worktree/weights.bin",
+      "--engine-option2",
+      "FV_SCALE=24",
+      "--engine-option2",
+      "Threads=1",
+      "--engine-option2",
+      "SearchMode=Speculative",
+      "--engine-option2",
+      "SpecTopN=0",
+      "--engine-option2",
+      "Hash=16"
+    ],
+    "complete": true,
+    "elapsed_seconds": 13.553529374999925,
+    "engines": {
+      "a": {
+        "exists": true,
+        "path": "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/target/release/sekirei",
+        "sha256": "81adee42f1e73f555e2819982df4bf5df28b6067231891b9b9f905cefa68f332",
+        "size_bytes": 3595776
+      },
+      "b": {
+        "exists": true,
+        "path": "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.67/target/release/sekirei",
+        "sha256": "e3419c1d310969973418c419d2b0e49fa97bd7fa6d1997a9fda900036c372a73",
+        "size_bytes": 3577776
+      }
+    },
+    "evaluation": {
+      "file": {
+        "exists": true,
+        "path": "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-v0.3.68-worktree/weights.bin",
+        "sha256": "f500c66cf8291292d70ae6fa4df6cb9ccf0a4410a89fb2a5962068c722307cde",
+        "size_bytes": 1305356
+      },
+      "mode": "halfkp"
+    },
+    "finished_at": "2026-10-10T10:23:44.255639+00:00",
+    "match_binary": {
+      "exists": true,
+      "path": "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-0.3.68/target/release/sekirei-match",
+      "sha256": "f530e1fc30537ecae965a98977d61c768a0af0119dfc7f0d923b6d2db63c06cd",
+      "size_bytes": 1376896
+    },
+    "openings": {
+      "exists": true,
+      "path": "/private/tmp/shogiesa-roadmap.U5e9H4/sekirei-v0.3.68-worktree/docs/experiments/book_ab_v0.3.67/heldout_openings.sfen",
+      "position_count": 2,
+      "sha256": "8a81c79c190e1f33b194842fa9e6a2a0367e20e2512d9e22244ccefc3d33730c",
+      "size_bytes": 135
+    },
+    "outputs": {
+      "kifu_prefix": "/private/tmp/shogiesa-roadmap.U5e9H4/gate/kifu_shogiesa-v0368-v0367-smoke",
+      "log": {
+        "exists": true,
+        "path": "/private/tmp/shogiesa-roadmap.U5e9H4/gate/shogiesa-v0368-v0367-smoke.log",
+        "sha256": "e3a021adabb006580e6002383f67e24b5fd3f8226b176ac61d44d8d19346f3b3",
+        "size_bytes": 833
+      },
+      "raw_match_json": {
+        "exists": true,
+        "path": "/private/tmp/shogiesa-roadmap.U5e9H4/gate/shogiesa-v0368-v0367-smoke.json",
+        "sha256": "348a8c621da0acd88f908a4af09548429d467cd9a64f6ac8e57a0709f54d8653",
+        "size_bytes": 1469
+      }
+    },
+    "process_error": null,
+    "process_exit_code": 0,
+    "runner": {
+      "commit": "6b00f0eaea9b3bc1153c25f4b6ddcd33a0cfdbc7",
+      "dirty": false,
+      "version": "0.3.68"
+    },
+    "started_at": "2026-10-10T10:23:30.701887+00:00"
+  },
+  "mode": "selfplay",
+  "result": {
+    "draws": 1,
+    "elo": {
+      "confidence_level": 0.95,
+      "estimate": -88.73949984654253,
+      "lower": -1399.3263776237739,
+      "margin": 1310.5868777772314,
+      "method": "normal_approximation_logistic_elo",
+      "upper": 1221.847377930689
+    },
+    "games_played": 4,
+    "losses": 2,
+    "sprt": null,
+    "wins": 1
+  },
+  "schema_version": "sekirei.ab_gate_result.v1",
+  "status": "completed",
+  "terminal_state": "completed"
+}

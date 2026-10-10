@@ -1,6 +1,6 @@
 # Capability evidence
 
-This file records evidence boundaries for the published `0.11.1` release. It is not a competitor
+This file records evidence boundaries for the `0.11.2` release. It is not a competitor
 ranking.
 
 | Area | Available evidence | Remaining limit |
@@ -10,7 +10,7 @@ ranking.
 | Quality and selection | stability, filter, audit, calibration, mining, balancing, distribution reports | thresholds remain corpus- and teacher-specific |
 | Reproducibility | manifests, hashes, seeds, root-aware split, path/order/worker matrix | the experiment envelope is not shared across repositories |
 | Scale | clean-release 100k and 1M local resource artifacts | 10M and cross-platform measurements are unverified |
-| Sekirei | pinned schema check, 0.3.65/0.3.66 fixed-node delta, four-arm three-seed pilot | no match-transfer or Elo result |
+| Sekirei | pinned 0.3.68 schema check, 0.3.67/0.3.68 teacher calibration, historical fixed-node delta, and a four-game A/B smoke gate | no representative match-transfer or strength result |
 | Ecosystem | Rust crates, JSONL, pack, and USI boundaries | no native GenSfen/rshogi/cshogi/rsshogi/python-shogi adapters |
 
 The measured files are indexed in [`measurements/README.md`](measurements/README.md). Comparisons

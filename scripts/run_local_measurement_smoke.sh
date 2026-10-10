@@ -10,6 +10,15 @@ bash scripts/check_repository_contract.sh
 printf '%s\n' '== formatting =='
 cargo fmt --all -- --check
 
+printf '%s\n' '== teacher calibration analysis =='
+python3 scripts/run_teacher_calibration.py --self-test
+
+printf '%s\n' '== artifact I/O safety =='
+python3 -m unittest discover -s scripts -p 'test_artifact_io.py'
+
+printf '%s\n' '== Sekirei gate artifact contract =='
+python3 -m unittest discover -s scripts -p 'test_report_sekirei_gate.py'
+
 printf '%s\n' '== fixture-backed measurement smoke =='
 for test_name in \
   report_bounded_streaming_matches_pre_refactor_golden_output \

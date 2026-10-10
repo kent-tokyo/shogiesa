@@ -5,6 +5,59 @@ Compare links at the end provide the complete commit history.
 
 ## [Unreleased]
 
+## [0.11.2] — 2026-10-10
+
+### Added
+
+- Added a teacher-calibration harness that runs a deterministic depth/node, MultiPV, and
+  teacher-count matrix, records per-case coverage/bounds/timeouts, and evaluates fixed quality
+  profiles with machine-readable drop reasons. Dirty-tree runs are explicitly marked as
+  candidates and cannot be mistaken for release evidence.
+- Added a fail-closed Sekirei `ab_gate_result.v1` reporter with fixture-backed schema, terminal
+  state, game-count, and provenance validation. It preserves the upstream verdict instead of
+  recomputing one from Elo fields.
+
+### Changed
+
+- Updated the pinned Sekirei compatibility target to v0.3.68 and its released
+  `shogiesa-core` 0.11.1 contract. New version-delta and learning-ablation runs default to the
+  v0.3.67/v0.3.68 pair; historical 0.3.65/v0.3.66 artifacts remain unchanged.
+
+### Fixed
+
+- `label` now rejects malformed, duplicate, empty, and non-positive depth/node limits instead of
+  silently dropping or repeating parts of the requested search matrix. Zero timeouts, jobs, and
+  MultiPV values are also rejected.
+- `label --engine-option` now fails on malformed or duplicate names and requires the dedicated
+  `--multipv` flag for MultiPV, keeping engine options and observation/cache identity aligned.
+- `filter`, `calibrate`, and `tune` now reject unknown, empty, or duplicate phase names and
+  impossible quality ranges instead of silently changing or emptying the selected dataset.
+- `audit` and `tune` now require positive, distinct student depths that are strictly shallower
+  than the teacher depth; calibration sweeps reject duplicate values and negative score swings.
+- File-producing CLI commands now reject input/output aliases and colliding sidecars before
+  opening any output. Relative aliases, symlinks, and hard links can no longer truncate a source
+  dataset or replace a completed output with its manifest.
+- `split --by-source` now disambiguates source paths that sanitize to the same file name and
+  rejects dynamically generated outputs that alias the input or reserved manifest path.
+- Recipe planning now rejects JSON reports or declared stage outputs that alias the recipe file,
+  including aliases reached through filesystem links.
+- Dataset transforms, reports, manifests, and pack conversion now write through same-directory
+  temporary files and replace their destinations only after a successful flush. Failed commands
+  preserve previous outputs; `split --by-source` stages and validates its complete file/manifest
+  bundle before a backup-backed commit. Resumable `label` output remains intentionally
+  incremental.
+- Teacher calibration now validates the complete input before sampling, rejects any pre-labeled
+  source records, reports concise failures, and writes the final artifact atomically. An optional
+  strict preflight verifies that each teacher acknowledges the declared NNUE weight load.
+- Shell validation no longer stops at a malformed ShellCheck directive, and release readiness now
+  exits immediately if it cannot enter the repository root.
+- Measurement artifacts now use shared same-directory atomic replacement and reject aliases with
+  their corpus, shogiesa binary, or sibling output, including symlink and hard-link aliases.
+- The Sekirei compatibility check now rejects missing option values and canonical-fixture output
+  collisions, supports Git worktree checkouts, and publishes JSON artifacts atomically without
+  replacing an existing output symlink. It can validate an immutable shogiesa tag independently
+  of a dirty development checkout.
+
 ## [0.11.1] — 2026-10-10
 
 - `validate --strict` now rejects valid JSON that is not a valid typed `PositionRecord`, including
@@ -217,7 +270,8 @@ Compare links at the end provide the complete commit history.
 - CSA extraction, USI labeling, validation/reporting, shared domain types, CI, fixtures, and dual
   MIT/Apache-2.0 licensing.
 
-[Unreleased]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.1...HEAD
+[Unreleased]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.2...HEAD
+[0.11.2]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/kent-tokyo/shogiesa/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/kent-tokyo/shogiesa/compare/v0.10.0...v0.10.1

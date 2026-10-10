@@ -17,6 +17,7 @@ from pathlib import Path
 
 sys.dont_write_bytecode = True
 
+from artifact_io import atomic_write_json, validate_path_roles
 from run_sekirei_version_delta import archive_ref, jsonl_count, sha256_file, stage_corpus
 
 
@@ -109,8 +110,8 @@ def main() -> int:
     parser.add_argument("--sekirei-dir", type=Path, required=True)
     parser.add_argument("--corpus", type=Path, required=True)
     parser.add_argument("--shogiesa", type=Path, default=ROOT / "target/release/shogiesa")
-    parser.add_argument("--baseline-ref", default="v0.3.65")
-    parser.add_argument("--candidate-ref", default="v0.3.66")
+    parser.add_argument("--baseline-ref", default="v0.3.67")
+    parser.add_argument("--candidate-ref", default="v0.3.68")
     parser.add_argument("--max-games", type=int, default=24)
     parser.add_argument("--positions", type=int, default=512)
     parser.add_argument("--arm-size", type=int, default=64)
@@ -131,6 +132,13 @@ def main() -> int:
         parser.error(f"not a Sekirei git repository: {sekirei_dir}")
     if not corpus.exists() or not shogiesa.is_file():
         parser.error("corpus and release shogiesa binary must exist")
+    try:
+        validate_path_roles(
+            [("--corpus", corpus), ("--shogiesa", shogiesa)],
+            [("--out", args.out)],
+        )
+    except ValueError as error:
+        parser.error(str(error))
     dirty = subprocess.run(
         ["git", "-C", str(ROOT), "status", "--porcelain"],
         check=True,
@@ -465,8 +473,7 @@ def main() -> int:
         },
         "preparation_steps": steps,
     }
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(artifact, indent=2) + "\n", encoding="utf-8")
+    atomic_write_json(args.out, artifact)
     print(json.dumps(summary, indent=2))
     print(f"artifact: {args.out}")
     if temporary is not None:

@@ -2,11 +2,15 @@
 .claude/
 tasks/
 ROADMAP.md
+__pycache__/
+*.py[cod]
 
 # generated datasets (extract/label/filter output)
 *.jsonl
 !docs/measurements/sekirei_delta_*_mined.jsonl
+!docs/measurements/teacher_calibration_corpus_*.jsonl
 !tests/fixtures/broken.jsonl
+!tests/fixtures/teacher_calibration_positions.jsonl
 !crates/shogiesa-core/tests/fixtures/schema_contract_v1.jsonl
 !crates/shogiesa-core/tests/fixtures/schema_contract_v11.jsonl
 

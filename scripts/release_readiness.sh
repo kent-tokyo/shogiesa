@@ -4,7 +4,7 @@ set -u -o pipefail
 # Run release checks without converting an unavailable check into a pass. The final exit status is
 # non-zero when any check fails, while the full report remains visible for release triage.
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$ROOT_DIR"
+cd "$ROOT_DIR" || exit 1
 
 failed=0
 run_check() {

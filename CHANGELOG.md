@@ -39,6 +39,8 @@ Compare links at the end provide the complete commit history.
   dataset or replace a completed output with its manifest.
 - `split --by-source` now disambiguates source paths that sanitize to the same file name and
   rejects dynamically generated outputs that alias the input or reserved manifest path.
+- `split --by-source` now opens staged bundle files with the writable handle required by Windows
+  before calling `sync_all`, preserving the transactional commit path across supported systems.
 - Recipe planning now rejects JSON reports or declared stage outputs that alias the recipe file,
   including aliases reached through filesystem links.
 - Dataset transforms, reports, manifests, and pack conversion now write through same-directory

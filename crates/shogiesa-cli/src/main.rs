@@ -3793,7 +3793,13 @@ where
             prepared_temp = Some(temp);
             path
         } else {
-            File::open(staged)
+            // Windows requires a writable handle for `sync_all`/`FlushFileBuffers` even when
+            // the file contents are already complete. Opening read-only made bundle commits
+            // fail during preparation before rollback behavior could run.
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(staged)
                 .with_context(|| format!("cannot open staged split output {staged:?}"))?
                 .sync_all()
                 .with_context(|| format!("cannot sync staged split output {staged:?}"))?;

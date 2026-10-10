@@ -5,6 +5,13 @@ Compare links at the end provide the complete commit history.
 
 ## [Unreleased]
 
+### Added
+
+- Run manifests now emit `manifest_schema_version: 1`, independently from the
+  position-record and pack versions. The compatibility policy and canonical
+  label-manifest fixture let downstream consumers accept additive fields while
+  failing closed on unknown breaking versions.
+
 ### Fixed
 
 - The lineprior dogfood report now reads the real `topk_hit_rate` and

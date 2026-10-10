@@ -4190,8 +4190,14 @@ fn cmd_split_train_valid_test(args: SplitArgs) -> Result<()> {
 /// `fingerprint_algorithm` records which algorithm produced `input_hash`, so a manifest from
 /// before this field existed (and thus hashed with the old, toolchain-unstable `DefaultHasher`)
 /// stays distinguishable from one produced after, rather than the two silently looking comparable.
+const RUN_MANIFEST_SCHEMA_VERSION: u32 = 1;
+
 #[derive(serde::Serialize)]
 struct RunManifest {
+    /// Version of this manifest object, independent from the PositionRecord schema below.
+    /// Additive optional fields remain compatible within one version; breaking shape or meaning
+    /// changes require this value to increase.
+    manifest_schema_version: u32,
     shogiesa_version: &'static str,
     git_sha: &'static str,
     schema_version: u32,
@@ -4388,6 +4394,7 @@ struct RunManifest {
 impl RunManifest {
     fn new(command: &'static str, input_path: &Path) -> Self {
         Self {
+            manifest_schema_version: RUN_MANIFEST_SCHEMA_VERSION,
             shogiesa_version: env!("CARGO_PKG_VERSION"),
             git_sha: env!("SHOGIESA_GIT_SHA"),
             schema_version: SCHEMA_VERSION,

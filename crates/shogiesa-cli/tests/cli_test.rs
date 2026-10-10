@@ -2053,6 +2053,7 @@ fn label_manifest_records_engine_and_depths() {
 
     let manifest: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(manifest_path.path()).unwrap()).unwrap();
+    assert_eq!(manifest["manifest_schema_version"], 1);
     assert_eq!(manifest["command"], "label");
     assert_eq!(manifest["engine_name"], "FakeUsiEngine");
     assert_eq!(manifest["depths"], serde_json::json!([4, 6]));
@@ -8300,6 +8301,7 @@ fn manifest_common_keys_present_across_commands() {
     // (filter_config, engine_name, ...), and score_bound_distribution/drop_reasons are omitted
     // entirely when empty (no MultiPV candidates / no drops), so neither belongs here.
     let common_keys = [
+        "manifest_schema_version",
         "shogiesa_version",
         "git_sha",
         "schema_version",
@@ -8419,6 +8421,7 @@ fn manifest_common_keys_present_across_commands() {
                 "{command} manifest missing common key {key:?}: {manifest}"
             );
         }
+        assert_eq!(manifest["manifest_schema_version"], 1);
     }
 }
 

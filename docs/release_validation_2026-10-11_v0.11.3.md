@@ -14,11 +14,11 @@ representative-corpus performance, training generalization, or engine-strength i
 | dependency audit | PASS | `cargo audit` scanned 157 locked dependencies against 1,296 advisories |
 | shell checks | PASS | ShellCheck and dogfood fixture-backed integration tests |
 | package verification | PASS | `cargo package --workspace --locked` |
-| GitHub CI | PENDING | release commit has not been pushed yet |
-| annotated tag | PENDING | `v0.11.3` will point to the validated release commit |
-| crates.io | PENDING | nine publishable crates must expose `0.11.3` with `yanked = false` |
-| GitHub Release | PENDING | release workflow will create `v0.11.3` |
-| publication workflow | PENDING | workflow dispatch follows the pushed annotated tag |
+| GitHub CI | PASS | [CI run 38083739715](https://github.com/kent-tokyo/shogiesa/actions/runs/38083739715) and [CodeQL run 38083739825](https://github.com/kent-tokyo/shogiesa/actions/runs/38083739825) succeeded for `9cfe29c43c8fb5dfbc6982416c0dc7d0518ff0f4` |
+| annotated tag | PASS | remote `v0.11.3^{}` resolves to `9cfe29c43c8fb5dfbc6982416c0dc7d0518ff0f4` |
+| crates.io | PASS | all nine publishable crates expose `0.11.3` with `yanked = false`; registry checksums were read directly from the version API |
+| GitHub Release | PASS | [shogiesa v0.11.3](https://github.com/kent-tokyo/shogiesa/releases/tag/v0.11.3) is public, non-draft, and non-prerelease |
+| publication workflow | PASS | [Publish release run 38084232520](https://github.com/kent-tokyo/shogiesa/actions/runs/38084232520) packaged and published the tagged source, then created the release |
 
 Version 0.11.3 adds an independent `manifest_schema_version: 1` contract for run sidecars and a
 canonical fixture. It retires the unused shared experiment-envelope draft in favor of

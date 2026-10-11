@@ -1,14 +1,16 @@
 {
   "manifest_schema_version": 1,
-  "shogiesa_version": "0.11.2",
+  "shogiesa_version": "0.11.3",
   "git_sha": "fixture",
   "schema_version": 11,
   "pack_format_version": 11,
   "command": "label",
   "args": ["shogiesa", "label", "--depths", "4,6"],
-  "input_path": "positions.jsonl",
+  "input_path": "label_run_input_v1.jsonl",
   "input_hash": "fixture-blake3",
   "fingerprint_algorithm": "blake3",
+  "dataset_sha256": "06526210863efb1ebd1fe4571e350b40427c3a65ed40d0c7691124eeb522c708",
+  "output_sha256": "2599fe43066ae60195750c5f3b3f00ab770d57b6248092f79a61459176eaef5e",
   "records_read": 1,
   "records_kept": 1,
   "records_dropped": 0,
@@ -29,5 +31,6 @@
   "cache_misses": 2,
   "engine_fingerprint_mode": "content",
   "preserve_order": true,
-  "engine_restarts": 0
+  "engine_restarts": 0,
+  "fixture_note": "retained additive v1 field"
 }

@@ -5,6 +5,19 @@ Compare links at the end provide the complete commit history.
 
 ## [Unreleased]
 
+### Added
+
+- `shogiesa-core::manifest` now exposes the versioned `RunManifestV1` contract and a typed label
+  artifact verifier. The verifier rejects unsupported versions, contradictory search limits,
+  malformed output, digest mismatches, and aggregate-count tampering while retaining additive v1
+  fields.
+
+### Changed
+
+- `label --manifest` now records `output_sha256` as well as `dataset_sha256`; both bind the exact
+  bytes handled by the run without reopening either path. Older v1 manifests without an output
+  digest remain readable and are reported as incomplete provenance.
+
 ## [0.11.3] — 2026-10-11
 
 ### Added

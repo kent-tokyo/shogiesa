@@ -16,8 +16,9 @@ use shogiesa_core::{
     PositionTags, QualityConfig, QualityDecision, SCHEMA_VERSION, Score, ScorePerspective,
     SearchLimitKind, SideToMove, SourceInfo, UsiMove, bestmove_agreement,
     cp_from_black_perspective, effective_bestmove_kind, engine_bestmove_agreement,
-    evaluate_quality, has_special_bestmove, parse_usi_move, phase_from_ply,
-    requested_depth_underreached,
+    evaluate_quality, has_special_bestmove,
+    manifest::RunManifestV1 as RunManifest,
+    parse_usi_move, phase_from_ply, requested_depth_underreached,
     schema::{PositionRecordParseError, parse_json_line},
     score_swing,
     sfen::Sfen,
@@ -2434,6 +2435,81 @@ fn hash_file_sha256(path: &Path) -> Result<String> {
         .collect())
 }
 
+/// Reader that hashes the exact bytes successfully returned to its consumer. Used by `label`
+/// so the manifest cannot describe bytes from a later re-open of the input path.
+struct Sha256Reader<R> {
+    inner: R,
+    hasher: sha2::Sha256,
+}
+
+impl<R> Sha256Reader<R> {
+    fn new(inner: R) -> Self {
+        use sha2::Digest;
+        Self {
+            inner,
+            hasher: sha2::Sha256::new(),
+        }
+    }
+
+    fn digest_hex(self) -> String {
+        use sha2::Digest;
+        self.hasher
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+}
+
+impl<R: Read> Read for Sha256Reader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        use sha2::Digest;
+        let read = self.inner.read(buffer)?;
+        self.hasher.update(&buffer[..read]);
+        Ok(read)
+    }
+}
+
+/// Writer that hashes the exact bytes accepted by its destination. The digest is taken only
+/// after the buffered output is flushed successfully.
+struct Sha256Writer<W> {
+    inner: W,
+    hasher: sha2::Sha256,
+}
+
+impl<W> Sha256Writer<W> {
+    fn new(inner: W) -> Self {
+        use sha2::Digest;
+        Self {
+            inner,
+            hasher: sha2::Sha256::new(),
+        }
+    }
+
+    fn digest_hex(&self) -> String {
+        use sha2::Digest;
+        self.hasher
+            .clone()
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+}
+
+impl<W: Write> Write for Sha256Writer<W> {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        use sha2::Digest;
+        let written = self.inner.write(buffer)?;
+        self.hasher.update(&buffer[..written]);
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
 /// SHA-256 of `--weight-file`'s bytes, for `weight_sha256` -- errors clearly if given a
 /// directory, since the envelope field is defined over one file's bytes.
 fn compute_weight_sha256(path: &Path) -> Result<String> {
@@ -3241,27 +3317,42 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
     // point of streaming in the first place.
     let input_path = args.input.clone();
     let track_input_hash = args.manifest.is_some();
-    let reader_handle = std::thread::spawn(move || -> Result<(u64, usize, u64, String)> {
+    let reader_handle = std::thread::spawn(move || -> Result<(u64, usize, u64, String, String)> {
         let mut input_hasher = blake3::Hasher::new();
         let file =
             File::open(&input_path).with_context(|| format!("cannot open {input_path:?}"))?;
-        let reader = BufReader::new(file);
+        let mut reader = BufReader::new(Sha256Reader::new(file));
         let mut job_id = 0u64;
         let mut skipped = 0usize;
         let mut resumed_count = 0u64;
-        for (i, line) in reader.lines().enumerate() {
-            let line = line.with_context(|| format!("cannot read {input_path:?}"))?;
+        let mut line = String::new();
+        let mut line_number = 0usize;
+        loop {
+            line.clear();
+            if reader
+                .read_line(&mut line)
+                .with_context(|| format!("cannot read {input_path:?}"))?
+                == 0
+            {
+                break;
+            }
+            line_number += 1;
+            // `BufRead::lines` removed both the newline and a preceding CR. Preserve that old
+            // normalized blake3 behavior while the wrapping reader independently hashes the
+            // exact bytes returned from the same open file.
+            let normalized = line.strip_suffix('\n').unwrap_or(&line);
+            let normalized = normalized.strip_suffix('\r').unwrap_or(normalized);
             if track_input_hash {
                 // Hash every line, including blanks, before the empty-line skip below -- this has
                 // to match `hash_file`'s behavior exactly so the same input produces the same
                 // `input_hash` whether `label` or `sample`/`balance`/`pack`/`filter` computed it.
-                input_hasher.update(line.as_bytes());
+                input_hasher.update(normalized.as_bytes());
                 input_hasher.update(b"\n");
             }
-            if line.trim().is_empty() {
+            if normalized.trim().is_empty() {
                 continue;
             }
-            match parse_json_line(&line) {
+            match parse_json_line(normalized) {
                 Ok(mut record) if Sfen::parse(&record.sfen).is_ok() => {
                     if let Some((index, file)) = resume_source.as_mut()
                         && let Some(&offset) = index.get(&merge_alignment_key(&record))
@@ -3294,20 +3385,22 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
                     job_id += 1;
                 }
                 Ok(_) => {
-                    tracing::warn!(line = i + 1, "invalid SFEN, skipping");
+                    tracing::warn!(line = line_number, "invalid SFEN, skipping");
                     skipped += 1;
                 }
                 Err(e) => {
-                    tracing::warn!(line = i + 1, "JSON parse error: {e}");
+                    tracing::warn!(line = line_number, "JSON parse error: {e}");
                     skipped += 1;
                 }
             }
         }
+        let dataset_sha256 = reader.into_inner().digest_hex();
         Ok((
             job_id,
             skipped,
             resumed_count,
             input_hasher.finalize().to_hex().to_string(),
+            dataset_sha256,
         ))
     });
 
@@ -3396,11 +3489,11 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
     // job still buffered behind a slow one if the process is killed before it catches up.
     let out_file =
         File::create(&args.out).with_context(|| format!("cannot create {:?}", args.out))?;
-    let mut out_writer = BufWriter::new(out_file);
+    let mut out_writer = Sha256Writer::new(BufWriter::new(out_file));
     let mut manifest = args
         .manifest
         .as_ref()
-        .map(|_| RunManifest::new("label", &args.input));
+        .map(|_| new_run_manifest("label", &args.input));
     let mut next_id = 0u64;
     let mut pending: BTreeMap<u64, PositionRecord> = BTreeMap::new();
     let mut written = 0usize;
@@ -3409,50 +3502,53 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
     let mut time_ms_sum = 0u64;
     let mut time_ms_count = 0usize;
 
-    let mut write_one =
-        |record: &PositionRecord, manifest: &mut Option<RunManifest>| -> Result<()> {
-            serde_json::to_writer(&mut out_writer, record)?;
-            out_writer.write_all(b"\n")?;
-            // Flush per record (not just once at the very end of the whole run): engine search
-            // time dominates I/O time by orders of magnitude here, so this costs nothing
-            // measurable, but it shrinks the window where a killed process loses writes still
-            // sitting in this BufWriter -- independent of (and much smaller than) the
-            // preserve_order/reorder-buffer loss window below.
-            out_writer.flush()?;
-            if let Some(m) = manifest.as_mut() {
-                accumulate_coverage(m, std::slice::from_ref(record));
-            }
-            for obs in &record.observations {
-                if let Some(t) = obs.time_ms {
-                    time_ms_sum += t;
-                    time_ms_count += 1;
+    {
+        let mut write_one =
+            |record: &PositionRecord, manifest: &mut Option<RunManifest>| -> Result<()> {
+                serde_json::to_writer(&mut out_writer, record)?;
+                out_writer.write_all(b"\n")?;
+                // Flush per record (not just once at the very end of the whole run): engine search
+                // time dominates I/O time by orders of magnitude here, so this costs nothing
+                // measurable, but it shrinks the window where a killed process loses writes still
+                // sitting in this BufWriter -- independent of (and much smaller than) the
+                // preserve_order/reorder-buffer loss window below.
+                out_writer.flush()?;
+                if let Some(m) = manifest.as_mut() {
+                    accumulate_coverage(m, std::slice::from_ref(record));
                 }
-            }
-            // Release the permit only now that the record is durably written -- this is the other
-            // half of the dispatch window: it caps how far ahead of the writer the pipeline can get.
-            let _ = writer_permit_tx.send(());
-            Ok(())
-        };
+                for obs in &record.observations {
+                    if let Some(t) = obs.time_ms {
+                        time_ms_sum += t;
+                        time_ms_count += 1;
+                    }
+                }
+                // Release the permit only now that the record is durably written -- this is the other
+                // half of the dispatch window: it caps how far ahead of the writer the pipeline can get.
+                let _ = writer_permit_tx.send(());
+                Ok(())
+            };
 
-    for job in result_rx {
-        if args.preserve_order {
-            for record in reorder_push(&mut pending, &mut next_id, job.id, job.record) {
-                write_one(&record, &mut manifest)?;
+        for job in result_rx {
+            if args.preserve_order {
+                for record in reorder_push(&mut pending, &mut next_id, job.id, job.record) {
+                    write_one(&record, &mut manifest)?;
+                    written += 1;
+                }
+                // Guards the permit scheme's whole reason for existing: without it, `pending`
+                // could in principle grow past `queue_depth` and this bounded pipeline would
+                // silently revert to the unbounded memory use it replaced.
+                debug_assert!(pending.len() <= queue_depth);
+            } else {
+                write_one(&job.record, &mut manifest)?;
                 written += 1;
             }
-            // Guards the permit scheme's whole reason for existing: without it, `pending` could
-            // in principle grow past `queue_depth` and this bounded pipeline would silently
-            // revert to the unbounded memory use it replaced.
-            debug_assert!(pending.len() <= queue_depth);
-        } else {
-            write_one(&job.record, &mut manifest)?;
-            written += 1;
         }
     }
     out_writer.flush()?;
+    let output_sha256 = out_writer.digest_hex();
     eprintln!();
 
-    let (total, skipped, resumed_count, input_hash) = reader_handle
+    let (total, skipped, resumed_count, input_hash, dataset_sha256) = reader_handle
         .join()
         .map_err(|_| anyhow::anyhow!("label reader thread panicked"))??;
     for handle in worker_handles {
@@ -3527,12 +3623,13 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
             manifest.cache_hits = Some(hits);
             manifest.cache_hit_rate = cache_hit_rate;
             manifest.cache_misses = Some(misses);
-            manifest.engine_fingerprint_mode = Some(engine_fingerprint_mode.as_str());
+            manifest.engine_fingerprint_mode = Some(engine_fingerprint_mode.as_str().to_string());
         }
         // shogiesa-owned provenance fields: dataset_sha256/binary_sha256/weight_sha256/
         // engine_threads/engine_hash_mb are computed here; everything else is opaque
         // orchestrator-supplied passthrough that shogiesa doesn't interpret.
-        manifest.dataset_sha256 = Some(hash_file_sha256(&args.input)?);
+        manifest.dataset_sha256 = Some(dataset_sha256);
+        manifest.output_sha256 = Some(output_sha256);
         manifest.binary_sha256 = compute_binary_sha256(&engine_path);
         manifest.weight_sha256 = weight_sha256;
         manifest.engine_threads = engine_option_u32(&engine_options, "Threads");
@@ -4180,287 +4277,16 @@ fn cmd_split_train_valid_test(args: SplitArgs) -> Result<()> {
     Ok(())
 }
 
-/// Opt-in run provenance, written when `--manifest PATH` is given. `input_hash` is a blake3
-/// digest (same mechanism used everywhere else a persistent fingerprint is needed — see
-/// `hash_parts`) — this is a "did the input change between runs" marker, not an integrity check
-/// against untrusted input, but it still needs to be stable across Rust toolchain upgrades, which
-/// is exactly what blake3 (and not `std::collections::hash_map::DefaultHasher`) guarantees.
-/// `fingerprint_algorithm` records which algorithm produced `input_hash`, so a manifest from
-/// before this field existed (and thus hashed with the old, toolchain-unstable `DefaultHasher`)
-/// stays distinguishable from one produced after, rather than the two silently looking comparable.
-const RUN_MANIFEST_SCHEMA_VERSION: u32 = 1;
-
-#[derive(serde::Serialize)]
-struct RunManifest {
-    /// Version of this manifest object, independent from the PositionRecord schema below.
-    /// Additive optional fields remain compatible within one version; breaking shape or meaning
-    /// changes require this value to increase.
-    manifest_schema_version: u32,
-    shogiesa_version: &'static str,
-    git_sha: &'static str,
-    schema_version: u32,
-    pack_format_version: u16,
-    command: &'static str,
-    args: Vec<String>,
-    input_path: String,
-    input_hash: String,
-    fingerprint_algorithm: &'static str,
-    records_read: usize,
-    records_kept: usize,
-    /// Meaning is command-specific: parse-skips for `pack`, not-selected for `sample`/
-    /// `balance`, gate-failures for `filter`. Disambiguate using `command`.
-    records_dropped: usize,
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    drop_reasons: BTreeMap<&'static str, usize>,
-    labeled_records: usize,
-    unlabeled_records: usize,
-    observations_with_candidates: usize,
-    observations_total: usize,
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    score_bound_distribution: BTreeMap<&'static str, usize>,
-    /// How many observations recorded a `requested_depth`, and how many of those fell short of
-    /// it (excluding mate) — surfaces "how often does this engine/depth config under-deliver"
-    /// across a whole run, not just per-record.
-    requested_depth_total: usize,
-    requested_depth_underreach: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    filter_config: Option<QualityConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    engine_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    depths: Option<Vec<u32>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    multipv: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    engine_options: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    jobs: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    engine_launch_failures: Option<usize>,
-    /// How many observations were salvaged from a `--timeout-ms` expiry (degraded but real,
-    /// `depth < requested_depth`) rather than lost entirely. Distinct from
-    /// `requested_depth_underreach`, which also counts an engine's own early stop (e.g. a forced
-    /// mate) -- fast and trustworthy, unlike a forced timeout. A maintainer tuning `timeout_ms`/
-    /// depth needs to tell these apart.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    timeout_salvaged_count: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cache_hits: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cache_misses: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    engine_fingerprint_mode: Option<&'static str>,
-    /// `label`-only throughput diagnostics -- bounded pipeline changes (worker count, cache
-    /// usage, ordering) can't be judged without measuring their actual effect, so this round
-    /// surfaces the measurements instead of guessing. `jobs` above already *is* the worker count
-    /// -- no separate field for that, to avoid two fields that could drift out of sync.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    records_per_sec: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cache_hit_rate: Option<f64>,
-    /// Average `Observation.time_ms` across every observation in each written record. Under
-    /// `--skip-existing`/`--replace-existing`/the default `Append` policy, a record re-labeled on
-    /// top of prior observations includes THOSE observations' `time_ms` too, not only this
-    /// invocation's own engine calls -- getting that fully precise would mean threading "which
-    /// observations this call actually added" back through `Job`/the worker/writer channels, not
-    /// justified for a diagnostic average. Use `records_per_sec` to judge this run's actual
-    /// throughput.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    average_engine_time_ms: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    preserve_order: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    resume_from: Option<PathBuf>,
-    /// How many records had observations merged in from `resume_from`. `None` (not just `0`)
-    /// when `--resume-from` wasn't passed at all, so a manifest reader can distinguish "resume
-    /// wasn't requested" from "resume was requested but matched nothing."
-    #[serde(skip_serializing_if = "Option::is_none")]
-    resumed_count: Option<u64>,
-    /// `stratify`-only: the largest fraction any single source root
-    /// (`shogiesa_stratify::group_key`) contributed to any one output bucket's kept records,
-    /// considering only buckets with >=2 kept records (a singleton bucket is trivially "100% one
-    /// root" and would otherwise always pin this at 1.0).
-    /// `None` when no output bucket had >=2 kept records.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_root_share_in_any_bucket: Option<f64>,
-    /// `stratify`-only: count of distinct source roots contributing >=1 kept record.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    distinct_roots_kept: Option<usize>,
-    /// `shuffle`-only: blake3 over every output position's `sample_id` in final order. Lets a
-    /// later run be checked against this one -- byte-for-byte identical order, not just "used the
-    /// same seed" -- even after a code change to the shuffle algorithm itself, which same-seed
-    /// reproducibility alone can't detect.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    order_hash: Option<String>,
-    /// Opaque tag passed through from `--experiment-id`, for correlating this run with an
-    /// external pipeline run. shogiesa doesn't interpret or validate it.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    experiment_id: Option<String>,
-    /// `label`-only, mutually exclusive with `depths` above: the `--nodes` list, when
-    /// node-limited.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    nodes: Option<Vec<u64>>,
-    // -- shogiesa-owned provenance. Most values are opaque orchestrator-supplied passthroughs;
-    // dataset_sha256/binary_sha256/weight_sha256 are computed from files this run already opens.
-    // Sibling tools keep their own versioned contracts and may join these artifacts by hash. --
-    #[serde(skip_serializing_if = "Option::is_none")]
-    candidate_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    baseline_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    lineage_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    dataset_sha256: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    split_sha256: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    teacher_manifest_sha256: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    binary_sha256: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    weight_sha256: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    init_seed: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    split_seed: Option<u64>,
-    /// `shuffle`-only: the `--seed` this permutation used, surfaced at the manifest level too
-    /// (already present per-output-position via `OrderManifestLine.shuffle_seed`) -- for a
-    /// consumer that only reads `--manifest`, not `--order-manifest`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    shuffle_seed: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    validity: Option<String>,
-    // -- `label`-only engine config, constant across a run. Not duplicated per-Observation the
-    // way engine_options_hash/weight_sha256 are: precedent is `multipv` above, also a
-    // fixed-for-the-run engine-config knob that has never been duplicated per record. --
-    #[serde(skip_serializing_if = "Option::is_none")]
-    engine_threads: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    engine_hash_mb: Option<u32>,
-    /// `label`-only: count of `--usi-strict` protocol violations detected this run (unsolicited/
-    /// duplicate/delayed bestmove, illegal bestmove). `None` (not `0`) when `--usi-strict` wasn't
-    /// given, so a manifest reader can distinguish "not checked" from "checked, found none."
-    #[serde(skip_serializing_if = "Option::is_none")]
-    protocol_violations_count: Option<usize>,
-    /// `label`-only: count of engine relaunches this run. Always populated when `--manifest` is
-    /// given (like `timeout_salvaged_count` above), not gated behind any of --usi-strict/
-    /// --restart-on-protocol-error/--restart-engine-every -- a dead engine process (`Io`) is
-    /// unconditionally relaunched regardless of flags, so this can be nonzero even with none of
-    /// them set.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    engine_restarts: Option<usize>,
-    // -- `make-gate-openings`-only, following the struct's existing convention of per-command
-    // optional fields coexisting. --
-    /// Echoes `--seed`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    selection_seed: Option<u64>,
-    /// Count surviving every filter (sfen validity, ply range, unplayable, dedup) *before*
-    /// `--count`'s quota trims it -- distinct from `records_kept`, which is post-quota. Read from
-    /// `group_aware_fill`'s own `quota_candidates`, not `filtered.len()` (which isn't available
-    /// here -- `filtered` is moved into the fill call).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    canonical_valid_count: Option<usize>,
-    /// SHA-256 of `--out`'s written bytes.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    output_sha256: Option<String>,
-    /// Source-root distribution over records read by diagnostic commands.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    source_root_distribution: Option<BTreeMap<String, usize>>,
-    /// Engine and weight provenance distributions over observations read by diagnostic commands.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    engine_distribution: Option<BTreeMap<String, usize>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    weight_distribution: Option<BTreeMap<String, usize>>,
-    /// Source-root (`shogiesa_stratify::group_key`) distribution over the final kept suite.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    source_distribution: Option<BTreeMap<String, usize>>,
-    /// Game-phase distribution over the final kept suite.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    phase_distribution: Option<BTreeMap<GamePhase, usize>>,
-    /// `total_material` distribution over the final kept suite. Unlike `source_distribution`/
-    /// `phase_distribution`, this can sum to less than `records_kept`: a record whose SFEN
-    /// `Board::from_sfen` rejects contributes nothing here (near-unreachable in practice, since
-    /// every kept record already passed `Sfen::parse`, which `from_sfen` itself also calls).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    material_distribution: Option<BTreeMap<u32, usize>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    selection_algorithm_version: Option<&'static str>,
-}
-
-impl RunManifest {
-    fn new(command: &'static str, input_path: &Path) -> Self {
-        Self {
-            manifest_schema_version: RUN_MANIFEST_SCHEMA_VERSION,
-            shogiesa_version: env!("CARGO_PKG_VERSION"),
-            git_sha: env!("SHOGIESA_GIT_SHA"),
-            schema_version: SCHEMA_VERSION,
-            pack_format_version: pack::FORMAT_VERSION,
-            command,
-            args: std::env::args().collect(),
-            input_path: input_path.display().to_string(),
-            input_hash: String::new(),
-            fingerprint_algorithm: "blake3",
-            records_read: 0,
-            records_kept: 0,
-            records_dropped: 0,
-            drop_reasons: BTreeMap::new(),
-            labeled_records: 0,
-            unlabeled_records: 0,
-            observations_with_candidates: 0,
-            observations_total: 0,
-            score_bound_distribution: BTreeMap::new(),
-            requested_depth_total: 0,
-            requested_depth_underreach: 0,
-            filter_config: None,
-            engine_name: None,
-            depths: None,
-            multipv: None,
-            engine_options: None,
-            jobs: None,
-            engine_launch_failures: None,
-            timeout_salvaged_count: None,
-            cache_hits: None,
-            cache_misses: None,
-            engine_fingerprint_mode: None,
-            records_per_sec: None,
-            cache_hit_rate: None,
-            average_engine_time_ms: None,
-            preserve_order: None,
-            resume_from: None,
-            resumed_count: None,
-            max_root_share_in_any_bucket: None,
-            distinct_roots_kept: None,
-            order_hash: None,
-            experiment_id: None,
-            nodes: None,
-            candidate_id: None,
-            baseline_id: None,
-            lineage_id: None,
-            dataset_sha256: None,
-            split_sha256: None,
-            teacher_manifest_sha256: None,
-            binary_sha256: None,
-            weight_sha256: None,
-            init_seed: None,
-            split_seed: None,
-            shuffle_seed: None,
-            validity: None,
-            engine_threads: None,
-            engine_hash_mb: None,
-            protocol_violations_count: None,
-            engine_restarts: None,
-            selection_seed: None,
-            canonical_valid_count: None,
-            output_sha256: None,
-            source_root_distribution: None,
-            engine_distribution: None,
-            weight_distribution: None,
-            source_distribution: None,
-            phase_distribution: None,
-            material_distribution: None,
-            selection_algorithm_version: None,
-        }
-    }
+/// Construct the public, versioned core manifest with this binary's build metadata.
+fn new_run_manifest(command: &str, input_path: &Path) -> RunManifest {
+    RunManifest::new(
+        command,
+        input_path,
+        pack::FORMAT_VERSION,
+        env!("CARGO_PKG_VERSION"),
+        env!("SHOGIESA_GIT_SHA"),
+        std::env::args().collect(),
+    )
 }
 
 fn record_manifest_provenance(
@@ -4611,7 +4437,10 @@ fn accumulate_coverage(manifest: &mut RunManifest, records: &[PositionRecord]) {
     manifest.observations_with_candidates += with_candidates;
     manifest.observations_total += total;
     for (key, count) in distribution {
-        *manifest.score_bound_distribution.entry(key).or_default() += count;
+        *manifest
+            .score_bound_distribution
+            .entry(key.to_string())
+            .or_default() += count;
     }
     let (requested_total, underreach) = requested_depth_stats(records);
     manifest.requested_depth_total += requested_total;
@@ -4665,7 +4494,7 @@ fn cmd_sample(args: SampleArgs) -> Result<()> {
         args.out
     );
     if let Some(manifest_path) = &args.manifest {
-        let mut manifest = RunManifest::new("sample", &args.input);
+        let mut manifest = new_run_manifest("sample", &args.input);
         manifest.input_hash = hash_file(&args.input)?;
         manifest.records_read = total;
         manifest.records_kept = kept.len();
@@ -4807,7 +4636,7 @@ fn cmd_shuffle(args: ShuffleArgs) -> Result<()> {
     );
 
     if let Some(manifest_path) = &args.manifest {
-        let mut manifest = RunManifest::new("shuffle", &args.input);
+        let mut manifest = new_run_manifest("shuffle", &args.input);
         manifest.input_hash = hash_file(&args.input)?;
         manifest.records_read = total;
         manifest.records_kept = total;
@@ -5018,7 +4847,7 @@ fn cmd_balance(args: BalanceArgs) -> Result<()> {
         args.out
     );
     if let Some(manifest_path) = &args.manifest {
-        let mut manifest = RunManifest::new("balance", &args.input);
+        let mut manifest = new_run_manifest("balance", &args.input);
         manifest.input_hash = hash_file(&args.input)?;
         manifest.records_read = total;
         manifest.records_kept = kept.len();
@@ -5168,15 +4997,18 @@ fn cmd_stratify_apply(args: &StratifyArgs, quota_path: &Path, out: &Path) -> Res
     eprintln!("  over_quota               {over_quota}");
 
     if let Some(manifest_path) = &args.manifest {
-        let mut manifest = RunManifest::new("stratify", &args.input);
+        let mut manifest = new_run_manifest("stratify", &args.input);
         manifest.input_hash = hash_file(&args.input)?;
         manifest.records_read = result.total;
         manifest.records_kept = result.kept.len();
         manifest.records_dropped = result.total - result.kept.len();
+        manifest.drop_reasons.insert(
+            "bucket_not_in_quota".to_string(),
+            result.bucket_not_in_quota,
+        );
         manifest
             .drop_reasons
-            .insert("bucket_not_in_quota", result.bucket_not_in_quota);
-        manifest.drop_reasons.insert("over_quota", over_quota);
+            .insert("over_quota".to_string(), over_quota);
         accumulate_coverage(&mut manifest, &result.kept);
         manifest.max_root_share_in_any_bucket = result.max_group_share_in_any_bucket;
         manifest.distinct_roots_kept = Some(result.distinct_groups_kept);
@@ -5483,19 +5315,29 @@ fn cmd_make_gate_openings(args: MakeGateOpeningsArgs) -> Result<()> {
     eprintln!("  over_count               {over_count}");
 
     if let Some(manifest_path) = &args.manifest {
-        let mut manifest = RunManifest::new("make-gate-openings", &args.input);
+        let mut manifest = new_run_manifest("make-gate-openings", &args.input);
         manifest.input_hash = hash_file(&args.input)?;
         manifest.records_read = total;
         manifest.records_kept = kept.len();
         manifest.records_dropped = total - kept.len();
-        manifest.drop_reasons.insert("invalid_sfen", invalid_sfen);
-        manifest.drop_reasons.insert("below_min_ply", below_min_ply);
-        manifest.drop_reasons.insert("above_max_ply", above_max_ply);
-        manifest.drop_reasons.insert("unplayable", unplayable);
         manifest
             .drop_reasons
-            .insert("duplicate_sfen", duplicate_sfen);
-        manifest.drop_reasons.insert("over_count", over_count);
+            .insert("invalid_sfen".to_string(), invalid_sfen);
+        manifest
+            .drop_reasons
+            .insert("below_min_ply".to_string(), below_min_ply);
+        manifest
+            .drop_reasons
+            .insert("above_max_ply".to_string(), above_max_ply);
+        manifest
+            .drop_reasons
+            .insert("unplayable".to_string(), unplayable);
+        manifest
+            .drop_reasons
+            .insert("duplicate_sfen".to_string(), duplicate_sfen);
+        manifest
+            .drop_reasons
+            .insert("over_count".to_string(), over_count);
         accumulate_coverage(&mut manifest, &kept);
 
         // Reinterpretation of `stratify`'s per-bucket root-share stat for a single universal
@@ -5509,7 +5351,8 @@ fn cmd_make_gate_openings(args: MakeGateOpeningsArgs) -> Result<()> {
         // `quota_candidates`, not `filtered.len()` -- `filtered` was already moved into
         // `group_aware_fill` above.
         manifest.canonical_valid_count = Some(result.quota_candidates);
-        manifest.selection_algorithm_version = Some(GATE_OPENING_SELECTION_ALGORITHM_VERSION);
+        manifest.selection_algorithm_version =
+            Some(GATE_OPENING_SELECTION_ALGORITHM_VERSION.to_string());
         manifest.output_sha256 = Some(hash_file_sha256(&args.out)?);
 
         let mut source_distribution: BTreeMap<String, usize> = BTreeMap::new();
@@ -6061,7 +5904,7 @@ fn cmd_pack(args: PackArgs) -> Result<()> {
     let mut manifest = args
         .manifest
         .is_some()
-        .then(|| RunManifest::new("pack", &args.input));
+        .then(|| new_run_manifest("pack", &args.input));
     let mut input_hasher = blake3::Hasher::new();
     for (i, line) in reader.lines().enumerate() {
         let line = line?;
@@ -6254,7 +6097,7 @@ fn cmd_filter(args: FilterArgs) -> Result<()> {
     let mut manifest = args
         .manifest
         .is_some()
-        .then(|| RunManifest::new("filter", &args.input));
+        .then(|| new_run_manifest("filter", &args.input));
     let mut input_hasher = blake3::Hasher::new();
 
     for (i, line) in reader.lines().enumerate() {
@@ -6325,7 +6168,10 @@ fn cmd_filter(args: FilterArgs) -> Result<()> {
         m.records_read = total;
         m.records_kept = passed;
         m.records_dropped = skipped;
-        m.drop_reasons = drop_reasons;
+        m.drop_reasons = drop_reasons
+            .into_iter()
+            .map(|(reason, count)| (reason.to_string(), count))
+            .collect();
         m.filter_config = Some(config);
         write_manifest(manifest_path, &m)?;
     }
@@ -6640,7 +6486,7 @@ fn cmd_calibrate(args: CalibrateArgs) -> Result<()> {
     writer.commit()?;
 
     if let Some(manifest_path) = &args.manifest {
-        let mut manifest = RunManifest::new("calibrate", &args.input);
+        let mut manifest = new_run_manifest("calibrate", &args.input);
         manifest.input_hash = hash_file(&args.input)?;
         manifest.records_read = total;
         manifest.records_kept = total;
@@ -6928,7 +6774,7 @@ fn cmd_audit(args: AuditArgs) -> Result<()> {
 
     writer.commit()?;
     if let Some(manifest_path) = &args.manifest {
-        let mut manifest = RunManifest::new("audit", &args.input);
+        let mut manifest = new_run_manifest("audit", &args.input);
         manifest.input_hash = hash_file(&args.input)?;
         manifest.records_read = total_records;
         manifest.records_kept = overall.pairs;
@@ -7557,7 +7403,7 @@ fn cmd_tune(args: TuneArgs) -> Result<()> {
     }
 
     if let Some(manifest_path) = &args.manifest {
-        let mut manifest = RunManifest::new("tune", &args.input);
+        let mut manifest = new_run_manifest("tune", &args.input);
         manifest.input_hash = hash_file(&args.input)?;
         manifest.records_read = total;
         manifest.records_kept = total;

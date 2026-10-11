@@ -61,6 +61,8 @@ and generated manifests. Missing identities remain `unknown`.
 Run manifests have their own `manifest_schema_version`, independent from the
 position-record `schema_version`; see
 [`docs/design/run_manifest_compatibility.md`](docs/design/run_manifest_compatibility.md).
+Rust consumers can parse `RunManifestV1` and verify a label input/output pair
+through `shogiesa_core::manifest` without copying the manifest layout.
 
 ## Commands
 

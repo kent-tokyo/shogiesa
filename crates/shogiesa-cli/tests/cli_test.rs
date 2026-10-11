@@ -2379,7 +2379,7 @@ fn label_manifest_records_owned_provenance_fields() {
 }
 
 #[test]
-fn label_manifest_records_dataset_sha256_matching_raw_file_hash() {
+fn label_manifest_binds_input_and_output_bytes_and_passes_typed_verifier() {
     let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
     let out = closed_temp_file();
     let manifest_path = closed_temp_file();
@@ -2401,15 +2401,36 @@ fn label_manifest_records_dataset_sha256_matching_raw_file_hash() {
         .success();
 
     use sha2::{Digest, Sha256};
-    let raw_bytes = std::fs::read(f.path()).unwrap();
-    let expected: String = Sha256::digest(&raw_bytes)
+    let input_bytes = std::fs::read(f.path()).unwrap();
+    let expected_input: String = Sha256::digest(&input_bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let output_bytes = std::fs::read(out.path()).unwrap();
+    let expected_output: String = Sha256::digest(&output_bytes)
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
 
     let manifest: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(manifest_path.path()).unwrap()).unwrap();
-    assert_eq!(manifest["dataset_sha256"], expected);
+    assert_eq!(manifest["dataset_sha256"], expected_input);
+    assert_eq!(manifest["output_sha256"], expected_output);
+
+    let typed = shogiesa_core::manifest::parse_run_manifest_v1(
+        std::fs::File::open(manifest_path.path()).unwrap(),
+    )
+    .unwrap();
+    let verified = shogiesa_core::manifest::verify_label_run(
+        &typed,
+        std::fs::File::open(f.path()).unwrap(),
+        std::fs::File::open(out.path()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        verified.provenance,
+        shogiesa_core::manifest::ProvenanceStatus::Complete
+    );
 }
 
 #[test]

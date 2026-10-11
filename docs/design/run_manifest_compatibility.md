@@ -30,6 +30,35 @@ as `engine_name`, exactly one of `depths` or `nodes`, `multipv`,
 the requested and observed teacher run. A consumer must validate the fields it
 needs instead of assuming every command emits label-only fields.
 
+`label` manifests bind both sides of the run with `dataset_sha256` and
+`output_sha256`. These are SHA-256 digests of the exact bytes consumed and
+written by the run, computed on the same open streams used for parsing or
+serialization. A v1 manifest from an older release may omit either digest; it
+remains readable but provenance verification reports `Incomplete`.
+
+## Rust API
+
+Consumers can use the public contract without duplicating the JSON layout:
+
+```rust,no_run
+use std::fs::File;
+use shogiesa_core::manifest::{parse_run_manifest_v1, verify_label_run};
+
+let manifest = parse_run_manifest_v1(File::open("run-manifest.json")?)?;
+let verified = verify_label_run(
+    &manifest,
+    File::open("positions.jsonl")?,
+    File::open("labeled.jsonl")?,
+)?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+`parse_run_manifest_v1` rejects missing required fields and unsupported
+manifest versions. `verify_label_run` validates label invariants, digests, the
+typed output JSONL, and aggregate counts. Unknown additive v1 fields are
+retained in `RunManifestV1::extensions`.
+
 The canonical label example is
 [`tests/fixtures/label_run_manifest_v1.json`](../../tests/fixtures/label_run_manifest_v1.json).
-It is an inspectable contract fixture, not evidence from an actual teacher run.
+Its paired input and output JSONL fixtures cover exact-byte verification. They
+are inspectable contract fixtures, not evidence from an actual teacher run.

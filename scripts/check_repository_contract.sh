@@ -62,6 +62,8 @@ required_files=(
   tests/fixtures/recursive_extract/ignored.txt
   tests/fixtures/broken.jsonl
   tests/fixtures/label_run_manifest_v1.json
+  tests/fixtures/label_run_input_v1.jsonl
+  tests/fixtures/label_run_output_v1.jsonl
   crates/shogiesa-core/tests/fixtures/schema_contract_v11.jsonl
   crates/shogiesa-core/tests/fixtures/schema_contract_v1.jsonl
   tests/fixtures/pack_input.jsonl

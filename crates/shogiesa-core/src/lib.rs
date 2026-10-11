@@ -852,6 +852,8 @@ pub use board::{
 
 pub mod schema;
 
+pub mod manifest;
+
 pub mod sfen;
 
 /// Shared configuration for position extraction (used by shogiesa-csa and shogiesa-kif).

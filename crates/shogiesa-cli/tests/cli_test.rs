@@ -2434,6 +2434,48 @@ fn label_manifest_binds_input_and_output_bytes_and_passes_typed_verifier() {
 }
 
 #[test]
+fn label_manifest_counts_skipped_input_in_records_read() {
+    let mut input = NamedTempFile::new().unwrap();
+    writeln!(input, "{}", position("opening", serde_json::json!([]))).unwrap();
+    writeln!(input, "{{not-json}}").unwrap();
+    input.flush().unwrap();
+    let out = closed_temp_file();
+    let manifest_path = closed_temp_file();
+
+    shogiesa()
+        .args([
+            "label",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--engine",
+            fake_usi_engine_bin().to_str().unwrap(),
+            "--depths",
+            "4",
+            "--out",
+            out.path().to_str().unwrap(),
+            "--manifest",
+            manifest_path.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("2 in, 1 labeled, 1 skipped"));
+
+    let typed = shogiesa_core::manifest::parse_run_manifest_v1(
+        std::fs::File::open(manifest_path.path()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(typed.records_read, 2);
+    assert_eq!(typed.records_kept, 1);
+    assert_eq!(typed.records_dropped, 1);
+    shogiesa_core::manifest::verify_label_run(
+        &typed,
+        std::fs::File::open(input.path()).unwrap(),
+        std::fs::File::open(out.path()).unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
 fn label_manifest_records_binary_sha256() {
     let f = make_labeled_jsonl(&[position("opening", serde_json::json!([]))]);
     let out = closed_temp_file();

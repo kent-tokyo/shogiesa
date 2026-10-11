@@ -3581,13 +3581,17 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
     let throughput_suffix = records_per_sec
         .map(|r| format!(", {r:.1} rec/s"))
         .unwrap_or_default();
+    let accepted = usize::try_from(total).context("label record count exceeds this platform")?;
+    let records_read = accepted
+        .checked_add(skipped)
+        .context("label input record count overflow")?;
     eprintln!(
-        "done [{engine_display_name}, jobs={jobs}]: {total} in, {written} labeled, {skipped} skipped, {engine_launch_failures} engine launch failures{cache_suffix}{throughput_suffix} → {:?}",
+        "done [{engine_display_name}, jobs={jobs}]: {records_read} in, {written} labeled, {skipped} skipped, {engine_launch_failures} engine launch failures{cache_suffix}{throughput_suffix} → {:?}",
         args.out
     );
     if let Some(mut manifest) = manifest {
         manifest.input_hash = input_hash;
-        manifest.records_read = total as usize;
+        manifest.records_read = records_read;
         manifest.records_kept = written;
         manifest.records_dropped = skipped;
         manifest.engine_name = Some(engine_display_name);

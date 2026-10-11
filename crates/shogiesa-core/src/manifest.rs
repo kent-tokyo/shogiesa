@@ -262,18 +262,22 @@ impl RunManifestV1 {
                 "label multipv must be greater than zero".to_string(),
             ));
         }
-        if self.records_kept > self.records_read {
-            return Err(RunManifestError::InvalidSemantics(format!(
-                "records_kept {} exceeds records_read {}",
-                self.records_kept, self.records_read
-            )));
-        }
-        if self.labeled_records + self.unlabeled_records != self.records_kept {
-            return Err(RunManifestError::InvalidSemantics(format!(
-                "labeled_records + unlabeled_records must equal records_kept ({})",
-                self.records_kept
-            )));
-        }
+        validate_count_partition(
+            "records_read",
+            self.records_read,
+            "records_kept",
+            self.records_kept,
+            "records_dropped",
+            self.records_dropped,
+        )?;
+        validate_count_partition(
+            "records_kept",
+            self.records_kept,
+            "labeled_records",
+            self.labeled_records,
+            "unlabeled_records",
+            self.unlabeled_records,
+        )?;
         if self.observations_with_candidates > self.observations_total {
             return Err(RunManifestError::InvalidSemantics(
                 "observations_with_candidates exceeds observations_total".to_string(),
@@ -316,6 +320,22 @@ impl RunManifestV1 {
             ProvenanceStatus::Incomplete { missing_digests }
         })
     }
+}
+
+fn validate_count_partition(
+    total_name: &'static str,
+    total: usize,
+    first_name: &'static str,
+    first: usize,
+    second_name: &'static str,
+    second: usize,
+) -> Result<(), RunManifestError> {
+    if first.checked_add(second) != Some(total) {
+        return Err(RunManifestError::InvalidSemantics(format!(
+            "{first_name} + {second_name} must equal {total_name} ({total})"
+        )));
+    }
+    Ok(())
 }
 
 fn validate_limits<T>(

@@ -5,6 +5,8 @@ Compare links at the end provide the complete commit history.
 
 ## [Unreleased]
 
+## [0.11.4] — 2026-10-12
+
 ### Added
 
 - `shogiesa-core::manifest` now exposes the versioned `RunManifestV1` contract and a typed label
@@ -17,6 +19,12 @@ Compare links at the end provide the complete commit history.
 - `label --manifest` now records `output_sha256` as well as `dataset_sha256`; both bind the exact
   bytes handled by the run without reopening either path. Older v1 manifests without an output
   digest remain readable and are reported as incomplete provenance.
+
+### Fixed
+
+- `label` manifests now include skipped non-empty input records in `records_read`, preserving the
+  invariant `records_kept + records_dropped = records_read`. Typed manifest validation enforces
+  both count partitions without integer-overflow panics on untrusted values.
 
 ## [0.11.3] — 2026-10-11
 
@@ -308,7 +316,8 @@ Compare links at the end provide the complete commit history.
 - CSA extraction, USI labeling, validation/reporting, shared domain types, CI, fixtures, and dual
   MIT/Apache-2.0 licensing.
 
-[Unreleased]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.3...HEAD
+[Unreleased]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.4...HEAD
+[0.11.4]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.3...v0.11.4
 [0.11.3]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.0...v0.11.1

@@ -124,6 +124,29 @@ fn validator_rejects_invalid_digest_and_contradictory_limits() {
 }
 
 #[test]
+fn validator_rejects_inconsistent_or_overflowing_count_partitions() {
+    let mut inconsistent = manifest();
+    inconsistent.records_dropped = 1;
+    assert!(matches!(
+        inconsistent.validate_label().unwrap_err(),
+        RunManifestError::InvalidSemantics(message)
+            if message.contains("records_kept + records_dropped")
+    ));
+
+    let mut overflowing = manifest();
+    overflowing.records_read = usize::MAX;
+    overflowing.records_kept = usize::MAX;
+    overflowing.records_dropped = 0;
+    overflowing.labeled_records = usize::MAX;
+    overflowing.unlabeled_records = 1;
+    assert!(matches!(
+        overflowing.validate_label().unwrap_err(),
+        RunManifestError::InvalidSemantics(message)
+            if message.contains("labeled_records + unlabeled_records")
+    ));
+}
+
+#[test]
 fn verifier_rejects_malformed_output_and_manifest_count_tampering() {
     let error = verify_label_run(
         &manifest(),

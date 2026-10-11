@@ -14,11 +14,11 @@ representative-corpus performance, training generalization, or engine-strength i
 | dependency audit | PASS | `cargo audit` scanned 157 locked dependencies against 1,296 advisories |
 | shell checks | PASS | ShellCheck and fixture-backed dogfood integration tests |
 | package verification | PASS | `cargo package --workspace --locked` from the clean release commit |
-| GitHub CI | PENDING | release commit has not been pushed |
-| annotated tag | PENDING | `v0.11.4` has not been created |
-| crates.io | PENDING | `0.11.4` has not been published |
-| GitHub Release | PENDING | `v0.11.4` has not been published |
-| publication workflow | PENDING | publication has not started |
+| GitHub CI | PASS | [CI run 38173891114](https://github.com/kent-tokyo/shogiesa/actions/runs/38173891114) and [CodeQL run 38173891374](https://github.com/kent-tokyo/shogiesa/actions/runs/38173891374) succeeded for `713a29a7cb707818a7295ea08ba9006008ea388d` |
+| annotated tag | PASS | remote `v0.11.4^{}` resolves to `713a29a7cb707818a7295ea08ba9006008ea388d` |
+| crates.io | PASS | all nine publishable crates expose `0.11.4` with `yanked = false`; registry checksums were read directly from the version API |
+| GitHub Release | PASS | [shogiesa v0.11.4](https://github.com/kent-tokyo/shogiesa/releases/tag/v0.11.4) is public, non-draft, and non-prerelease |
+| publication workflow | PASS | [Publish release run 38174166006](https://github.com/kent-tokyo/shogiesa/actions/runs/38174166006) packaged and published the tagged source, then created the release |
 
 Version 0.11.4 adds the typed `RunManifestV1` API and label-artifact verification to
 `shogiesa-core`. Label manifests now bind both input and output byte streams and account for

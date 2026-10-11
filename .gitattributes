@@ -1,2 +1,6 @@
 # Golden CLI reports are text contracts; keep bytes stable across Windows and Unix.
 tests/fixtures/*.golden text eol=lf
+
+# These files are hashed byte-for-byte by the manifest contract tests.
+tests/fixtures/label_run_input_v1.jsonl text eol=lf
+tests/fixtures/label_run_output_v1.jsonl text eol=lf

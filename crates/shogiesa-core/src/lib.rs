@@ -351,6 +351,17 @@ pub fn cp_from_black_perspective(
     perspective: ScorePerspective,
     side_to_move: SideToMove,
 ) -> i32 {
+    saturating_cp_i32(cp_from_black_perspective_i64(cp, perspective, side_to_move))
+}
+
+/// Wide counterpart of [`cp_from_black_perspective`]. Use this for arithmetic and comparisons so
+/// negating `i32::MIN` remains representable instead of panicking or wrapping.
+pub fn cp_from_black_perspective_i64(
+    cp: i32,
+    perspective: ScorePerspective,
+    side_to_move: SideToMove,
+) -> i64 {
+    let cp = i64::from(cp);
     match perspective {
         ScorePerspective::Black => cp,
         ScorePerspective::SideToMove => {
@@ -371,6 +382,20 @@ pub fn cp_from_side_to_move_perspective(
     perspective: ScorePerspective,
     side_to_move: SideToMove,
 ) -> i32 {
+    saturating_cp_i32(cp_from_side_to_move_perspective_i64(
+        cp,
+        perspective,
+        side_to_move,
+    ))
+}
+
+/// Wide counterpart of [`cp_from_side_to_move_perspective`].
+pub fn cp_from_side_to_move_perspective_i64(
+    cp: i32,
+    perspective: ScorePerspective,
+    side_to_move: SideToMove,
+) -> i64 {
+    let cp = i64::from(cp);
     match perspective {
         ScorePerspective::SideToMove => cp,
         ScorePerspective::Black => {
@@ -383,14 +408,25 @@ pub fn cp_from_side_to_move_perspective(
     }
 }
 
+fn saturating_cp_i32(cp: i64) -> i32 {
+    cp.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
 /// Cp swing (max - min) across at least 2 scores; `None` if fewer than 2.
+/// Values wider than the schema's `i32` storage are saturated at `i32::MAX`.
 pub fn score_swing(cp_scores: &[i32]) -> Option<i32> {
+    score_swing_i64(cp_scores).map(saturating_cp_i32)
+}
+
+/// Wide cp swing for filtering, ranking, and diagnostics that must distinguish the full `i32`
+/// input range without overflowing.
+pub fn score_swing_i64(cp_scores: &[i32]) -> Option<i64> {
     if cp_scores.len() < 2 {
         return None;
     }
     let lo = *cp_scores.iter().min().unwrap();
     let hi = *cp_scores.iter().max().unwrap();
-    Some(hi - lo)
+    Some(i64::from(hi) - i64::from(lo))
 }
 
 /// Each distinct engine's deepest observation, taken as that engine's "vote". Engines
@@ -470,6 +506,11 @@ pub fn engine_bestmove_agreement(observations: &[Observation]) -> Option<bool> {
 /// Cp swing across each distinct engine's deepest observation.
 /// `None` if fewer than 2 engines have a cp-scored observation.
 pub fn engine_score_swing(observations: &[Observation]) -> Option<i32> {
+    engine_score_swing_i64(observations).map(saturating_cp_i32)
+}
+
+/// Wide counterpart of [`engine_score_swing`] for exact threshold comparisons.
+pub fn engine_score_swing_i64(observations: &[Observation]) -> Option<i64> {
     let deepest = deepest_per_engine(observations);
     let cp: Vec<i32> = deepest
         .iter()
@@ -478,7 +519,7 @@ pub fn engine_score_swing(observations: &[Observation]) -> Option<i32> {
             Score::Mate { .. } => None,
         })
         .collect();
-    score_swing(&cp)
+    score_swing_i64(&cp)
 }
 
 /// Reason a position failed one of `QualityConfig`'s gates. `as_str()` values match the
@@ -672,10 +713,10 @@ pub fn evaluate_quality(rec: &PositionRecord, config: &QualityConfig) -> Quality
     // side-to-move-relative -- only `eval_min`/`eval_max`, which compare against a fixed
     // black-perspective threshold, need normalization.
     if config.eval_min.is_some() || config.eval_max.is_some() {
-        let black_cp_scores: Vec<i32> = obs
+        let black_cp_scores: Vec<i64> = obs
             .iter()
             .filter_map(|o| match o.score {
-                Score::Cp { value } => Some(cp_from_black_perspective(
+                Score::Cp { value } => Some(cp_from_black_perspective_i64(
                     value,
                     o.score_perspective,
                     rec.tags.side_to_move,
@@ -687,7 +728,7 @@ pub fn evaluate_quality(rec: &PositionRecord, config: &QualityConfig) -> Quality
             configured_gates += 1;
             if config
                 .eval_min
-                .is_some_and(|min| black_cp_scores.iter().any(|&v| v < min))
+                .is_some_and(|min| black_cp_scores.iter().any(|&v| v < i64::from(min)))
             {
                 reasons.push(QualityReason::EvalMin);
             }
@@ -696,18 +737,19 @@ pub fn evaluate_quality(rec: &PositionRecord, config: &QualityConfig) -> Quality
             configured_gates += 1;
             if config
                 .eval_max
-                .is_some_and(|max| black_cp_scores.iter().any(|&v| v > max))
+                .is_some_and(|max| black_cp_scores.iter().any(|&v| v > i64::from(max)))
             {
                 reasons.push(QualityReason::EvalMax);
             }
         }
     }
 
-    let score_swing_cp = score_swing(&cp_scores);
+    let score_swing_cp_wide = score_swing_i64(&cp_scores);
+    let score_swing_cp = score_swing_cp_wide.map(saturating_cp_i32);
     if config.max_score_swing_cp.is_some() {
         configured_gates += 1;
         if let Some(max_swing) = config.max_score_swing_cp
-            && score_swing_cp.is_some_and(|swing| swing > max_swing)
+            && score_swing_cp_wide.is_some_and(|swing| swing > i64::from(max_swing))
         {
             reasons.push(QualityReason::ScoreSwing);
         }
@@ -778,7 +820,7 @@ pub fn evaluate_quality(rec: &PositionRecord, config: &QualityConfig) -> Quality
     if config.max_engine_score_swing_cp.is_some() {
         configured_gates += 1;
         if let Some(max_swing) = config.max_engine_score_swing_cp
-            && engine_score_swing(obs).is_some_and(|swing| swing > max_swing)
+            && engine_score_swing_i64(obs).is_some_and(|swing| swing > i64::from(max_swing))
         {
             reasons.push(QualityReason::EngineScoreSwing);
         }
@@ -1016,6 +1058,24 @@ mod tests {
         assert_eq!(engine_score_swing(&observations), None);
     }
 
+    #[test]
+    fn cp_boundary_arithmetic_is_widened_and_schema_values_saturate() {
+        assert_eq!(
+            cp_from_black_perspective_i64(
+                i32::MIN,
+                ScorePerspective::SideToMove,
+                SideToMove::White,
+            ),
+            2_147_483_648
+        );
+        assert_eq!(
+            cp_from_black_perspective(i32::MIN, ScorePerspective::SideToMove, SideToMove::White,),
+            i32::MAX
+        );
+        assert_eq!(score_swing_i64(&[i32::MIN, i32::MAX]), Some(4_294_967_295));
+        assert_eq!(score_swing(&[i32::MIN, i32::MAX]), Some(i32::MAX));
+    }
+
     fn obs_mate(engine: &str, depth: u32, moves: i32, bestmove: &str) -> Observation {
         Observation {
             engine: engine.to_string(),
@@ -1245,6 +1305,33 @@ mod tests {
         let decision = evaluate_quality(&simple_rec(observations), &config);
         assert_eq!(decision.reasons, vec![QualityReason::ScoreSwing]);
         assert_eq!(decision.score_swing_cp, Some(100));
+    }
+
+    #[test]
+    fn evaluate_quality_uses_wide_cp_at_i32_boundaries() {
+        let swing_config = QualityConfig {
+            max_score_swing_cp: Some(i32::MAX),
+            ..Default::default()
+        };
+        let decision = evaluate_quality(
+            &simple_rec(vec![
+                obs("a", 4, i32::MIN, "7g7f"),
+                obs("a", 6, i32::MAX, "7g7f"),
+            ]),
+            &swing_config,
+        );
+        assert_eq!(decision.reasons, vec![QualityReason::ScoreSwing]);
+        assert_eq!(decision.score_swing_cp, Some(i32::MAX));
+
+        let eval_config = QualityConfig {
+            eval_max: Some(i32::MAX),
+            ..Default::default()
+        };
+        let decision = evaluate_quality(
+            &simple_rec_white_to_move(vec![obs("a", 4, i32::MIN, "7g7f")]),
+            &eval_config,
+        );
+        assert_eq!(decision.reasons, vec![QualityReason::EvalMax]);
     }
 
     #[test]

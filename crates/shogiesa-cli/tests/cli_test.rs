@@ -404,6 +404,35 @@ fn dataset_diff_position_mode_treats_source_path_change_as_a_field_change() {
 }
 
 #[test]
+fn dataset_diff_reports_physical_line_after_blank_lines() {
+    let mut baseline = NamedTempFile::new().unwrap();
+    let candidate = NamedTempFile::new().unwrap();
+    let record = std::fs::read_to_string(fixture("dataset_diff_baseline.jsonl"))
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap()
+        .to_string();
+    writeln!(baseline).unwrap();
+    writeln!(baseline, "not json").unwrap();
+    writeln!(baseline, "{record}").unwrap();
+    baseline.flush().unwrap();
+    std::fs::write(candidate.path(), format!("{record}\n")).unwrap();
+
+    shogiesa()
+        .args([
+            "dataset-diff",
+            "--baseline",
+            baseline.path().to_str().unwrap(),
+            "--candidate",
+            candidate.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("line=2"));
+}
+
+#[test]
 fn recipe_plan_fixture_is_typed_deterministic_and_dry_run_only() {
     let json_out = closed_temp_file();
     let output = shogiesa()
@@ -4415,6 +4444,28 @@ fn filter_max_engine_score_swing_cp_excludes_large_cross_engine_swing() {
         .success();
     let content = std::fs::read_to_string(out.path()).unwrap();
     assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 0);
+}
+
+#[test]
+fn filter_score_swing_uses_wide_arithmetic_at_i32_boundaries() {
+    let f = make_labeled_jsonl(&[position(
+        "middlegame",
+        serde_json::json!([obs("7g7f", i32::MIN, 4), obs("7g7f", i32::MAX, 6),]),
+    )]);
+    let out = closed_temp_file();
+    shogiesa()
+        .args([
+            "filter",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--max-score-swing-cp",
+            &i32::MAX.to_string(),
+        ])
+        .assert()
+        .success();
+    assert_eq!(std::fs::read_to_string(out.path()).unwrap(), "");
 }
 
 #[test]

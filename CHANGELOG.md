@@ -5,11 +5,21 @@ Compare links at the end provide the complete commit history.
 
 ## [Unreleased]
 
+## [0.11.5] — 2026-10-13
+
 ### Added
 
 - `shogiesa-core::schema::PositionRecordJsonlReader` provides bounded-memory, line-numbered
   iteration over position JSONL. It skips blank lines, preserves physical line numbers, reports
   typed read/parse/schema errors, and accepts a final line without a newline.
+
+### Fixed
+
+- Evaluation normalization, swing, policy-margin, audit, mining, and bucket calculations now use
+  `i64` intermediates, preventing `i32` boundary values from panicking or wrapping while retaining
+  the existing `i32` JSONL and pack fields through explicit saturation.
+- Materialized JSONL loaders now report malformed records by physical line number even when blank
+  lines precede them.
 
 ## [0.11.4] — 2026-10-12
 
@@ -322,7 +332,8 @@ Compare links at the end provide the complete commit history.
 - CSA extraction, USI labeling, validation/reporting, shared domain types, CI, fixtures, and dual
   MIT/Apache-2.0 licensing.
 
-[Unreleased]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.4...HEAD
+[Unreleased]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.5...HEAD
+[0.11.5]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.4...v0.11.5
 [0.11.4]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.3...v0.11.4
 [0.11.3]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.1...v0.11.2

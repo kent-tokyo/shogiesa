@@ -15,12 +15,12 @@ use shogiesa_core::{
     Board, GameOutcome, GamePhase, GameResultInfo, Observation, PieceType, PositionRecord,
     PositionTags, QualityConfig, QualityDecision, SCHEMA_VERSION, Score, ScorePerspective,
     SearchLimitKind, SideToMove, SourceInfo, UsiMove, bestmove_agreement,
-    cp_from_black_perspective, effective_bestmove_kind, engine_bestmove_agreement,
+    cp_from_black_perspective_i64, effective_bestmove_kind, engine_bestmove_agreement,
     evaluate_quality, has_special_bestmove,
     manifest::RunManifestV1 as RunManifest,
     parse_usi_move, phase_from_ply, requested_depth_underreached,
     schema::{PositionRecordParseError, parse_json_line},
-    score_swing,
+    score_swing_i64,
     sfen::Sfen,
     zobrist_from_sfen,
 };
@@ -4657,12 +4657,12 @@ fn cmd_shuffle(args: ShuffleArgs) -> Result<()> {
 /// `shogiesa_core::cp_from_black_perspective` -- kept here (rather than inlined at each call
 /// site) since "pick the deepest observation, then convert" is a record-level operation the core
 /// utility itself doesn't know about.
-fn eval_black(rec: &PositionRecord) -> Option<i32> {
+fn eval_black(rec: &PositionRecord) -> Option<i64> {
     rec.observations
         .iter()
         .max_by_key(|o| o.depth)
         .and_then(|o| match o.score {
-            Score::Cp { value } => Some(cp_from_black_perspective(
+            Score::Cp { value } => Some(cp_from_black_perspective_i64(
                 value,
                 o.score_perspective,
                 rec.tags.side_to_move,
@@ -4697,10 +4697,10 @@ fn blunder_adjacent_indices(
 
     let mut keep = HashSet::<usize>::new();
     for indices in by_game.values() {
-        let evals: Vec<Option<i32>> = indices.iter().map(|&i| eval_black(&records[i])).collect();
+        let evals: Vec<Option<i64>> = indices.iter().map(|&i| eval_black(&records[i])).collect();
         for j in 1..indices.len() {
             if let (Some(e0), Some(e1)) = (evals[j - 1], evals[j])
-                && (e1 - e0).abs() >= blunder_threshold
+                && (e1 - e0).abs() >= i64::from(blunder_threshold)
             {
                 let lo = j.saturating_sub(blunder_window);
                 let hi = (j + blunder_window + 1).min(indices.len());
@@ -4732,7 +4732,7 @@ fn cmd_mine(args: MineArgs) -> Result<()> {
     }
 
     for indices in by_game.values() {
-        let evals: Vec<Option<i32>> = indices.iter().map(|&i| eval_black(&records[i])).collect();
+        let evals: Vec<Option<i64>> = indices.iter().map(|&i| eval_black(&records[i])).collect();
 
         // Losing positions: side to move's eval worse than -threshold
         if let Some(threshold) = args.losing_threshold {
@@ -4742,7 +4742,7 @@ fn cmd_mine(args: MineArgs) -> Result<()> {
                         SideToMove::Black => eval,
                         SideToMove::White => -eval,
                     };
-                    if side_eval < -threshold && !records[idx].observations.is_empty() {
+                    if side_eval < -i64::from(threshold) && !records[idx].observations.is_empty() {
                         keep.insert(idx);
                     }
                 }
@@ -5513,7 +5513,7 @@ fn select_hard_materialized(args: &SelectArgs) -> Result<(usize, Vec<PositionRec
 
     let blunder_set =
         blunder_adjacent_indices(&records, args.blunder_threshold, args.blunder_window);
-    let hardness = |i: usize| -> (bool, bool, i32) {
+    let hardness = |i: usize| -> (bool, bool, i64) {
         let rec = &records[i];
         let cp_scores: Vec<i32> = rec
             .observations
@@ -5523,7 +5523,7 @@ fn select_hard_materialized(args: &SelectArgs) -> Result<(usize, Vec<PositionRec
                 Score::Mate { .. } => None,
             })
             .collect();
-        let swing = score_swing(&cp_scores).unwrap_or(0);
+        let swing = score_swing_i64(&cp_scores).unwrap_or(0);
         let disagreement = !bestmove_agreement(&rec.observations);
         (blunder_set.contains(&i), disagreement, swing)
     };
@@ -5548,12 +5548,12 @@ fn hardness_for_group(
     group: &[PositionRecord],
     blunder_threshold: i32,
     blunder_window: usize,
-) -> Vec<(bool, bool, i32)> {
-    let evals: Vec<Option<i32>> = group.iter().map(eval_black).collect();
+) -> Vec<(bool, bool, i64)> {
+    let evals: Vec<Option<i64>> = group.iter().map(eval_black).collect();
     let mut is_blunder_adjacent = vec![false; group.len()];
     for j in 1..group.len() {
         if let (Some(e0), Some(e1)) = (evals[j - 1], evals[j])
-            && (e1 - e0).abs() >= blunder_threshold
+            && (e1 - e0).abs() >= i64::from(blunder_threshold)
         {
             let lo = j.saturating_sub(blunder_window);
             let hi = (j + blunder_window + 1).min(group.len());
@@ -5579,7 +5579,7 @@ fn hardness_for_group(
             (
                 is_blunder_adjacent[i],
                 !bestmove_agreement(&rec.observations),
-                score_swing(&cp_scores).unwrap_or(0),
+                score_swing_i64(&cp_scores).unwrap_or(0),
             )
         })
         .collect()
@@ -5591,7 +5591,7 @@ fn hardness_for_group(
 /// hardness tuple gets that: a bigger original hardness becomes a smaller `Reverse` value (sorts
 /// first), while the plain `u64` hash is left as-is since "smaller hash first" is already the
 /// wanted tie-break direction.
-type HardKey = (std::cmp::Reverse<(bool, bool, i32)>, u64);
+type HardKey = (std::cmp::Reverse<(bool, bool, i64)>, u64);
 
 /// Scores one buffered game's positions and pushes them into the shared global top-`count` heap,
 /// then clears the buffer. Re-sorts by ply first (same as `blunder_adjacent_indices` does
@@ -6283,8 +6283,8 @@ struct DatasetDiagnostics {
     special_bestmove: usize,
     // 50cp buckets, same convention as `report`'s swing/eval histograms -- bucket-and-count, not
     // percentiles.
-    margin_buckets: BTreeMap<i32, usize>,
-    swing_buckets: BTreeMap<i32, usize>,
+    margin_buckets: BTreeMap<i64, usize>,
+    swing_buckets: BTreeMap<i64, usize>,
     obs_score_bound_counts: BTreeMap<&'static str, usize>,
     requested_depth_total: usize,
     requested_depth_underreach: usize,
@@ -6304,7 +6304,7 @@ impl DatasetDiagnostics {
             if let Some(margin) = obs.policy_margin_cp {
                 *self
                     .margin_buckets
-                    .entry((margin.div_euclid(50)) * 50)
+                    .entry((i64::from(margin).div_euclid(50)) * 50)
                     .or_default() += 1;
             }
             if let Score::Cp { value } = obs.score {
@@ -6313,7 +6313,7 @@ impl DatasetDiagnostics {
             let bound_key = score_bound_str(obs.score_bound);
             *self.obs_score_bound_counts.entry(bound_key).or_default() += 1;
         }
-        if let Some(swing) = score_swing(&cp_scores) {
+        if let Some(swing) = score_swing_i64(&cp_scores) {
             *self
                 .swing_buckets
                 .entry((swing.div_euclid(50)) * 50)
@@ -6547,7 +6547,7 @@ struct AuditStats {
     bestmove_mismatches: usize,
     abs_score_error_sum: f64,
     abs_score_error_count: usize,
-    abs_score_error_max: i32,
+    abs_score_error_max: i64,
     teacher_non_exact: usize,
     student_non_exact: usize,
     teacher_underreach: usize,
@@ -6560,7 +6560,7 @@ impl AuditStats {
     fn record(
         &mut self,
         bestmove_match: bool,
-        score_error_cp: Option<i32>,
+        score_error_cp: Option<i64>,
         teacher: &Observation,
         student: &Observation,
     ) {
@@ -6658,7 +6658,7 @@ fn compute_audit_pairs<'a>(
     rec: &'a PositionRecord,
     teacher_depth: u32,
     student_depths: &[u32],
-) -> Vec<(u32, bool, Option<i32>, &'a Observation, &'a Observation)> {
+) -> Vec<(u32, bool, Option<i64>, &'a Observation, &'a Observation)> {
     let mut pairs = Vec::new();
     let mut by_engine: HashMap<&str, Vec<&Observation>> = HashMap::new();
     for obs in &rec.observations {
@@ -6685,12 +6685,12 @@ fn compute_audit_pairs<'a>(
             // coincidence. None (not compared) if either side is mate.
             let score_error_cp = match (&teacher.score, &student.score) {
                 (Score::Cp { value: t }, Score::Cp { value: s }) => {
-                    let t_black = cp_from_black_perspective(
+                    let t_black = cp_from_black_perspective_i64(
                         *t,
                         teacher.score_perspective,
                         rec.tags.side_to_move,
                     );
-                    let s_black = cp_from_black_perspective(
+                    let s_black = cp_from_black_perspective_i64(
                         *s,
                         student.score_perspective,
                         rec.tags.side_to_move,
@@ -6984,7 +6984,7 @@ fn pick_strict(grid: &[TuneCell], frontier: &[usize]) -> usize {
 /// Index (into `grid`) of the frontier point closest to the ideal corner (coverage=1,
 /// mismatch_rate=0) -- the "split the difference" candidate.
 ///
-/// Why: coverage and mismatch_rate are both mathematically in [0,1], but their *dynamic range
+/// Why: coverage and mismatch_rate are both mathematically in \[0,1\], but their *dynamic range
 /// across a real frontier* is typically wildly different -- coverage might span 0.35..0.95 while
 /// mismatch_rate spans only 0.02..0.11. Computing distance on those raw values lets the coverage
 /// term dominate regardless of L1 or Euclidean, so "balanced" silently collapses onto "broad" and
@@ -7811,8 +7811,8 @@ fn load_records(path: &PathBuf) -> Result<(Vec<PositionRecord>, usize)> {
     let mut broken = 0usize;
     let records: Vec<PositionRecord> = content
         .lines()
-        .filter(|l| !l.trim().is_empty())
         .enumerate()
+        .filter(|(_, line)| !line.trim().is_empty())
         .filter_map(|(i, line)| match parse_json_line(line) {
             Ok(rec) => Some(rec),
             Err(e) => {
@@ -8177,7 +8177,7 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
     let mut swing_sum = 0f64;
     let mut swing_count = 0usize;
     // score swing histogram: key = floor(swing / 50) * 50
-    let mut swing_buckets: BTreeMap<i32, usize> = BTreeMap::new();
+    let mut swing_buckets: BTreeMap<i64, usize> = BTreeMap::new();
     let mut margin_sum = 0f64;
     let mut margin_count = 0usize;
     let mut obs_score_bound_counts: BTreeMap<&'static str, usize> = BTreeMap::new();
@@ -8287,7 +8287,7 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
                 let bound_key = score_bound_str(obs.score_bound);
                 *obs_score_bound_counts.entry(bound_key).or_default() += 1;
             }
-            if let Some(swing) = score_swing(&cp_scores) {
+            if let Some(swing) = score_swing_i64(&cp_scores) {
                 swing_sum += swing as f64;
                 swing_count += 1;
                 *swing_buckets
@@ -8298,18 +8298,11 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
             // histogram/cross-tabs share one reference frame regardless of whose turn each
             // record's position was -- otherwise "+400" would mean opposite things in different
             // rows of the same table.
-            if let Some(deepest) = rec.observations.iter().max_by_key(|o| o.depth) {
-                let key = match deepest.score {
-                    Score::Cp { value } => {
-                        let black_value = cp_from_black_perspective(
-                            value,
-                            deepest.score_perspective,
-                            rec.tags.side_to_move,
-                        );
-                        // bucket width 200cp; clamp display at ±1400
-                        (black_value.div_euclid(200)) * 200
-                    }
-                    Score::Mate { .. } => i32::MAX, // mate sentinel
+            if !rec.observations.is_empty() {
+                let key = match eval_bucket_of(&rec) {
+                    EvalBucket::Cp(value) => value,
+                    EvalBucket::Mate => i32::MAX,
+                    EvalBucket::Unlabeled => i32::MIN,
                 };
                 *eval_buckets.entry(key).or_default() += 1;
                 *eval_by_phase
@@ -8530,7 +8523,7 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
             } else if key == i32::MAX {
                 "  mate       ".to_string()
             } else {
-                format!("  {:+5}..{:+5}", key, key + 199)
+                format!("  {:+5}..{:+5}", key, i64::from(key) + 199)
             };
             let bar = "█".repeat(count * 20 / bar_max.max(1));
             println!("{label}: {count:>5}  {bar}");
@@ -8659,7 +8652,7 @@ fn cmd_conflict_report(args: ConflictReportArgs) -> Result<()> {
         let mut record_evaluated = false;
         for observation in deepest_by_engine.into_values() {
             let Some(cp) = (match observation.score {
-                Score::Cp { value } => Some(cp_from_black_perspective(
+                Score::Cp { value } => Some(cp_from_black_perspective_i64(
                     value,
                     observation.score_perspective,
                     rec.tags.side_to_move,
@@ -8669,7 +8662,7 @@ fn cmd_conflict_report(args: ConflictReportArgs) -> Result<()> {
                 no_cp_or_mate += 1;
                 continue;
             };
-            if cp.saturating_abs() <= args.min_abs_cp {
+            if cp.abs() <= i64::from(args.min_abs_cp) {
                 deadband += 1;
                 continue;
             }
@@ -8752,7 +8745,7 @@ impl BlockReportStats {
     fn add(&mut self, record: &PositionRecord) {
         self.records += 1;
         if let Some(cp) = eval_black(record) {
-            let cp = f64::from(cp);
+            let cp = cp as f64;
             self.cp_count += 1;
             self.cp_sum += cp;
             self.cp_sum_sq += cp * cp;
@@ -9040,7 +9033,7 @@ fn print_coverage_row(
     flag: impl std::fmt::Display,
 ) {
     let eval_label = match eb {
-        EvalBucket::Cp(v) => format!("{v:+}..{:+}", v + 199),
+        EvalBucket::Cp(v) => format!("{v:+}..{:+}", i64::from(v) + 199),
         EvalBucket::Mate => "mate".to_string(),
         EvalBucket::Unlabeled => "unlabeled".to_string(),
     };

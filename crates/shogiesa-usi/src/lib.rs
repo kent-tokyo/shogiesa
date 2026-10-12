@@ -402,7 +402,11 @@ impl UsiEngine {
                 if info.bound == ScoreBound::Exact && runner_up.bound == ScoreBound::Exact =>
             {
                 match runner_up.score {
-                    Some(Score::Cp { value: second }) => Some(best - second),
+                    Some(Score::Cp { value: second }) => Some(
+                        (i64::from(*best) - i64::from(second))
+                            .clamp(i64::from(i32::MIN), i64::from(i32::MAX))
+                            as i32,
+                    ),
                     _ => None,
                 }
             }
@@ -678,6 +682,21 @@ mod tests {
         let info = parse_info("info depth 8 multipv 2 score cp 39 nodes 1 time 1").unwrap();
         assert_eq!(info.multipv, Some(2));
         assert_eq!(info.bound, ScoreBound::Exact);
+    }
+
+    #[test]
+    fn policy_margin_saturates_after_wide_boundary_subtraction() {
+        let mut candidates = BTreeMap::new();
+        candidates.insert(
+            1,
+            parse_info("info depth 8 multipv 1 score cp 2147483647 pv 7g7f").unwrap(),
+        );
+        candidates.insert(
+            2,
+            parse_info("info depth 8 multipv 2 score cp -2147483648 pv 2g2f").unwrap(),
+        );
+        let result = UsiEngine::build_analysis_result("7g7f".to_string(), &candidates, 8).unwrap();
+        assert_eq!(result.policy_margin_cp, Some(i32::MAX));
     }
 
     #[test]

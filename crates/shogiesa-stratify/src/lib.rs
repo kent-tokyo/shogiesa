@@ -3,7 +3,7 @@
 //! root) so `stratifykit-core` doesn't have to; holds no bucketing/quota/sampling logic of its
 //! own -- that stays in `stratifykit-core`.
 
-use shogiesa_core::{PositionRecord, Score, SourceInfo, cp_from_black_perspective};
+use shogiesa_core::{PositionRecord, Score, SourceInfo, cp_from_black_perspective_i64};
 use stratifykit_core::bucket_floor;
 
 /// The eval-bucket dimension of [`bucket_key`], factored out as a structured, orderable value so
@@ -17,6 +17,16 @@ pub enum EvalBucket {
     Unlabeled,
     Cp(i32),
     Mate,
+}
+
+fn eval_cp_bucket(value: i64) -> i32 {
+    const WIDTH: i64 = 200;
+    let floor = value.div_euclid(WIDTH) * WIDTH;
+    // Keep the public bucket type/schema stable while avoiding overflow at either i32 boundary.
+    // Division here truncates toward zero, yielding the nearest representable 200-cp multiple.
+    let min_bucket = i64::from(i32::MIN) / WIDTH * WIDTH;
+    let max_bucket = i64::from(i32::MAX) / WIDTH * WIDTH;
+    floor.clamp(min_bucket, max_bucket) as i32
 }
 
 impl std::fmt::Display for EvalBucket {
@@ -35,9 +45,12 @@ pub fn eval_bucket_of(rec: &PositionRecord) -> EvalBucket {
         .max_by_key(|o| o.depth)
         .map(|o| match o.score {
             Score::Cp { value } => {
-                let black_value =
-                    cp_from_black_perspective(value, o.score_perspective, rec.tags.side_to_move);
-                EvalBucket::Cp((black_value.div_euclid(200)) * 200)
+                let black_value = cp_from_black_perspective_i64(
+                    value,
+                    o.score_perspective,
+                    rec.tags.side_to_move,
+                );
+                EvalBucket::Cp(eval_cp_bucket(black_value))
             }
             Score::Mate { .. } => EvalBucket::Mate,
         })
@@ -185,6 +198,17 @@ mod tests {
         let rec = record_at(GamePhase::Opening, SideToMove::Black, 5, None, "g.csa");
         assert_eq!(feature_phase(&rec), "opening");
         assert_eq!(feature_side(&rec), "black");
+    }
+
+    #[test]
+    fn eval_bucket_handles_i32_boundaries_without_overflow() {
+        let mut black = record_at(GamePhase::Opening, SideToMove::Black, 5, None, "g.csa");
+        black.observations.push(cp_obs(1, i32::MIN));
+        assert_eq!(eval_bucket_of(&black), EvalBucket::Cp(-2_147_483_600));
+
+        let mut white = record_at(GamePhase::Opening, SideToMove::White, 5, None, "g.csa");
+        white.observations.push(cp_obs(1, i32::MIN));
+        assert_eq!(eval_bucket_of(&white), EvalBucket::Cp(2_147_483_600));
     }
 
     #[test]

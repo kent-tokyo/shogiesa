@@ -21,7 +21,7 @@ the named artifacts.
 
 The release rejects malformed or contradictory CLI search/filter parameters, protects inputs and
 sidecars from path aliases, and makes non-resumable file outputs transactional. It adds a strict
-teacher-calibration harness, a fail-closed Sekirei gate-result reporter, and checked-in 0.3.68
+teacher-calibration harness, a fail-closed external gate-result reporter, and checked-in compatibility
 compatibility/calibration/smoke-gate evidence.
 
 The teacher calibration uses 64 fixed positions and the A/B gate contains four games. They verify

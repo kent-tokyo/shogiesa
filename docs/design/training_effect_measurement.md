@@ -5,12 +5,11 @@ lower validation loss does not by itself establish NNUE playing strength.
 
 ## Completed pilot
 
-The 2026-10-10 Sekirei 0.3.66 run compared baseline, filtered, uncertain-mined, and phase-balanced
-arms. Each arm used 48 positions, three paired seeds, one epoch, and the same 106-position
-validation set. Mean `valid_cp_mse` ranged from 170821 to 170847, less than 0.02% apart. This proves
-the comparison path runs end to end; it does not establish an arm ranking. See the
-[`sekirei_learning_ablation_2026-10-10.json`](../measurements/sekirei_learning_ablation_2026-10-10.json)
-artifact for per-seed values and hashes.
+The recorded downstream-trainer pilot compared baseline, filtered, uncertain-mined, and
+phase-balanced arms. Each arm used 48 positions, three paired seeds, one epoch, and the same
+106-position validation set. The small metric differences prove only that the comparison path
+runs end to end; they do not establish an arm ranking. The detailed artifact is retained with the
+measurement bundle and is not part of the public data contract.
 
 ## Experimental controls
 

@@ -1,7 +1,7 @@
 # Dataset recipe template
 
 This is a reproducibility template for comparing dataset recipes before measuring their effect in
-Sekirei training. It describes shogiesa outputs and command arguments; the trainer owns optimizer,
+downstream training. It describes shogiesa outputs and command arguments; the trainer owns optimizer,
 architecture, training seed, and budget. Replace every `<...>` value and keep the generated
 manifests beside the corresponding JSONL files.
 

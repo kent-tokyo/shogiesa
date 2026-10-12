@@ -1,20 +1,34 @@
 # shogiesa
 
-> Shogi training-data feed for NNUE engines.
+> Shogi training-data forge for NNUE and other USI consumers.
 
 shogiesa turns CSA, KIF, KI2, and match-runner records into inspectable training datasets. It
 extracts SFEN positions, labels them with USI engines, filters unstable samples, and writes
-reproducible JSONL or binary-pack artifacts for trainers such as Sekirei.
+reproducible JSONL or binary-pack artifacts for downstream engines and trainers.
 
 The workspace version and latest verified published release are `0.11.5`. See the
 [GitHub Release](https://github.com/kent-tokyo/shogiesa/releases/tag/v0.11.5), the
 [changelog](CHANGELOG.md), and
 [the v0.11.5 validation log](docs/release_validation_2026-10-13_v0.11.5.md).
 
-## Scope
+## Product direction and scope
 
-shogiesa creates and inspects data. It is not an engine, trainer, GUI, tournament manager, or
-cloud service. Dataset diagnostics alone do not establish training gain or Elo.
+shogiesa is an independent product for turning game records and external USI observations into
+inspectable, reproducible, quality-controlled datasets. Its success is measured by whether those
+datasets are useful to downstream engines and trainers, but shogiesa does not depend on any one
+engine, trainer, weight file, or search implementation.
+
+Its public contract is built on standard boundaries: CSA/KIF/KI2, SFEN, USI, JSONL, and versioned
+pack files. A specific engine or trainer may be used in an external measurement, but it is not a
+product dependency and must not be required by the core pipeline or public examples.
+
+In scope: ingestion, position extraction and validation, deduplication, external-USI labeling,
+stability and quality signals, filtering/mining/balancing/splitting, reproducible manifests,
+JSONL/pack export, and dataset diagnostics.
+
+Out of scope: an engine, search implementation, NNUE trainer, GUI, tournament manager, cloud
+training service, or distributed-training platform. Dataset diagnostics alone do not establish
+training gain or Elo.
 
 ## Install
 
@@ -32,7 +46,7 @@ The CLI binary is `target/release/shogiesa`.
 shogiesa extract --input ./games --recursive --out positions.jsonl \
   --min-ply 20 --every-n-plies 2
 
-shogiesa label --input positions.jsonl --engine ./sekirei \
+shogiesa label --input positions.jsonl --engine ./your-usi-engine \
   --depths 4,6,8 --out labeled.jsonl
 
 shogiesa report --input labeled.jsonl
@@ -113,7 +127,7 @@ See [schema and pack compatibility](docs/design/schema_compatibility.md).
 | Reproducible recipe record | [dataset_recipe_template.md](docs/design/dataset_recipe_template.md) |
 | Measurement status and artifacts | [measurement_matrix.md](docs/design/measurement_matrix.md), [measurement index](docs/measurements/README.md) |
 | Training comparison protocol | [training_effect_measurement.md](docs/design/training_effect_measurement.md) |
-| Sekirei and lineprior runbooks | [SEKIREI_GATE_EVALUATION.md](docs/SEKIREI_GATE_EVALUATION.md), [LINEPRIOR_DOGFOOD.md](docs/LINEPRIOR_DOGFOOD.md) |
+| External consumer and gate runbooks | [external_gate_evaluation.md](docs/external_gate_evaluation.md), [LINEPRIOR_DOGFOOD.md](docs/LINEPRIOR_DOGFOOD.md) |
 | Release checks and evidence | [release_checklist.md](docs/release_checklist.md), [v0.11.5 validation](docs/release_validation_2026-10-13_v0.11.5.md) |
 
 ## Evidence boundary

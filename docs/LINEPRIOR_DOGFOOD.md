@@ -1,7 +1,7 @@
 # lineprior dogfood runbook
 
-This runbook measures whether historical move priors are useful enough to test in Sekirei.
-shogiesa exports data; it does not integrate `lineprior` into search. `lineprior` is an external
+This runbook measures whether historical move priors are useful enough to test in an external
+search consumer. shogiesa exports data; it does not integrate `lineprior` into search. `lineprior` is an external
 binary and is not a dependency of this repository.
 
 ## Run
@@ -45,7 +45,7 @@ unknown game outcome because the branch was not the played game.
 
 ## Decision gate
 
-Prototype prior-guided Sekirei move ordering only when repeated runs show adequate coverage,
+Prototype prior-guided move ordering only when repeated runs show adequate coverage,
 reasonable fallback, and useful top-5/MRR results. Otherwise adjust the corpus, source, ply range,
-split, or lineprior threshold first. Search integration and strength testing belong to Sekirei and
-remain outside this repository.
+split, or lineprior threshold first. Search integration and strength testing belong to the external
+consumer and remain outside this repository.

@@ -1,20 +1,29 @@
 # shogiesa
 
-> 将棋の餌。NNUEエンジン向けの学習データ生成ツール。
+> 将棋の餌。NNUE・USI利用者向けの再現可能な学習データ生成ツール。
 
 shogiesaはCSA、KIF、KI2、match-runner棋譜を点検可能な学習データへ変換します。
 SFEN局面の抽出、USI教師によるラベル付け、不安定な局面の除外、JSONLまたはbinary packへの
-書き出しを担当します。
+書き出しを担当します。特定のエンジンやtrainerに依存しない独立したproductです。
 
 workspaceと検証済みの最新公開版は`0.11.5`です。
 [GitHub Release](https://github.com/kent-tokyo/shogiesa/releases/tag/v0.11.5)、
 [CHANGELOG](CHANGELOG.md)、
 [v0.11.5検証記録](docs/release_validation_2026-10-13_v0.11.5.md)を参照してください。
 
-## 役割
+## 製品の方向性と範囲
 
-shogiesaの範囲はデータ生成と診断です。将棋エンジン、NNUEトレーナー、GUI、対局管理、
-クラウドサービスではありません。診断値だけで学習効果やEloを主張することもありません。
+shogiesaは棋譜と外部USI観測を、点検可能で再現可能な品質管理付きdatasetへ変換する
+独立したproductです。成果物が下流のエンジンやtrainerに役立つことを重視しますが、
+特定のエンジン、trainer、weight、探索実装には依存しません。
+
+公開契約の中心はCSA/KIF/KI2、SFEN、USI、JSONL、version付きpackです。特定のエンジンや
+trainerを使う測定は外部検証として扱い、core pipelineや公開例の必須条件にはしません。
+
+範囲に含めるのは、棋譜取り込み、局面抽出・検証、重複排除、外部USIによるlabel付与、
+安定性・品質signal、filter・mine・balance・split、再現可能なmanifest、JSONL/pack出力、
+dataset診断です。将棋エンジン、探索実装、NNUE trainer、GUI、対局管理、cloud training、
+分散学習基盤は対象外です。診断値だけで学習効果やEloを主張することもありません。
 
 ## インストール
 
@@ -32,7 +41,7 @@ CLIは`target/release/shogiesa`に生成されます。
 shogiesa extract --input ./games --recursive --out positions.jsonl \
   --min-ply 20 --every-n-plies 2
 
-shogiesa label --input positions.jsonl --engine ./sekirei \
+shogiesa label --input positions.jsonl --engine ./your-usi-engine \
   --depths 4,6,8 --out labeled.jsonl
 
 shogiesa report --input labeled.jsonl
@@ -107,7 +116,7 @@ binary packはversion付きの転送形式です。点検やdiffではJSONLへ�
 | 再現可能なrecipe記録 | [dataset_recipe_template.md](docs/design/dataset_recipe_template.md) |
 | 測定状況とartifact | [measurement_matrix.md](docs/design/measurement_matrix.md)、[測定索引](docs/measurements/README.md) |
 | 学習比較の手順 | [training_effect_measurement.md](docs/design/training_effect_measurement.md) |
-| Sekirei・lineprior runbook | [SEKIREI_GATE_EVALUATION.md](docs/SEKIREI_GATE_EVALUATION.md)、[LINEPRIOR_DOGFOOD.md](docs/LINEPRIOR_DOGFOOD.md) |
+| 外部consumer・gate runbook | [external_gate_evaluation.md](docs/external_gate_evaluation.md)、[LINEPRIOR_DOGFOOD.md](docs/LINEPRIOR_DOGFOOD.md) |
 | release確認と証跡 | [release_checklist.md](docs/release_checklist.md)、[v0.11.5検証](docs/release_validation_2026-10-13_v0.11.5.md) |
 
 ## 証拠の境界

@@ -1,15 +1,15 @@
-# Sekirei opening-suite gate runbook
+# External gate evaluation runbook
 
-This protocol measures whether openings produced by `make-gate-openings` make Sekirei gates more
-stable. shogiesa can build and describe the suite; only a real Sekirei checkout and match runner
-can measure the gate effect.
+This protocol measures whether openings produced by `make-gate-openings` make an external USI
+consumer's gate more stable. shogiesa builds and describes the opening suite; an external engine
+and match runner are required to measure the downstream effect.
 
 ## Comparison arms
 
 | Arm | Opening source |
 |---|---|
 | A | `startpos` only |
-| B | Sekirei production `data/gate/openings_standard.sfen` |
+| B | the consumer's pinned production opening file |
 | C | `make-gate-openings --count 100` |
 | D | `make-gate-openings --count 400` |
 
@@ -32,9 +32,8 @@ only if repeated outcomes become more stable without introducing side or source-
 
 ## Execution boundary
 
-`scripts/sekirei_dataset_ablation.sh` already defines external `SEKIREI_TRAIN_CMD` and
-`SEKIREI_GATE_CMD` hooks, but its built-in arms compare dataset filters rather than opening suites.
-Use the same `gate_result.json` contract in a dedicated wrapper or run the four arms manually.
+The external command hooks are intentionally supplied by the caller. Use the same
+`gate_result.json` contract in a dedicated wrapper or run the four arms manually.
 
 This is external, compute-heavy evidence. Repository fixtures can verify suite construction and
-manifest fields, but cannot verify Elo, variance reduction, or Sekirei gate decisions.
+manifest fields, but cannot verify Elo, variance reduction, or external gate decisions.

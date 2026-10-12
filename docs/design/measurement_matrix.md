@@ -12,11 +12,11 @@ complete scale, training, or external-interoperability gates.
 |---|---|---|
 | complete | path/order/worker reproducibility | [`../measurements/reproducibility_matrix_2026-10-03.json`](../measurements/reproducibility_matrix_2026-10-03.json) |
 | complete | 100k/1M local resource use | dated clean-release artifacts in [`../measurements/`](../measurements/README.md) |
-| complete | Sekirei 0.3.65/0.3.66 fixed-node delta | 230 paired positions and 64 retained mined records |
+| complete | external-engine fixed-node delta | 230 paired positions and 64 retained mined records |
 | pilot complete | four-arm training comparison | 48 positions per arm, three seeds, one epoch, shared validation |
-| complete | Sekirei 0.3.68 typed compatibility | immutable shogiesa 0.11.1 producer, fixture identity, 13 typed reader tests |
+| complete | external typed compatibility | immutable producer, fixture identity, and typed reader tests |
 | pilot complete | teacher/search/quality calibration | 64 fixed positions, two teachers, 16 cases, acknowledged NNUE loads |
-| complete | Sekirei A/B artifact interoperability | four-game schema-v1 smoke plus fail-closed shogiesa report |
+| complete | external A/B artifact interoperability | small schema-v1 smoke plus fail-closed shogiesa report |
 | open | USI flakiness and rerun behavior | repeated real-engine runs, failure rate, residue, cache/output identity |
 | representative run open | threshold calibration | broaden the completed 64-position pilot before choosing general defaults |
 | open | representative training effect | larger corpus and budget, paired seeds, failed-run accounting |
@@ -37,11 +37,11 @@ The harness records wall time, sampled peak RSS/FD count, disk headroom, hashes,
 It rejects dirty trees. At 1M it removes the hashed synthetic input after `pack` to bound disk use;
 the deletion is outside every measured command.
 
-`scripts/run_sekirei_version_delta.py` compares immutable Sekirei tags with one sampled corpus,
+The version-delta harness compares immutable external-engine builds with one sampled corpus,
 fixed nodes, `Threads=1`, and `SpecTopN=0`. It records selected-input hashes, search disagreement,
 cp deltas, and optional mined JSONL. This measures output differences, not strength.
 
-`scripts/run_sekirei_learning_ablation.py` creates equal-size baseline, filtered, uncertain-mined,
+The learning-ablation harness creates equal-size baseline, filtered, uncertain-mined,
 and phase-balanced arms from one source split. It runs three paired seeds against frozen
 validation using a completed fixed-depth teacher search. The checked-in one-epoch result is
 pipeline evidence, not a generalization or playing-strength result.
@@ -60,15 +60,15 @@ teachers and a fixed corpus; the harness alone does not complete the calibration
 ```bash
 python3 scripts/run_teacher_calibration.py \
   --input positions.jsonl \
-  --teacher sekirei-0.3.68=/path/to/sekirei \
-  --weight sekirei-0.3.68=/path/to/weights.bin \
+  --teacher external-engine=/path/to/engine \
+  --weight external-engine=/path/to/weights.bin \
   --depths 4,8 --nodes 1000,10000 --multipv 1,3 \
   --engine-option EvalFile=/path/to/weights.bin \
   --engine-option Threads=1 --engine-option SpecTopN=0 \
   --require-weight-ack --out teacher-calibration.json
 ```
 
-`scripts/report_sekirei_gate.py` consumes Sekirei's `sekirei.ab_gate_result.v1`. It validates
+The gate reporter consumes an external `ab_gate_result.v1`. It validates
 terminal state, W/D/L totals, process completion, clean runner identity, binary/weight/opening
 hashes, and then passes through the upstream status without deriving its own verdict.
 

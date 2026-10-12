@@ -75,13 +75,13 @@ Compare links at the end provide the complete commit history.
   teacher-count matrix, records per-case coverage/bounds/timeouts, and evaluates fixed quality
   profiles with machine-readable drop reasons. Dirty-tree runs are explicitly marked as
   candidates and cannot be mistaken for release evidence.
-- Added a fail-closed Sekirei `ab_gate_result.v1` reporter with fixture-backed schema, terminal
+- Added a fail-closed external `ab_gate_result.v1` reporter with fixture-backed schema, terminal
   state, game-count, and provenance validation. It preserves the upstream verdict instead of
   recomputing one from Elo fields.
 
 ### Changed
 
-- Updated the pinned Sekirei compatibility target to v0.3.68 and its released
+- Updated the pinned external compatibility target and its released
   `shogiesa-core` 0.11.1 contract. New version-delta and learning-ablation runs default to the
   v0.3.67/v0.3.68 pair; historical 0.3.65/v0.3.66 artifacts remain unchanged.
 
@@ -117,7 +117,7 @@ Compare links at the end provide the complete commit history.
   exits immediately if it cannot enter the repository root.
 - Measurement artifacts now use shared same-directory atomic replacement and reject aliases with
   their corpus, shogiesa binary, or sibling output, including symlink and hard-link aliases.
-- The Sekirei compatibility check now rejects missing option values and canonical-fixture output
+- The external compatibility check now rejects missing option values and canonical-fixture output
   collisions, supports Git worktree checkouts, and publishes JSON artifacts atomically without
   replacing an existing output symlink. It can validate an immutable shogiesa tag independently
   of a dirty development checkout.
@@ -127,13 +127,13 @@ Compare links at the end provide the complete commit history.
 - `validate --strict` now rejects valid JSON that is not a valid typed `PositionRecord`, including
   unsupported future schema versions and missing required fields, and reports those separately
   from malformed JSON.
-- Added a tag-pinned Sekirei compatibility harness that compares the canonical schema fixture and
+- Added a tag-pinned external compatibility harness that compares the canonical schema fixture and
   runs the released trainer's typed position-reader tests without modifying its checkout.
 - Added a deterministic local resource-baseline harness for 100k/1M streaming measurements with
   wall-time, sampled RSS/FD, disk, binary, and artifact provenance.
-- Recorded clean-release 100k and 1M resource baselines, a fixed-node Sekirei 0.3.65/0.3.66
+- Recorded clean-release 100k and 1M resource baselines, a fixed-node external-engine
   comparison with 64 retained mined positions, and a four-arm three-seed training pilot.
-- Added reproducible harnesses for the Sekirei version delta and training ablation; both pin source
+- Added reproducible harnesses for an external-engine version delta and training ablation; both pin source
   tags, dataset identities, search/training controls, and claim limits.
 - Reused USI sessions now place a command-order barrier between completed searches in both strict
   and compatibility modes, preventing a late duplicate `bestmove` from being mistaken for the
@@ -231,7 +231,7 @@ Compare links at the end provide the complete commit history.
 - `shuffle` writes deterministic training order and an optional order manifest.
 - Position records gained game-result provenance and WDL-aware balancing/reporting.
 - `make-gate-openings` creates root-diverse, playable SFEN suites with a reproducibility manifest.
-- Sekirei dataset-ablation and gate-evaluation runbooks separate data diagnostics from strength
+- External dataset-ablation and gate-evaluation runbooks separate data diagnostics from strength
   measurement.
 
 ### Changed

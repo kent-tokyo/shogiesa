@@ -7,28 +7,18 @@ the formats are semantically identical.
 | boundary | local fixture/evidence | verified claim | not claimed |
 |---|---|---|---|
 | CSA -> JSONL | `tests/fixtures/sample.csa`, `malformed.csa` | valid prefix extraction and diagnostic skip | all CSA dialects |
-| KIF/KI2 -> JSONL | `sample.kif`, `sample_handicap.kif`, `malformed.kif`, `no-terminal.kif`, `variation.kif`, `nested_variation.kif` | mainline, handicap, malformed/unterminated input, flat and indentation-nested variation provenance | arbitrary dialects or unindented nested-branch conventions |
-| recursive discovery | `tests/fixtures/recursive_extract/` and CLI integration tests | sorted relative provenance, duplicate basenames, tree-wide dedup, byte-stable output, symlink non-traversal | remote filesystems or non-UTF-8 path portability |
-| SFEN -> core/pack | `tests/fixtures/match_position_sfen_*.txt`, pack round-trip tests | SFEN records survive validation and pack/unpack | arbitrary producer-specific metadata |
-| JSONL -> pack -> JSONL | `tests/fixtures/pack_input.jsonl`, `malformed_mixed.jsonl`, `pack_bad_magic.hex`, `pack_truncated_header.hex`, `pack_unsupported_version.hex`, `pack_trailing_bytes.hex`, `pack_wrong_endian_version.hex`, `pack_truncated_record.hex`, `shogiesa-pack` unit tests, and CLI schema fixtures v1-v11 | current format 11 round-trips through JSONL; malformed input is counted and corrupt/unsupported/trailing/wrong-endian/truncated-record bytes fail with stable diagnostic classes; library batch decode distinguishes clean EOF from truncated records; pack manifest records artifact hash and counts | editing pack as a primary format |
+| KIF/KI2 -> JSONL | parser fixtures and CLI integration tests | mainline, handicap, malformed/unterminated input, and variation provenance | arbitrary dialects or unindented nested-branch conventions |
+| recursive discovery | `tests/fixtures/recursive_extract/` | sorted relative provenance, tree-wide dedup, byte-stable output, symlink non-traversal | remote filesystems or non-UTF-8 path portability |
+| SFEN -> core/pack | SFEN fixtures and pack round-trip tests | SFEN records survive validation and pack/unpack | arbitrary producer-specific metadata |
+| JSONL -> pack -> JSONL | pack fixtures and `shogiesa-pack` tests | current format round-trips; malformed, corrupt, unsupported, trailing, wrong-endian, and truncated bytes fail with stable diagnostics | editing pack as a primary format |
 | JSONL -> USI label | `fake-usi-engine` and USI tests | direct USI boundary, limits, timeout/restart diagnostics | any particular engine's strength |
-| JSONL -> Sekirei trainer | pinned 0.3.68 schema check and 2026-10-10 three-seed pilot | Sekirei 0.3.68 reads schema-11 typed records through `shogiesa-core` 0.11.1; the historical 0.3.66 pilot completed four one-epoch dataset arms | generalization, match transfer, or Elo improvement |
-| Sekirei A/B result -> shogiesa gate report | `sekirei.ab_gate_result.v1` fixture and 2026-10-10 four-game smoke | complete upstream evidence, runner/binary/weight/opening identities, and status pass-through validate without stdout scraping | a four-game Elo or release-strength conclusion |
-| GenSfen/rshogi/cshogi/rsshogi/python-shogi | no external adapter in this checkout | only shared SFEN/JSONL boundary is proposed | native import/export compatibility |
+| JSONL -> external trainer | schema fixtures and consumer-owned checks | a consumer can validate the published typed record contract through an explicit adapter | generalization, match transfer, or Elo improvement |
+| external result -> shogiesa report | gate-result fixture and smoke tests | complete evidence, runner/binary/weight/opening identities, and status pass-through validate without stdout scraping | a small match's Elo or release-strength conclusion |
+| native external formats | no native adapter in this checkout | shared SFEN/JSONL boundary is available | native import/export compatibility without a versioned round-trip report |
 
-The named native-format row remains an explicit gap. Claim compatibility only after a round-trip
-or loss report for that exact tool and version.
+The native-format row remains an explicit gap. Claim compatibility only after a round-trip or loss
+report for that exact tool and version.
 
-Run the Sekirei check against an immutable tag without modifying its checkout:
-
-```bash
-scripts/check_sekirei_compat.sh \
-  --sekirei-dir ../sekirei \
-  --ref v0.3.68 \
-  --shogiesa-ref v0.11.1 \
-  --out /tmp/sekirei-v0.3.68-compat.json
-```
-
-The schema check proves ingestion only. The fixed-node delta and training pilot are indexed in
-[`measurements/README.md`](measurements/README.md). Sekirei retains shogiesa observations as
-diagnostics while its trainer obtains targets from its own search/cache.
+External checks must run against immutable inputs and retain the consumer version, command,
+artifact hashes, and failure reasons. shogiesa remains the producer of its own schema and manifest;
+consumer-specific validation belongs in an adapter or external evidence package.

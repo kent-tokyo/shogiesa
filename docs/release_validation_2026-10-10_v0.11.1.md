@@ -21,7 +21,7 @@ was not measured by a named artifact.
 | publication workflow | PASS | [run 37991281050](https://github.com/kent-tokyo/shogiesa/actions/runs/37991281050) packaged and published the tagged checkout |
 
 The release strengthens typed `validate --strict` diagnostics and adds reproducible resource,
-Sekirei version-delta, mining, and three-seed training-ablation harnesses with checked-in evidence.
+external-engine version-delta, mining, and three-seed training-ablation harnesses with checked-in evidence.
 The resource artifacts cover synthetic 100k and 1M streaming runs; the training artifact remains a
 small 48-position, one-epoch pilot and is not engine-strength evidence.
 

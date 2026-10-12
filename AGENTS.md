@@ -8,7 +8,7 @@ This document defines the development guidance for AI coding agents working on *
 
 In short: **将棋の餌です。**
 
-The goal of shogiesa is to build clean, balanced, reproducible training datasets for Shogi engines such as **Sekirei**. It extracts positions from game records, labels them with USI engines, filters unstable samples, and exports training-ready datasets.
+The goal of shogiesa is to build clean, balanced, reproducible training datasets for Shogi engines and trainers. It extracts positions from game records, labels them with USI engines, filters unstable samples, and exports training-ready datasets.
 
 shogiesa is not a Shogi engine.
 shogiesa is not an NNUE trainer.
@@ -18,7 +18,7 @@ shogiesa is a data forge for making better training material.
 
 shogiesa exists to answer one question:
 
-> What positions should Sekirei learn from?
+> What positions should a downstream engine learn from?
 
 The library should help produce high-quality datasets by combining:
 
@@ -89,7 +89,7 @@ Recommended intermediate format:
   },
   "observations": [
     {
-      "engine": "sekirei",
+      "engine": "external-usi-engine",
       "engine_version": "0.1.0",
       "depth": 8,
       "score_cp": 43,
@@ -174,7 +174,7 @@ shogiesa should support hard-position mining.
 
 Sources of hard positions:
 
-* games lost by Sekirei
+* games lost by a downstream engine
 * positions where evaluation changed before a blunder
 * positions where teacher and student disagree
 * positions with high policy disagreement
@@ -182,7 +182,7 @@ Sources of hard positions:
 * positions with poor validation performance
 
 The goal is not only to collect common positions.
-The goal is to collect positions that help Sekirei improve.
+The goal is to collect positions that help downstream engines improve.
 
 ### 7. Dataset Balance Is Important
 
@@ -336,7 +336,7 @@ Useful options:
 ```bash
 shogiesa label \
   --input positions.jsonl \
-  --engine ./target/release/sekirei \
+  --engine ./target/release/your-usi-engine \
   --depths 4,6,8,10 \
   --out observations.jsonl
 ```
@@ -344,7 +344,7 @@ shogiesa label \
 Useful options:
 
 ```bash
---engine-name sekirei
+--engine-name external-usi-engine
 --engine-option Threads=1
 --engine-option Hash=128
 --timeout-ms 10000
@@ -495,14 +495,14 @@ Verbose mode should expose:
 
 Avoid noisy per-position logs unless `--trace` is enabled.
 
-## Compatibility with Sekirei
+## Compatibility with downstream trainers
 
-shogiesa should integrate naturally with Sekirei.
+shogiesa should integrate naturally with downstream trainers through stable formats.
 
 Primary output target:
 
 ```text
-sekirei-train compatible JSONL or dataset format
+downstream-trainer-compatible JSONL or dataset format
 ```
 
 Expected flow:
@@ -512,7 +512,7 @@ shogiesa extract --input ./games --out positions.jsonl
 
 shogiesa label \
   --input positions.jsonl \
-  --engine ./target/release/sekirei \
+  --engine ./target/release/your-usi-engine \
   --depths 4,6,8,10 \
   --out observations.jsonl
 
@@ -521,12 +521,12 @@ shogiesa filter \
   --min-stability 0.85 \
   --out train.jsonl
 
-cargo run --release -p sekirei-train -- \
+cargo run --release -p downstream-trainer -- \
   --scored train.jsonl \
   --stability-weighted
 ```
 
-Do not make shogiesa depend tightly on Sekirei internals.
+Do not make shogiesa depend tightly on any downstream product's internals.
 Prefer stable formats such as SFEN, JSONL, and USI.
 
 ## Public API Guidelines
@@ -554,7 +554,7 @@ README should explain:
 * installation
 * quick start
 * JSONL schema
-* relationship with Sekirei
+* relationship with downstream trainers
 * relationship with quietset
 * limitations
 
@@ -615,7 +615,7 @@ shogiesa report --input positions.jsonl
 Then:
 
 ```bash
-shogiesa label --input positions.jsonl --engine ./sekirei --depths 4,6 --out observations.jsonl
+shogiesa label --input positions.jsonl --engine ./your-usi-engine --depths 4,6 --out observations.jsonl
 ```
 
 Then:
@@ -649,7 +649,7 @@ When working on shogiesa:
 4. Add tests for every parser, converter, and filter.
 5. Do not silently drop data without reporting counts.
 6. Do not introduce a binary format before JSONL is stable.
-7. Do not couple the project too tightly to Sekirei.
+7. Do not couple the project too tightly to any downstream product.
 8. Keep USI integration robust against engine failures.
 9. Keep README examples in sync with CLI behavior.
 10. Preserve the core identity: **将棋の餌**.
@@ -662,7 +662,7 @@ shogiesa should not become:
 * a GUI
 * a cloud training service
 * a general-purpose database
-* a replacement for Sekirei
+* a replacement for a downstream engine or trainer
 * a replacement for quietset
 * a complete tournament platform
 * a general chess/shogi variant framework
@@ -678,5 +678,5 @@ Shogi training data feed for NNUE engines.
 Alternative tagline:
 
 ```text
-将棋の餌。Sekirei に良質な教師局面を食わせるためのデータ生成ツール。
+将棋の餌。下流のエンジンやtrainerに良質な教師局面を渡すためのデータ生成ツール。
 ```

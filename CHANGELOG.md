@@ -20,6 +20,8 @@ Compare links at the end provide the complete commit history.
   the existing `i32` JSONL and pack fields through explicit saturation.
 - Materialized JSONL loaders now report malformed records by physical line number even when blank
   lines precede them.
+- Strict USI handling now waits through late `info` lines for the owed `bestmove` after a timed-out
+  search, preventing a scheduler race from misattributing stale output to the next position.
 
 ## [0.11.4] — 2026-10-12
 

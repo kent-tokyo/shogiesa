@@ -521,11 +521,15 @@ impl UsiEngine {
         // -- exactly the stale-bestmove mislabel this feature exists to prevent -- so give it one
         // bounded window first.
         if self.strict && self.awaiting_late_bestmove {
-            match self.recv_until(Instant::now() + Duration::from_millis(STOP_GRACE_MS)) {
-                Ok(line) if line.starts_with("bestmove ") => {
-                    return Err(UsiError::DelayedBestmoveAfterTimeout);
+            let deadline = Instant::now() + Duration::from_millis(STOP_GRACE_MS);
+            loop {
+                match self.recv_until(deadline) {
+                    Ok(line) if line.starts_with("bestmove ") => {
+                        return Err(UsiError::DelayedBestmoveAfterTimeout);
+                    }
+                    Ok(_) => continue,
+                    Err(error) => return Err(error),
                 }
-                Ok(_) | Err(_) => {} // benign stray line, or nothing arrived -- fall through
             }
         }
 

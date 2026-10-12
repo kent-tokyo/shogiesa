@@ -34,6 +34,11 @@ unknown future version with the supported range and upgrade/conversion guidance.
 `serde_json::from_str::<PositionRecord>` remains possible for source compatibility, but it only
 performs structural deserialization and is not the supported version gate.
 
+`PositionRecordJsonlReader<R: BufRead>` applies the same parser incrementally. It skips blank
+lines while retaining their physical line numbers, yields typed line-numbered failures without
+preventing the caller from continuing, and accepts a final line without a newline. It does not
+collect records or make filtering and error-policy decisions for the consumer.
+
 Compatibility rules are:
 
 - Existing fields do not change meaning within a schema version.

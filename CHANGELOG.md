@@ -5,6 +5,12 @@ Compare links at the end provide the complete commit history.
 
 ## [Unreleased]
 
+### Added
+
+- `shogiesa-core::schema::PositionRecordJsonlReader` provides bounded-memory, line-numbered
+  iteration over position JSONL. It skips blank lines, preserves physical line numbers, reports
+  typed read/parse/schema errors, and accepts a final line without a newline.
+
 ## [0.11.4] — 2026-10-12
 
 ### Added

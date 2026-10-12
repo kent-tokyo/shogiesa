@@ -1,6 +1,9 @@
+use std::io::{self, BufRead, Cursor, Read};
+
 use shogiesa_core::schema::{
-    MAX_SUPPORTED_SCHEMA_VERSION, MIN_SUPPORTED_SCHEMA_VERSION, PositionRecordParseError, Score,
-    ScoreBound, ScorePerspective, SearchLimitKind, parse_json_line, validate_schema_version,
+    MAX_SUPPORTED_SCHEMA_VERSION, MIN_SUPPORTED_SCHEMA_VERSION, PositionRecordJsonlReader,
+    PositionRecordLineError, PositionRecordParseError, Score, ScoreBound, ScorePerspective,
+    SearchLimitKind, parse_json_line, validate_schema_version,
 };
 
 const CURRENT_FIXTURE: &str = include_str!("fixtures/schema_contract_v11.jsonl");
@@ -109,4 +112,87 @@ fn malformed_json_is_reported_as_a_typed_parse_error() {
             .to_string()
             .starts_with("invalid shogiesa PositionRecord JSON:")
     );
+}
+
+#[test]
+fn streaming_reader_tracks_physical_lines_and_continues_after_record_errors() {
+    let current = fixture_lines(CURRENT_FIXTURE).next().unwrap();
+    let future = fixture_lines(LEGACY_FIXTURE).next().unwrap().replacen(
+        "\"schema_version\":1",
+        "\"schema_version\":12",
+        1,
+    );
+    let legacy = fixture_lines(LEGACY_FIXTURE).next().unwrap();
+    let input = format!("\n{current}\r\n  \t\nnot json\n{future}\n{legacy}");
+    let mut records = PositionRecordJsonlReader::new(Cursor::new(input));
+
+    let first = records.next().unwrap().unwrap();
+    assert_eq!(first.line_number, 2);
+    assert_eq!(first.record.schema_version, MAX_SUPPORTED_SCHEMA_VERSION);
+
+    let malformed = records.next().unwrap().unwrap_err();
+    assert_eq!(malformed.line_number(), 4);
+    assert!(matches!(
+        malformed,
+        PositionRecordLineError::Parse {
+            source: PositionRecordParseError::Json(_),
+            ..
+        }
+    ));
+
+    let unsupported = records.next().unwrap().unwrap_err();
+    assert_eq!(unsupported.line_number(), 5);
+    assert!(matches!(
+        unsupported,
+        PositionRecordLineError::Parse {
+            source: PositionRecordParseError::UnsupportedSchema(_),
+            ..
+        }
+    ));
+
+    let final_without_newline = records.next().unwrap().unwrap();
+    assert_eq!(final_without_newline.line_number, 6);
+    assert_eq!(
+        final_without_newline.record.schema_version,
+        MIN_SUPPORTED_SCHEMA_VERSION
+    );
+    assert!(records.next().is_none());
+}
+
+#[test]
+fn streaming_reader_is_lazy_and_does_not_collect_following_records() {
+    let first = fixture_lines(CURRENT_FIXTURE).next().unwrap();
+    let second = fixture_lines(CURRENT_FIXTURE).nth(1).unwrap();
+    let input = format!("{first}\n{second}\n");
+    let expected_position = first.len() as u64 + 1;
+    let mut records = PositionRecordJsonlReader::new(Cursor::new(input));
+
+    assert_eq!(records.next().unwrap().unwrap().line_number, 1);
+    assert_eq!(records.into_inner().position(), expected_position);
+}
+
+struct AlwaysFailingReader;
+
+impl Read for AlwaysFailingReader {
+    fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+        Err(io::Error::other("fixture read failure"))
+    }
+}
+
+impl BufRead for AlwaysFailingReader {
+    fn fill_buf(&mut self) -> io::Result<&[u8]> {
+        Err(io::Error::other("fixture read failure"))
+    }
+
+    fn consume(&mut self, _amount: usize) {}
+}
+
+#[test]
+fn streaming_reader_reports_read_error_once_and_then_terminates() {
+    let mut records = PositionRecordJsonlReader::new(AlwaysFailingReader);
+    let error = records.next().unwrap().unwrap_err();
+
+    assert_eq!(error.line_number(), 1);
+    assert!(matches!(error, PositionRecordLineError::Read { .. }));
+    assert!(records.next().is_none());
 }

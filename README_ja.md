@@ -90,6 +90,8 @@ JSONLがcanonical formatです。各recordはschema version、指し手後のSFE
 Rust consumerは`shogiesa-core`へ一方向に依存し、
 `shogiesa_core::schema::parse_json_line`で読み込みます。旧schemaの既定値を適用し、
 未対応versionは明示的に拒否します。
+大規模datasetは`PositionRecordJsonlReader<R: BufRead>`で全件を保持せず、物理行番号付きで
+逐次処理できます。
 
 binary packはversion付きの転送形式です。点検やdiffではJSONLへ戻してください。
 詳細は[schema/pack互換性](docs/design/schema_compatibility.md)にあります。

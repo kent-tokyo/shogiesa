@@ -113,7 +113,7 @@ type Grid = [[Option<(SideToMove, PieceType)>; 9]; 9];
 #[derive(Clone)]
 pub struct Board {
     pub grid: Grid,
-    /// hand[color_idx][piece_idx]: R=0,B=1,G=2,S=3,N=4,L=5,P=6
+    /// `hand[color_idx][piece_idx]`: R=0,B=1,G=2,S=3,N=4,L=5,P=6
     pub hand: [[u8; 7]; 2],
     pub side: SideToMove,
     pub move_count: u32,

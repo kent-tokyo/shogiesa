@@ -35,6 +35,12 @@ does not depend on a trainer or engine internals. `schema::parse_json_line` acce
 applies documented historical defaults, and rejects unsupported versions. Root-level type exports
 remain available for source compatibility.
 
+For streaming datasets, wrap any `BufRead` in `schema::PositionRecordJsonlReader`. Each successful
+item contains the one-based physical line number and a typed record. Blank lines are skipped but
+still count toward line numbers; malformed JSON and unsupported schema versions are yielded as
+line-numbered errors, after which iteration may continue. A final line without a newline is read
+normally. The iterator does not collect, filter, or hash the dataset.
+
 Pack is derived and returns to JSONL for inspection. USI is a child-process boundary; engine
 internals are not public API.
 

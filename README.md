@@ -96,6 +96,8 @@ optional observations, stability, and result data.
 Rust consumers should depend one-way on `shogiesa-core` and call
 `shogiesa_core::schema::parse_json_line`. It applies documented legacy defaults and rejects
 unsupported schema versions without coupling shogiesa to a trainer.
+For large datasets, `PositionRecordJsonlReader<R: BufRead>` provides incremental, line-numbered
+iteration without collecting the input.
 
 Binary pack is a versioned transport format. Convert it back to JSONL for inspection or diffing.
 See [schema and pack compatibility](docs/design/schema_compatibility.md).

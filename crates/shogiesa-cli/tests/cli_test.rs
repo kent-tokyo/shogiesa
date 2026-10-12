@@ -420,6 +420,7 @@ fn dataset_diff_reports_physical_line_after_blank_lines() {
     std::fs::write(candidate.path(), format!("{record}\n")).unwrap();
 
     shogiesa()
+        .env("RUST_LOG", "warn")
         .args([
             "dataset-diff",
             "--baseline",

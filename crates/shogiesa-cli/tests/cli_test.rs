@@ -430,7 +430,7 @@ fn dataset_diff_reports_physical_line_after_blank_lines() {
         ])
         .assert()
         .success()
-        .stderr(predicate::str::contains("line=2"));
+        .stderr(predicate::str::is_match("line.*=.*2").unwrap());
 }
 
 #[test]

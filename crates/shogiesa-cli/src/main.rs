@@ -4045,7 +4045,7 @@ fn cmd_split(args: SplitArgs) -> Result<()> {
         if line.trim().is_empty() {
             continue;
         }
-        let rec: PositionRecord = match serde_json::from_str(&line) {
+        let rec = match parse_json_line(&line) {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!(line = i + 1, "JSON parse error: {e}");
@@ -4187,7 +4187,7 @@ fn cmd_split_train_valid_test(args: SplitArgs) -> Result<()> {
         if line.trim().is_empty() {
             continue;
         }
-        let rec: PositionRecord = match serde_json::from_str(&line) {
+        let rec = match parse_json_line(&line) {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!(line = i + 1, "JSON parse error: {e}");
@@ -6042,7 +6042,7 @@ fn cmd_filter(args: FilterArgs) -> Result<()> {
         }
         total += 1;
 
-        let rec: PositionRecord = match serde_json::from_str(&line) {
+        let rec = match parse_json_line(&line) {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!(line = i + 1, "JSON parse error: {e}");

@@ -4400,6 +4400,44 @@ fn stability_excludes_resign_from_bestmove_agreement() {
 }
 
 #[test]
+fn filter_rejects_future_schema_instead_of_emitting_it() {
+    let current = position("middlegame", serde_json::json!([obs("7g7f", 50, 4)]));
+    let mut future = current.clone();
+    future["schema_version"] = serde_json::json!(shogiesa_core::SCHEMA_VERSION + 1);
+    let input = make_labeled_jsonl(&[current, future]);
+    let out = closed_temp_file();
+    let manifest_path = closed_temp_file();
+
+    shogiesa()
+        .env("RUST_LOG", "warn")
+        .args([
+            "filter",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--manifest",
+            manifest_path.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "unsupported shogiesa schema_version",
+        ));
+
+    assert_eq!(
+        std::fs::read_to_string(out.path()).unwrap().lines().count(),
+        1
+    );
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest_path.path()).unwrap()).unwrap();
+    assert_eq!(manifest["records_read"], 2);
+    assert_eq!(manifest["records_kept"], 1);
+    assert_eq!(manifest["records_dropped"], 1);
+    assert_eq!(manifest["drop_reasons"]["parse_error"], 1);
+}
+
+#[test]
 fn filter_score_swing_excluded() {
     let f = make_labeled_jsonl(&[position(
         "middlegame",
@@ -6966,6 +7004,80 @@ fn source_record(path: &str, ply: u32) -> serde_json::Value {
         "tags": { "phase": "opening", "side_to_move": "black", "in_check": false, "has_capture": false },
         "observations": []
     })
+}
+
+#[test]
+fn split_by_source_rejects_future_schema_instead_of_emitting_it() {
+    let current = source_record("game.csa", 1);
+    let mut future = source_record("future.csa", 2);
+    future["schema_version"] = serde_json::json!(shogiesa_core::SCHEMA_VERSION + 1);
+    let input = make_labeled_jsonl(&[current, future]);
+    let out_dir = TempDir::new().unwrap();
+
+    shogiesa()
+        .env("RUST_LOG", "warn")
+        .args([
+            "split",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--by-source",
+            "--out-dir",
+            out_dir.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "unsupported shogiesa schema_version",
+        ));
+
+    assert!(out_dir.path().join("game.csa.jsonl").is_file());
+    assert!(!out_dir.path().join("future.csa.jsonl").exists());
+    let manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(out_dir.path().join("manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["total_positions"], 1);
+}
+
+#[test]
+fn split_train_valid_test_rejects_future_schema_instead_of_emitting_it() {
+    let current = source_record("game.csa", 1);
+    let mut future = source_record("future.csa", 2);
+    future["schema_version"] = serde_json::json!(shogiesa_core::SCHEMA_VERSION + 1);
+    let input = make_labeled_jsonl(&[current, future]);
+    let dir = TempDir::new().unwrap();
+    let train = dir.path().join("train.jsonl");
+    let valid = dir.path().join("valid.jsonl");
+    let test = dir.path().join("test.jsonl");
+
+    shogiesa()
+        .env("RUST_LOG", "warn")
+        .args([
+            "split",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--train",
+            train.to_str().unwrap(),
+            "--valid",
+            valid.to_str().unwrap(),
+            "--test",
+            test.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "unsupported shogiesa schema_version",
+        ));
+
+    let emitted = [&train, &valid, &test]
+        .iter()
+        .map(|path| std::fs::read_to_string(path).unwrap().lines().count())
+        .sum::<usize>();
+    assert_eq!(emitted, 1);
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("manifest.json")).unwrap())
+            .unwrap();
+    assert_eq!(manifest["total_positions"], 1);
 }
 
 #[test]

@@ -19,6 +19,11 @@ Compare links at the end provide the complete commit history.
 - `calibrate` and `tune` now resolve immutable quality configurations once per threshold or grid
   cell instead of cloning them for every input record.
 
+### Fixed
+
+- `filter` and both `split` modes now apply the public schema-version gate, so records from an
+  unsupported future schema are diagnosed and skipped instead of being emitted as current data.
+
 ## [0.11.5] — 2026-10-13
 
 ### Added

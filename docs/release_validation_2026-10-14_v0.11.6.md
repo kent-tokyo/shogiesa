@@ -15,11 +15,11 @@ representative-corpus performance, training generalization, or engine-strength i
 | dependency audit | PASS | `cargo audit` scanned 157 locked dependencies against 1,310 advisories and found no known vulnerabilities |
 | shell checks | PASS | ShellCheck, teacher-calibration self-test, and fixture-backed Python and dogfood integration tests |
 | package verification | PASS | `cargo package --workspace --locked` from the clean release commit |
-| GitHub CI | PENDING | release commit not yet pushed |
-| annotated tag | PENDING | tag not yet pushed |
-| crates.io | PENDING | tagged crates not yet published |
-| GitHub Release | PENDING | release not yet created |
-| publication workflow | PENDING | workflow not yet dispatched |
+| GitHub CI | PASS | commit `acb5c22a1b69fb3d7ae92fe0b8d45b260f4cf4cc`; [CI run 38463286549](https://github.com/kent-tokyo/shogiesa/actions/runs/38463286549) and [CodeQL run 38463286511](https://github.com/kent-tokyo/shogiesa/actions/runs/38463286511) succeeded |
+| annotated tag | PASS | remote `v0.11.6^{}` resolves to `acb5c22a1b69fb3d7ae92fe0b8d45b260f4cf4cc` |
+| crates.io | PASS | all nine publishable crates have version `0.11.6` and `yanked=false` |
+| GitHub Release | PASS | [shogiesa v0.11.6](https://github.com/kent-tokyo/shogiesa/releases/tag/v0.11.6) published, not draft or prerelease |
+| publication workflow | PASS | [Publish release run 38463933324](https://github.com/kent-tokyo/shogiesa/actions/runs/38463933324) completed successfully |
 
 Version 0.11.6 makes CLI JSONL ingestion consistently use the public typed, schema-gated reader.
 Materializing commands no longer retain the complete input text, reporting and streaming

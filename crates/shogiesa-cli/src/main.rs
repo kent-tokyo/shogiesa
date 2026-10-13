@@ -19,7 +19,10 @@ use shogiesa_core::{
     evaluate_quality, has_special_bestmove,
     manifest::RunManifestV1 as RunManifest,
     parse_usi_move, phase_from_ply, requested_depth_underreached,
-    schema::{PositionRecordParseError, parse_json_line},
+    schema::{
+        PositionRecordJsonlReader, PositionRecordLineError, PositionRecordParseError,
+        parse_json_line,
+    },
     score_swing_i64,
     sfen::Sfen,
     zobrist_from_sfen,
@@ -7806,22 +7809,25 @@ fn collect_game_paths_recursive_from(
     Ok(())
 }
 
-fn load_records(path: &PathBuf) -> Result<(Vec<PositionRecord>, usize)> {
-    let content = fs::read_to_string(path).with_context(|| format!("cannot read {:?}", path))?;
+fn load_records(path: &Path) -> Result<(Vec<PositionRecord>, usize)> {
+    let file = File::open(path).with_context(|| format!("cannot open {path:?}"))?;
     let mut broken = 0usize;
-    let records: Vec<PositionRecord> = content
-        .lines()
-        .enumerate()
-        .filter(|(_, line)| !line.trim().is_empty())
-        .filter_map(|(i, line)| match parse_json_line(line) {
-            Ok(rec) => Some(rec),
-            Err(e) => {
-                tracing::warn!(line = i + 1, "parse error: {e}");
+    let mut records = Vec::new();
+    for item in PositionRecordJsonlReader::new(BufReader::new(file)) {
+        match item {
+            Ok(line) => records.push(line.record),
+            Err(PositionRecordLineError::Parse {
+                line_number,
+                source,
+            }) => {
+                tracing::warn!(line = line_number, "parse error: {source}");
                 broken += 1;
-                None
             }
-        })
-        .collect();
+            Err(error) => {
+                return Err(error).with_context(|| format!("cannot read {path:?}"));
+            }
+        }
+    }
     Ok((records, broken))
 }
 

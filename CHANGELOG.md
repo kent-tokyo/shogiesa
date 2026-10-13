@@ -5,6 +5,12 @@ Compare links at the end provide the complete commit history.
 
 ## [Unreleased]
 
+### Changed
+
+- CLI commands that must materialize records now read JSONL incrementally through the public typed
+  reader instead of retaining the complete input text alongside parsed records. Existing
+  broken-line tolerance and physical-line diagnostics are unchanged.
+
 ## [0.11.5] — 2026-10-13
 
 ### Added

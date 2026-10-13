@@ -5,6 +5,8 @@ Compare links at the end provide the complete commit history.
 
 ## [Unreleased]
 
+## [0.11.6] — 2026-10-14
+
 ### Changed
 
 - CLI commands that must materialize records now read JSONL incrementally through the public typed
@@ -353,7 +355,8 @@ Compare links at the end provide the complete commit history.
 - CSA extraction, USI labeling, validation/reporting, shared domain types, CI, fixtures, and dual
   MIT/Apache-2.0 licensing.
 
-[Unreleased]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.5...HEAD
+[Unreleased]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.6...HEAD
+[0.11.6]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.5...v0.11.6
 [0.11.5]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.4...v0.11.5
 [0.11.4]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.3...v0.11.4
 [0.11.3]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.2...v0.11.3

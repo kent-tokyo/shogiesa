@@ -4337,6 +4337,43 @@ fn report_skips_future_schema_through_typed_reader() {
 }
 
 #[test]
+fn stability_skips_future_schema_through_typed_reader() {
+    let current = position(
+        "middlegame",
+        serde_json::json!([obs("7g7f", 50, 4), obs("7g7f", 300, 6)]),
+    );
+    let current_schema_version = current["schema_version"].clone();
+    let mut future = current.clone();
+    future["schema_version"] = serde_json::json!(shogiesa_core::SCHEMA_VERSION + 1);
+    let input = make_labeled_jsonl(&[current, future]);
+    let out = closed_temp_file();
+
+    shogiesa()
+        .env("RUST_LOG", "warn")
+        .args([
+            "stability",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "unsupported shogiesa schema_version",
+        ))
+        .stderr(predicate::str::contains(
+            "done: 2 read, 1 enriched with stability, 1 skipped",
+        ));
+
+    let output = std::fs::read_to_string(out.path()).unwrap();
+    assert_eq!(output.lines().count(), 1);
+    let record: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
+    assert_eq!(record["schema_version"], current_schema_version);
+    assert_eq!(record["stability"]["score_swing_cp"], 250);
+}
+
+#[test]
 fn stability_excludes_resign_from_bestmove_agreement() {
     let f = make_labeled_jsonl(&[position(
         "middlegame",

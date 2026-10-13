@@ -13,6 +13,11 @@ Compare links at the end provide the complete commit history.
 - `report`, `conflict-report`, `block-report`, and `distribution` now share the schema-gated typed
   reader, so unsupported future schemas are diagnosed and skipped consistently with malformed
   records instead of being analyzed as if they were current data.
+- Streaming transform and selection commands now use the same typed reader, preventing
+  unsupported future schemas from entering stability, sampling, balancing, selection,
+  gate-opening, calibration, audit, and tuning outputs.
+- `calibrate` and `tune` now resolve immutable quality configurations once per threshold or grid
+  cell instead of cloning them for every input record.
 
 ## [0.11.5] — 2026-10-13
 

@@ -3658,28 +3658,16 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
 }
 
 fn cmd_stability(args: StabilityArgs) -> Result<()> {
-    let reader = BufReader::new(
-        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
-    );
     let mut writer = AtomicWriter::new(&args.out)?;
 
     let mut total = 0usize;
     let mut enriched = 0usize;
     let mut skipped = 0usize;
 
-    for (i, line) in reader.lines().enumerate() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
+    for item in open_position_jsonl(&args.input)? {
         total += 1;
-        let mut rec: PositionRecord = match serde_json::from_str(&line) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(line = i + 1, "JSON parse error: {e}");
-                skipped += 1;
-                continue;
-            }
+        let Some(mut rec) = permissive_position_record(item, &args.input, &mut skipped)? else {
+            continue;
         };
         rec.fill_stability();
         if rec.stability.is_some() {
@@ -4461,32 +4449,23 @@ fn cmd_sample(args: SampleArgs) -> Result<()> {
     let seed = args.seed;
     let count = args.count;
 
-    let reader = BufReader::new(
-        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
-    );
-    let mut io_error: Option<std::io::Error> = None;
-    let records = reader
-        .lines()
-        .enumerate()
-        .filter_map(|(i, line)| match line {
-            Ok(line) if line.trim().is_empty() => None,
-            Ok(line) => match parse_json_line(&line) {
-                Ok(r) => Some(r),
-                Err(e) => {
-                    tracing::warn!(line = i + 1, "parse error: {e}");
-                    None
-                }
-            },
-            Err(e) => {
-                io_error.get_or_insert(e);
+    let reader = open_position_jsonl(&args.input)?;
+    let mut broken = 0usize;
+    let mut read_error: Option<anyhow::Error> = None;
+    let records = reader.filter_map(|item| {
+        match permissive_position_record(item, &args.input, &mut broken) {
+            Ok(record) => record,
+            Err(error) => {
+                read_error.get_or_insert(error);
                 None
             }
-        });
+        }
+    });
     // Reservoir sample restores original file order (unlike `select`, which outputs in ranked
     // order).
     let (kept, total) = reservoir_sample(records, count, seed, |r| r.sfen.as_str());
-    if let Some(e) = io_error {
-        return Err(e.into());
+    if let Some(error) = read_error {
+        return Err(error);
     }
 
     let mut writer = AtomicWriter::new(&args.out)?;
@@ -4787,16 +4766,15 @@ fn cmd_balance(args: BalanceArgs) -> Result<()> {
     // defaults to the smallest bucket's size, which can't be known until every bucket has been
     // seen at least once.
     let mut bucket_sizes: HashMap<String, usize> = HashMap::new();
-    let pass1 = BufReader::new(
-        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
-    );
-    for line in pass1.lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
+    let mut pass1_broken = 0usize;
+    for item in open_position_jsonl(&args.input)? {
         // parse errors are warned once, in pass 2 below -- not duplicated here
-        if let Ok(record) = parse_json_line(&line) {
+        if let Some(record) = permissive_position_record_with_diagnostics(
+            item,
+            &args.input,
+            &mut pass1_broken,
+            false,
+        )? {
             *bucket_sizes
                 .entry(bucket_key(&record, by_phase, by_side, by_eval, by_wdl))
                 .or_default() += 1;
@@ -4808,22 +4786,12 @@ fn cmd_balance(args: BalanceArgs) -> Result<()> {
     // Pass 2: re-stream, keeping a bounded top-`target` heap per bucket, keyed by SFEN (matching
     // today's "sort by SFEN, take first N" exactly) -- memory O(bucket count x target) instead of
     // O(n).
-    let pass2 = BufReader::new(
-        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
-    );
     let mut total = 0usize;
+    let mut broken = 0usize;
     let mut heaps: HashMap<String, BinaryHeap<HeapEntry<String, PositionRecord>>> = HashMap::new();
-    for (i, line) in pass2.lines().enumerate() {
-        let line = line?;
-        if line.trim().is_empty() {
+    for item in open_position_jsonl(&args.input)? {
+        let Some(record) = permissive_position_record(item, &args.input, &mut broken)? else {
             continue;
-        }
-        let record: PositionRecord = match serde_json::from_str(&line) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(line = i + 1, "parse error: {e}");
-                continue;
-            }
         };
         let bucket = bucket_key(&record, by_phase, by_side, by_eval, by_wdl);
         let key = record.sfen.clone();
@@ -5212,9 +5180,7 @@ mod total_material_tests {
 
 fn cmd_make_gate_openings(args: MakeGateOpeningsArgs) -> Result<()> {
     let seed = args.seed;
-    let reader = BufReader::new(
-        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
-    );
+    let reader = open_position_jsonl(&args.input)?;
 
     let mut total = 0usize;
     let mut invalid_sfen = 0usize;
@@ -5223,29 +5189,19 @@ fn cmd_make_gate_openings(args: MakeGateOpeningsArgs) -> Result<()> {
     let mut unplayable = 0usize;
     let mut duplicate_sfen = 0usize;
     let mut seen: HashSet<String> = HashSet::new();
-    let mut io_error: Option<std::io::Error> = None;
+    let mut broken = 0usize;
+    let mut read_error: Option<anyhow::Error> = None;
 
     // Domain-specific pre-filtering (sfen validity, ply range, dedup) happens here, before the
     // record ever reaches the generic group-aware fill below -- `make-gate-openings` has no
     // bucketing dimension, so every survivor goes into one universal `""` bucket.
     let filtered: Vec<PositionRecord> = reader
-        .lines()
-        .enumerate()
-        .filter_map(|(i, line)| {
-            let line = match line {
-                Ok(line) => line,
-                Err(e) => {
-                    io_error.get_or_insert(e);
-                    return None;
-                }
-            };
-            if line.trim().is_empty() {
-                return None;
-            }
-            let record: PositionRecord = match serde_json::from_str(&line) {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::warn!(line = i + 1, "parse error: {e}");
+        .filter_map(|item| {
+            let record = match permissive_position_record(item, &args.input, &mut broken) {
+                Ok(Some(record)) => record,
+                Ok(None) => return None,
+                Err(error) => {
+                    read_error.get_or_insert(error);
                     return None;
                 }
             };
@@ -5290,8 +5246,8 @@ fn cmd_make_gate_openings(args: MakeGateOpeningsArgs) -> Result<()> {
             Some(record)
         })
         .collect();
-    if let Some(e) = io_error {
-        return Err(e.into());
+    if let Some(error) = read_error {
+        return Err(error);
     }
 
     let quotas = BTreeMap::from([(String::new(), args.count)]);
@@ -5409,23 +5365,13 @@ fn select_uncertain_streaming(args: &SelectArgs) -> Result<(usize, Vec<PositionR
     };
     let count = args.count;
     let seed = args.seed;
-    let reader = BufReader::new(
-        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
-    );
     let mut total = 0usize;
+    let mut broken = 0usize;
     let mut heap: BinaryHeap<HeapEntry<(TotalF32, u64), PositionRecord>> =
         BinaryHeap::with_capacity(count.saturating_add(1));
-    for (i, line) in reader.lines().enumerate() {
-        let line = line?;
-        if line.trim().is_empty() {
+    for item in open_position_jsonl(&args.input)? {
+        let Some(record) = permissive_position_record(item, &args.input, &mut broken)? else {
             continue;
-        }
-        let record: PositionRecord = match serde_json::from_str(&line) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(line = i + 1, "parse error: {e}");
-                continue;
-            }
         };
         // decision.score is evaluate_quality's own "fraction of gates passed" -- reused directly
         // as the ranking key instead of re-deriving a severity score from reasons.
@@ -5453,39 +5399,28 @@ fn select_coverage_streaming(args: &SelectArgs) -> Result<(usize, Vec<PositionRe
     let seed = args.seed;
 
     let mut bucket_counts: HashMap<String, usize> = HashMap::new();
-    let pass1 = BufReader::new(
-        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
-    );
-    for line in pass1.lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
+    let mut pass1_broken = 0usize;
+    for item in open_position_jsonl(&args.input)? {
         // parse errors are warned once, in pass 2 below -- not duplicated here
-        if let Ok(record) = parse_json_line(&line) {
+        if let Some(record) = permissive_position_record_with_diagnostics(
+            item,
+            &args.input,
+            &mut pass1_broken,
+            false,
+        )? {
             *bucket_counts
                 .entry(bucket_key(&record, true, true, true, false))
                 .or_default() += 1;
         }
     }
 
-    let pass2 = BufReader::new(
-        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
-    );
     let mut total = 0usize;
+    let mut broken = 0usize;
     let mut heap: BinaryHeap<HeapEntry<(usize, u64), PositionRecord>> =
         BinaryHeap::with_capacity(count.saturating_add(1));
-    for (i, line) in pass2.lines().enumerate() {
-        let line = line?;
-        if line.trim().is_empty() {
+    for item in open_position_jsonl(&args.input)? {
+        let Some(record) = permissive_position_record(item, &args.input, &mut broken)? else {
             continue;
-        }
-        let record: PositionRecord = match serde_json::from_str(&line) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(line = i + 1, "parse error: {e}");
-                continue;
-            }
         };
         let bucket_count = bucket_counts[&bucket_key(&record, true, true, true, false)];
         let key = (bucket_count, seeded_hash(seed, &record.sfen));
@@ -5644,27 +5579,16 @@ fn flush_hard_group(
 fn select_hard_grouped_streaming(args: &SelectArgs) -> Result<(usize, Vec<PositionRecord>)> {
     let count = args.count;
     let seed = args.seed;
-    let reader = BufReader::new(
-        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
-    );
-
     let mut heap: BinaryHeap<HeapEntry<HardKey, PositionRecord>> =
         BinaryHeap::with_capacity(count.saturating_add(1));
     let mut total = 0usize;
+    let mut broken = 0usize;
     let mut current_path: Option<String> = None;
     let mut group: Vec<PositionRecord> = Vec::new();
 
-    for (i, line) in reader.lines().enumerate() {
-        let line = line?;
-        if line.trim().is_empty() {
+    for item in open_position_jsonl(&args.input)? {
+        let Some(record) = permissive_position_record(item, &args.input, &mut broken)? else {
             continue;
-        }
-        let record: PositionRecord = match serde_json::from_str(&line) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(line = i + 1, "parse error: {e}");
-                continue;
-            }
         };
         if current_path.as_deref() != Some(record.source.path.as_str()) {
             flush_hard_group(
@@ -6423,28 +6347,33 @@ fn cmd_calibrate(args: CalibrateArgs) -> Result<()> {
             .collect(),
         None => Vec::new(),
     };
-
-    let reader = BufReader::new(
-        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
-    );
+    // These configs are invariant across records. Building them once avoids cloning the base
+    // phase vector and every other fixed field for each (record, threshold) pair.
+    let policy_margin_configs: Vec<QualityConfig> = policy_margin_rows
+        .iter()
+        .map(|row| QualityConfig {
+            min_policy_margin_cp: Some(row.value),
+            ..base_config.clone()
+        })
+        .collect();
+    let score_swing_configs: Vec<QualityConfig> = score_swing_rows
+        .iter()
+        .map(|row| QualityConfig {
+            max_score_swing_cp: Some(row.value),
+            ..base_config.clone()
+        })
+        .collect();
 
     let mut total = 0usize;
+    let mut broken = 0usize;
     let mut diagnostics = DatasetDiagnostics::default();
     let mut source_roots = BTreeMap::new();
     let mut engines = BTreeMap::new();
     let mut weights = BTreeMap::new();
 
-    for (i, line) in reader.lines().enumerate() {
-        let line = line?;
-        if line.trim().is_empty() {
+    for item in open_position_jsonl(&args.input)? {
+        let Some(rec) = permissive_position_record(item, &args.input, &mut broken)? else {
             continue;
-        }
-        let rec: PositionRecord = match serde_json::from_str(&line) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(line = i + 1, "JSON parse error: {e}");
-                continue;
-            }
         };
         total += 1;
         record_manifest_provenance(&rec, &mut source_roots, &mut engines, &mut weights);
@@ -6452,19 +6381,11 @@ fn cmd_calibrate(args: CalibrateArgs) -> Result<()> {
         // Each swept value gets its own evaluate_quality call, overriding only the one field this
         // sweep varies -- everything else (including the OTHER dimension, if held via --min-x/
         // --max-x) stays at the base config.
-        for row in &mut policy_margin_rows {
-            let config = QualityConfig {
-                min_policy_margin_cp: Some(row.value),
-                ..base_config.clone()
-            };
-            row.coverage.record(&evaluate_quality(&rec, &config));
+        for (row, config) in policy_margin_rows.iter_mut().zip(&policy_margin_configs) {
+            row.coverage.record(&evaluate_quality(&rec, config));
         }
-        for row in &mut score_swing_rows {
-            let config = QualityConfig {
-                max_score_swing_cp: Some(row.value),
-                ..base_config.clone()
-            };
-            row.coverage.record(&evaluate_quality(&rec, &config));
+        for (row, config) in score_swing_rows.iter_mut().zip(&score_swing_configs) {
+            row.coverage.record(&evaluate_quality(&rec, config));
         }
 
         // Sweep-independent, so accumulated once per record regardless of threshold, not
@@ -6717,29 +6638,19 @@ fn compute_audit_pairs<'a>(
 fn cmd_audit(args: AuditArgs) -> Result<()> {
     let student_depths = parse_student_depths(&args.student_depths, args.teacher_depth)?;
 
-    let reader = BufReader::new(
-        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
-    );
     let mut writer = AtomicWriter::new(&args.out)?;
 
     let mut total_records = 0usize;
+    let mut broken = 0usize;
     let mut overall = AuditStats::default();
     let mut per_depth: BTreeMap<u32, AuditStats> = BTreeMap::new();
     let mut source_roots = BTreeMap::new();
     let mut engines = BTreeMap::new();
     let mut weights = BTreeMap::new();
 
-    for (i, line) in reader.lines().enumerate() {
-        let line = line?;
-        if line.trim().is_empty() {
+    for item in open_position_jsonl(&args.input)? {
+        let Some(rec) = permissive_position_record(item, &args.input, &mut broken)? else {
             continue;
-        }
-        let rec: PositionRecord = match serde_json::from_str(&line) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(line = i + 1, "parse error: {e}");
-                continue;
-            }
         };
         total_records += 1;
         record_manifest_provenance(&rec, &mut source_roots, &mut engines, &mut weights);
@@ -7324,27 +7235,26 @@ fn cmd_tune(args: TuneArgs) -> Result<()> {
             grid.push(TuneCell::new(policy_margin, score_swing_value));
         }
     }
-
-    let reader = BufReader::new(
-        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
-    );
+    // The grid is fixed before the stream starts. Resolve each cell's full config once rather
+    // than cloning the base config (including allowed phases) for every input record.
+    let grid_configs: Vec<QualityConfig> = grid
+        .iter()
+        .map(|cell| QualityConfig {
+            min_policy_margin_cp: cell.policy_margin,
+            max_score_swing_cp: cell.score_swing,
+            ..base_config.clone()
+        })
+        .collect();
     let mut total = 0usize;
+    let mut broken = 0usize;
     let mut diagnostics = DatasetDiagnostics::default();
     let mut source_roots = BTreeMap::new();
     let mut engines = BTreeMap::new();
     let mut weights = BTreeMap::new();
 
-    for (i, line) in reader.lines().enumerate() {
-        let line = line?;
-        if line.trim().is_empty() {
+    for item in open_position_jsonl(&args.input)? {
+        let Some(rec) = permissive_position_record(item, &args.input, &mut broken)? else {
             continue;
-        }
-        let rec: PositionRecord = match serde_json::from_str(&line) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(line = i + 1, "JSON parse error: {e}");
-                continue;
-            }
         };
         total += 1;
         record_manifest_provenance(&rec, &mut source_roots, &mut engines, &mut weights);
@@ -7356,18 +7266,11 @@ fn cmd_tune(args: TuneArgs) -> Result<()> {
         // is what keeps this a single streaming pass despite an M*N grid.
         let audit_pairs = compute_audit_pairs(&rec, args.teacher_depth, &student_depths);
 
-        // Why this calls evaluate_quality M*N times per record instead of caching one base
-        // decision and only re-checking the two swept gates: doing the latter would mean
-        // re-deriving evaluate_quality's own pass/fail logic here in the CLI, exactly the
-        // parallel judgment logic this project centralizes in shogiesa_core instead. Grid sizes
-        // are always small (tens of cells), so this isn't a real performance concern.
-        for cell in &mut grid {
-            let config = QualityConfig {
-                min_policy_margin_cp: cell.policy_margin,
-                max_score_swing_cp: cell.score_swing,
-                ..base_config.clone()
-            };
-            let decision = evaluate_quality(&rec, &config);
+        // evaluate_quality remains the single source of gate semantics; only its immutable
+        // per-cell configs are cached. This avoids parallel judgment logic while removing
+        // M*N config allocations from the streaming hot path.
+        for (cell, config) in grid.iter_mut().zip(&grid_configs) {
+            let decision = evaluate_quality(&rec, config);
             let kept = decision.keep;
             cell.coverage.record(&decision);
             if kept {
@@ -7825,13 +7728,27 @@ fn permissive_position_record(
     path: &Path,
     broken: &mut usize,
 ) -> Result<Option<PositionRecord>> {
+    permissive_position_record_with_diagnostics(item, path, broken, true)
+}
+
+/// The same permissive policy with optional parse diagnostics. Two-pass commands suppress the
+/// first pass so one malformed physical line produces one warning, while still applying the
+/// schema gate identically in both passes.
+fn permissive_position_record_with_diagnostics(
+    item: std::result::Result<PositionRecordLine, PositionRecordLineError>,
+    path: &Path,
+    broken: &mut usize,
+    diagnose: bool,
+) -> Result<Option<PositionRecord>> {
     match item {
         Ok(line) => Ok(Some(line.record)),
         Err(PositionRecordLineError::Parse {
             line_number,
             source,
         }) => {
-            tracing::warn!(line = line_number, "parse error: {source}");
+            if diagnose {
+                tracing::warn!(line = line_number, "parse error: {source}");
+            }
             *broken += 1;
             Ok(None)
         }

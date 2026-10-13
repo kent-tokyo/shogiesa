@@ -4318,6 +4318,25 @@ fn report_bounded_streaming_matches_pre_refactor_golden_output() {
 }
 
 #[test]
+fn report_skips_future_schema_through_typed_reader() {
+    let current = position("opening", serde_json::json!([]));
+    let mut future = current.clone();
+    future["schema_version"] = serde_json::json!(shogiesa_core::SCHEMA_VERSION + 1);
+    let input = make_labeled_jsonl(&[current, future]);
+
+    shogiesa()
+        .env("RUST_LOG", "warn")
+        .args(["report", "--input", input.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("positions      : 1"))
+        .stdout(predicate::str::contains("broken lines   : 1"))
+        .stderr(predicate::str::contains(
+            "unsupported shogiesa schema_version",
+        ));
+}
+
+#[test]
 fn stability_excludes_resign_from_bestmove_agreement() {
     let f = make_labeled_jsonl(&[position(
         "middlegame",

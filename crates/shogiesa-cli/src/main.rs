@@ -20,8 +20,8 @@ use shogiesa_core::{
     manifest::RunManifestV1 as RunManifest,
     parse_usi_move, phase_from_ply, requested_depth_underreached,
     schema::{
-        PositionRecordJsonlReader, PositionRecordLineError, PositionRecordParseError,
-        parse_json_line,
+        PositionRecordJsonlReader, PositionRecordLine, PositionRecordLineError,
+        PositionRecordParseError, parse_json_line,
     },
     score_swing_i64,
     sfen::Sfen,
@@ -7809,23 +7809,42 @@ fn collect_game_paths_recursive_from(
     Ok(())
 }
 
-fn load_records(path: &Path) -> Result<(Vec<PositionRecord>, usize)> {
+type PositionJsonlReader = PositionRecordJsonlReader<BufReader<File>>;
+
+fn open_position_jsonl(path: &Path) -> Result<PositionJsonlReader> {
     let file = File::open(path).with_context(|| format!("cannot open {path:?}"))?;
+    Ok(PositionRecordJsonlReader::new(BufReader::new(file)))
+}
+
+/// Apply the CLI's permissive JSONL policy: malformed or unsupported records are counted,
+/// diagnosed, and skipped, while stream I/O errors (including future non-parse reader errors)
+/// remain fatal. Commands that need to distinguish malformed JSON from typed-shape errors, such
+/// as `validate`, intentionally inspect the raw line instead of using this helper.
+fn permissive_position_record(
+    item: std::result::Result<PositionRecordLine, PositionRecordLineError>,
+    path: &Path,
+    broken: &mut usize,
+) -> Result<Option<PositionRecord>> {
+    match item {
+        Ok(line) => Ok(Some(line.record)),
+        Err(PositionRecordLineError::Parse {
+            line_number,
+            source,
+        }) => {
+            tracing::warn!(line = line_number, "parse error: {source}");
+            *broken += 1;
+            Ok(None)
+        }
+        Err(error) => Err(error).with_context(|| format!("cannot read {path:?}")),
+    }
+}
+
+fn load_records(path: &Path) -> Result<(Vec<PositionRecord>, usize)> {
     let mut broken = 0usize;
     let mut records = Vec::new();
-    for item in PositionRecordJsonlReader::new(BufReader::new(file)) {
-        match item {
-            Ok(line) => records.push(line.record),
-            Err(PositionRecordLineError::Parse {
-                line_number,
-                source,
-            }) => {
-                tracing::warn!(line = line_number, "parse error: {source}");
-                broken += 1;
-            }
-            Err(error) => {
-                return Err(error).with_context(|| format!("cannot read {path:?}"));
-            }
+    for item in open_position_jsonl(path)? {
+        if let Some(record) = permissive_position_record(item, path, &mut broken)? {
+            records.push(record);
         }
     }
     Ok((records, broken))
@@ -8149,9 +8168,7 @@ fn cmd_dataset_diff(args: DatasetDiffArgs) -> Result<()> {
 }
 
 fn cmd_report(args: ReportArgs) -> Result<()> {
-    let reader = BufReader::new(
-        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
-    );
+    let reader = open_position_jsonl(&args.input)?;
 
     let mut n = 0usize;
     let mut broken = 0usize;
@@ -8194,18 +8211,9 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
     let mut requested_depth_total = 0usize;
     let mut requested_depth_underreach = 0usize;
 
-    for (i, line) in reader.lines().enumerate() {
-        let line = line?;
-        if line.trim().is_empty() {
+    for item in reader {
+        let Some(rec) = permissive_position_record(item, &args.input, &mut broken)? else {
             continue;
-        }
-        let rec: PositionRecord = match serde_json::from_str(&line) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(line = i + 1, "parse error: {e}");
-                broken += 1;
-                continue;
-            }
         };
         n += 1;
 
@@ -8597,9 +8605,7 @@ fn cmd_conflict_report(args: ConflictReportArgs) -> Result<()> {
         anyhow::bail!("--min-abs-cp must be non-negative");
     }
 
-    let reader = BufReader::new(
-        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
-    );
+    let reader = open_position_jsonl(&args.input)?;
     let mut records_read = 0usize;
     let mut parse_errors = 0usize;
     let mut no_game_result = 0usize;
@@ -8611,19 +8617,10 @@ fn cmd_conflict_report(args: ConflictReportArgs) -> Result<()> {
     let mut conflicts = 0usize;
     let mut groups: BTreeMap<String, ConflictGroupStats> = BTreeMap::new();
 
-    for (line_number, line) in reader.lines().enumerate() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
+    for item in reader {
         records_read += 1;
-        let rec: PositionRecord = match serde_json::from_str(&line) {
-            Ok(record) => record,
-            Err(error) => {
-                parse_errors += 1;
-                tracing::warn!(line = line_number + 1, "JSON parse error: {error}");
-                continue;
-            }
+        let Some(rec) = permissive_position_record(item, &args.input, &mut parse_errors)? else {
+            continue;
         };
 
         let Some(game_result) = rec.game_result.as_ref() else {
@@ -8860,9 +8857,7 @@ fn cmd_block_report(args: BlockReportArgs) -> Result<()> {
     if args.block_size == 0 {
         anyhow::bail!("--block-size must be > 0");
     }
-    let reader = BufReader::new(
-        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
-    );
+    let reader = open_position_jsonl(&args.input)?;
     let mut records_read = 0usize;
     let mut parse_errors = 0usize;
     let mut blocks = 0usize;
@@ -8875,19 +8870,10 @@ fn cmd_block_report(args: BlockReportArgs) -> Result<()> {
     println!("material balance  : integer points, black minus white; activity is enemy-camp proxy");
     println!("blocks:");
 
-    for (line_number, line) in reader.lines().enumerate() {
-        let line = line.with_context(|| format!("cannot read {:?}", args.input))?;
-        if line.trim().is_empty() {
-            continue;
-        }
+    for item in reader {
         records_read += 1;
-        let record: PositionRecord = match serde_json::from_str(&line) {
-            Ok(record) => record,
-            Err(error) => {
-                parse_errors += 1;
-                tracing::warn!(line = line_number + 1, "JSON parse error: {error}");
-                continue;
-            }
+        let Some(record) = permissive_position_record(item, &args.input, &mut parse_errors)? else {
+            continue;
         };
         let root = split_root_key(&record.source).to_string();
         let root_changed = current.as_ref().is_some_and(|block| block.root != root);
@@ -8935,9 +8921,7 @@ fn cmd_distribution(args: DistributionArgs) -> Result<()> {
         anyhow::bail!("--ply-bucket-size must be > 0");
     }
 
-    let reader = BufReader::new(
-        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
-    );
+    let reader = open_position_jsonl(&args.input)?;
 
     let mut n = 0usize;
     let mut broken = 0usize;
@@ -8951,18 +8935,9 @@ fn cmd_distribution(args: DistributionArgs) -> Result<()> {
     let mut ply_min: Option<u32> = None;
     let mut ply_max: Option<u32> = None;
 
-    for (i, line) in reader.lines().enumerate() {
-        let line = line.with_context(|| format!("cannot read {:?}", args.input))?;
-        if line.trim().is_empty() {
+    for item in reader {
+        let Some(rec) = permissive_position_record(item, &args.input, &mut broken)? else {
             continue;
-        }
-        let rec: PositionRecord = match serde_json::from_str(&line) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(line = i + 1, "parse error: {e}");
-                broken += 1;
-                continue;
-            }
         };
         n += 1;
 

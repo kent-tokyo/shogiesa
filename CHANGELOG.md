@@ -10,6 +10,9 @@ Compare links at the end provide the complete commit history.
 - CLI commands that must materialize records now read JSONL incrementally through the public typed
   reader instead of retaining the complete input text alongside parsed records. Existing
   broken-line tolerance and physical-line diagnostics are unchanged.
+- `report`, `conflict-report`, `block-report`, and `distribution` now share the schema-gated typed
+  reader, so unsupported future schemas are diagnosed and skipped consistently with malformed
+  records instead of being analyzed as if they were current data.
 
 ## [0.11.5] — 2026-10-13
 

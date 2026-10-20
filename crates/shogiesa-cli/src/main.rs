@@ -18,7 +18,12 @@ use shogiesa_core::{
     cp_from_black_perspective_i64, effective_bestmove_kind, engine_bestmove_agreement,
     evaluate_quality, has_special_bestmove,
     manifest::RunManifestV1 as RunManifest,
-    parse_usi_move, phase_from_ply, requested_depth_underreached,
+    parse_usi_move, phase_from_ply,
+    quality_report::{
+        QUALITY_REPORT_SCHEMA_VERSION, QualityInputIdentityV1, QualityManifestIdentityV1,
+        QualityReportV1, QualityShardV1, QualitySummaryBuilder,
+    },
+    requested_depth_underreached,
     schema::{
         PositionRecordJsonlReader, PositionRecordLine, PositionRecordLineError,
         PositionRecordParseError, parse_json_line,
@@ -95,6 +100,8 @@ enum Commands {
     BlockReport(BlockReportArgs),
     /// Report statistics about a positions dataset
     Report(ReportArgs),
+    /// Emit a versioned machine-readable quality report for JSONL or pack inputs
+    QualityReport(QualityReportArgs),
     /// Compare two datasets semantically, independent of JSONL input order
     DatasetDiff(DatasetDiffArgs),
     /// Validate and plan a typed multi-stage dataset recipe without executing it
@@ -222,6 +229,25 @@ struct ReportArgs {
     /// Input JSONL file
     #[arg(short, long)]
     input: PathBuf,
+}
+
+#[derive(clap::Args)]
+struct QualityReportArgs {
+    /// Input JSONL or .shgpk file; repeat for deterministic multi-shard aggregation
+    #[arg(short, long, required = true)]
+    input: Vec<PathBuf>,
+    /// Output JSON report
+    #[arg(short, long)]
+    out: PathBuf,
+    /// Input format; auto recognizes .shgpk and the pack magic header
+    #[arg(long, default_value = "auto", value_parser = ["auto", "jsonl", "pack"])]
+    input_format: String,
+    /// Optional run manifest paired by position with each --input; repeat once per input
+    #[arg(long)]
+    manifest: Vec<PathBuf>,
+    /// Include a semantic summary for each input shard in addition to the aggregate
+    #[arg(long)]
+    include_shards: bool,
 }
 
 #[derive(clap::Args)]
@@ -1295,6 +1321,19 @@ fn validate_command_paths(command: &Commands) -> Result<()> {
         Commands::Unpack(args) => {
             validate_path_roles(&[("--input", &args.input)], &[("--out", &args.out)])
         }
+        Commands::QualityReport(args) => {
+            let mut reads = args
+                .input
+                .iter()
+                .map(|path| ("--input", path.as_path()))
+                .collect::<Vec<_>>();
+            reads.extend(
+                args.manifest
+                    .iter()
+                    .map(|path| ("--manifest", path.as_path())),
+            );
+            validate_path_roles(&reads, &[("--out", &args.out)])
+        }
         Commands::Filter(args) => {
             let mut reads = vec![("--input", args.input.as_path())];
             if let Some((preset_path, _)) = args
@@ -1494,6 +1533,7 @@ fn main() -> Result<()> {
         Commands::ConflictReport(args) => cmd_conflict_report(args),
         Commands::BlockReport(args) => cmd_block_report(args),
         Commands::Report(args) => cmd_report(args),
+        Commands::QualityReport(args) => cmd_quality_report(args),
         Commands::DatasetDiff(args) => cmd_dataset_diff(args),
         Commands::Recipe(args) => recipe::run(args),
         Commands::Distribution(args) => cmd_distribution(args),
@@ -2443,6 +2483,7 @@ fn hash_file_sha256(path: &Path) -> Result<String> {
 struct Sha256Reader<R> {
     inner: R,
     hasher: sha2::Sha256,
+    bytes_read: u64,
 }
 
 impl<R> Sha256Reader<R> {
@@ -2451,6 +2492,7 @@ impl<R> Sha256Reader<R> {
         Self {
             inner,
             hasher: sha2::Sha256::new(),
+            bytes_read: 0,
         }
     }
 
@@ -2462,6 +2504,11 @@ impl<R> Sha256Reader<R> {
             .map(|byte| format!("{byte:02x}"))
             .collect()
     }
+
+    fn identity(self) -> (u64, String) {
+        let bytes_read = self.bytes_read;
+        (bytes_read, self.digest_hex())
+    }
 }
 
 impl<R: Read> Read for Sha256Reader<R> {
@@ -2469,6 +2516,7 @@ impl<R: Read> Read for Sha256Reader<R> {
         use sha2::Digest;
         let read = self.inner.read(buffer)?;
         self.hasher.update(&buffer[..read]);
+        self.bytes_read = self.bytes_read.saturating_add(read as u64);
         Ok(read)
     }
 }
@@ -5903,6 +5951,301 @@ fn cmd_unpack(args: UnpackArgs) -> Result<()> {
     }
     writer.commit()?;
     eprintln!("done: {total} unpacked → {:?}", args.out);
+    Ok(())
+}
+
+fn quality_manifest_identity(path: &Path) -> Result<QualityManifestIdentityV1> {
+    let bytes = fs::read(path).with_context(|| format!("cannot read manifest {path:?}"))?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes)
+        .with_context(|| format!("invalid JSON in manifest {path:?}"))?;
+    let version = value
+        .get("manifest_schema_version")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .with_context(|| {
+            format!("manifest {path:?} has no unsigned 32-bit manifest_schema_version")
+        })?;
+    Ok(QualityManifestIdentityV1 {
+        path: path.display().to_string(),
+        sha256: sha256_hex(&bytes),
+        manifest_schema_version: version,
+    })
+}
+
+fn detect_quality_input_format(path: &Path, requested: &str) -> Result<&'static str> {
+    match requested {
+        "jsonl" => return Ok("jsonl"),
+        "pack" => return Ok("pack"),
+        "auto" => {}
+        _ => unreachable!("clap restricts --input-format"),
+    }
+    if path
+        .extension()
+        .is_some_and(|extension| extension == "shgpk")
+    {
+        return Ok("pack");
+    }
+    let mut file = File::open(path).with_context(|| format!("cannot open {path:?}"))?;
+    let mut prefix = [0_u8; 8];
+    let read = file
+        .read(&mut prefix)
+        .with_context(|| format!("cannot inspect {path:?}"))?;
+    Ok(if read == prefix.len() && &prefix == pack::MAGIC {
+        "pack"
+    } else {
+        "jsonl"
+    })
+}
+
+fn observe_quality_record(
+    record: &PositionRecord,
+    shard: &mut QualitySummaryBuilder,
+    aggregate: &mut QualitySummaryBuilder,
+    shard_hasher: &mut sha2::Sha256,
+    aggregate_hasher: &mut sha2::Sha256,
+    decoded_bytes: &mut u64,
+    schema_versions: &mut BTreeMap<u32, u64>,
+) -> Result<()> {
+    use sha2::Digest;
+
+    let bytes = serde_json::to_vec(record)?;
+    let record_bytes = u64::try_from(bytes.len())?.saturating_add(1);
+    shard_hasher.update(&bytes);
+    shard_hasher.update(b"\n");
+    aggregate_hasher.update(&bytes);
+    aggregate_hasher.update(b"\n");
+    *decoded_bytes = decoded_bytes.saturating_add(record_bytes);
+    *schema_versions.entry(record.schema_version).or_default() += 1;
+    shard.observe(record);
+    aggregate.observe(record);
+    Ok(())
+}
+
+fn process_quality_jsonl(
+    path: &Path,
+    shard: &mut QualitySummaryBuilder,
+    aggregate: &mut QualitySummaryBuilder,
+    shard_hasher: &mut sha2::Sha256,
+    aggregate_hasher: &mut sha2::Sha256,
+    decoded_bytes: &mut u64,
+    schema_versions: &mut BTreeMap<u32, u64>,
+) -> Result<(u64, String)> {
+    let file = File::open(path).with_context(|| format!("cannot open {path:?}"))?;
+    let mut reader = PositionRecordJsonlReader::new(BufReader::new(Sha256Reader::new(file)));
+    for item in &mut reader {
+        match item {
+            Ok(PositionRecordLine { record, .. }) => observe_quality_record(
+                &record,
+                shard,
+                aggregate,
+                shard_hasher,
+                aggregate_hasher,
+                decoded_bytes,
+                schema_versions,
+            )?,
+            Err(PositionRecordLineError::Parse { source, .. }) => {
+                let reason = match source {
+                    PositionRecordParseError::Json(_) => "json_invalid_record",
+                    PositionRecordParseError::UnsupportedSchema(_) => "json_unsupported_schema",
+                    _ => "json_other_parse_error",
+                };
+                shard.reject(reason);
+                aggregate.reject(reason);
+            }
+            Err(PositionRecordLineError::Read { source, .. }) => {
+                return Err(source).with_context(|| format!("cannot read {path:?}"));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(reader.into_inner().into_inner().identity())
+}
+
+fn process_quality_pack(
+    path: &Path,
+    shard: &mut QualitySummaryBuilder,
+    aggregate: &mut QualitySummaryBuilder,
+    shard_hasher: &mut sha2::Sha256,
+    aggregate_hasher: &mut sha2::Sha256,
+    decoded_bytes: &mut u64,
+    schema_versions: &mut BTreeMap<u32, u64>,
+) -> Result<(Option<u16>, u64, String)> {
+    let file = File::open(path).with_context(|| format!("cannot open {path:?}"))?;
+    let mut reader = BufReader::new(Sha256Reader::new(file));
+    let mut header = [0_u8; 10];
+    let mut version = None;
+    let decode_records = match reader.read_exact(&mut header) {
+        Ok(()) => {
+            let found = u16::from_le_bytes([header[8], header[9]]);
+            version = Some(found);
+            if &header[..8] != pack::MAGIC {
+                shard.reject("pack_bad_magic");
+                aggregate.reject("pack_bad_magic");
+                false
+            } else if found != pack::FORMAT_VERSION {
+                shard.reject("pack_unsupported_version");
+                aggregate.reject("pack_unsupported_version");
+                false
+            } else {
+                true
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
+            shard.reject("pack_truncated_header");
+            aggregate.reject("pack_truncated_header");
+            false
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("cannot read pack header {path:?}"));
+        }
+    };
+
+    if decode_records {
+        loop {
+            if reader
+                .fill_buf()
+                .with_context(|| format!("cannot inspect pack record boundary in {path:?}"))?
+                .is_empty()
+            {
+                break;
+            }
+            match pack::decode_record(&mut reader) {
+                Ok(record) => observe_quality_record(
+                    &record,
+                    shard,
+                    aggregate,
+                    shard_hasher,
+                    aggregate_hasher,
+                    decoded_bytes,
+                    schema_versions,
+                )?,
+                Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    shard.reject("pack_truncated_record");
+                    aggregate.reject("pack_truncated_record");
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                    shard.reject("pack_invalid_record");
+                    aggregate.reject("pack_invalid_record");
+                    break;
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| format!("cannot decode pack {path:?}"));
+                }
+            }
+        }
+    }
+    std::io::copy(&mut reader, &mut std::io::sink())
+        .with_context(|| format!("cannot finish hashing pack {path:?}"))?;
+    let (input_bytes, input_sha256) = reader.into_inner().identity();
+    Ok((version, input_bytes, input_sha256))
+}
+
+fn cmd_quality_report(args: QualityReportArgs) -> Result<()> {
+    use sha2::Digest;
+
+    if !args.manifest.is_empty() && args.manifest.len() != args.input.len() {
+        anyhow::bail!(
+            "--manifest must be omitted or repeated exactly once per --input ({} inputs, {} manifests)",
+            args.input.len(),
+            args.manifest.len()
+        );
+    }
+
+    let mut aggregate = QualitySummaryBuilder::default();
+    let mut aggregate_hasher = sha2::Sha256::new();
+    let mut inputs = Vec::with_capacity(args.input.len());
+    let mut shards = Vec::new();
+
+    for (index, path) in args.input.iter().enumerate() {
+        aggregate.begin_shard();
+        let mut shard = QualitySummaryBuilder::default();
+        shard.begin_shard();
+        let format = detect_quality_input_format(path, &args.input_format)?;
+        let metadata = fs::metadata(path).with_context(|| format!("cannot inspect {path:?}"))?;
+        if !metadata.is_file() {
+            anyhow::bail!("quality-report input must be a file: {path:?}");
+        }
+        let mut shard_hasher = sha2::Sha256::new();
+        let mut decoded_bytes = 0_u64;
+        let mut schema_versions = BTreeMap::new();
+        let (pack_format_version, input_bytes, input_sha256) = match format {
+            "jsonl" => {
+                let (input_bytes, input_sha256) = process_quality_jsonl(
+                    path,
+                    &mut shard,
+                    &mut aggregate,
+                    &mut shard_hasher,
+                    &mut aggregate_hasher,
+                    &mut decoded_bytes,
+                    &mut schema_versions,
+                )?;
+                (None, input_bytes, input_sha256)
+            }
+            "pack" => {
+                let (version, input_bytes, input_sha256) = process_quality_pack(
+                    path,
+                    &mut shard,
+                    &mut aggregate,
+                    &mut shard_hasher,
+                    &mut aggregate_hasher,
+                    &mut decoded_bytes,
+                    &mut schema_versions,
+                )?;
+                (version, input_bytes, input_sha256)
+            }
+            _ => unreachable!(),
+        };
+        let shard_summary = shard.finish();
+        let manifest = args
+            .manifest
+            .get(index)
+            .map(|path| quality_manifest_identity(path))
+            .transpose()?;
+        inputs.push(QualityInputIdentityV1 {
+            path: path.display().to_string(),
+            format: format.to_string(),
+            input_bytes,
+            input_sha256,
+            decoded_bytes,
+            decoded_sha256: shard_hasher
+                .finalize()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect(),
+            schema_versions,
+            pack_format_version,
+            manifest,
+        });
+        if args.include_shards {
+            shards.push(QualityShardV1 {
+                input_index: index,
+                summary: shard_summary,
+            });
+        }
+    }
+
+    let report = QualityReportV1 {
+        quality_report_schema_version: QUALITY_REPORT_SCHEMA_VERSION,
+        shogiesa_version: env!("CARGO_PKG_VERSION").to_string(),
+        inputs,
+        aggregate_decoded_sha256: aggregate_hasher
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect(),
+        summary: aggregate.finish(),
+        shards,
+    };
+    let bytes = serde_json::to_vec_pretty(&report)?;
+    atomic_write_bytes(&args.out, &[bytes.as_slice(), b"\n"].concat())?;
+    eprintln!(
+        "done: {} accepted, {} rejected across {} input(s) → {:?}",
+        report.summary.accepted_records,
+        report.summary.rejected_records,
+        report.inputs.len(),
+        args.out
+    );
     Ok(())
 }
 

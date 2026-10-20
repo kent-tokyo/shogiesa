@@ -5,6 +5,16 @@ Compare links at the end provide the complete commit history.
 
 ## [Unreleased]
 
+### Added
+
+- Added `quality-report`, a bounded-memory, versioned JSON evidence artifact for JSONL and pack
+  inputs. It records raw and decoded SHA-256 identities, stable rejection reasons, outcome/score/
+  search-limit histograms, root/variation/split coverage, bounded distinct counts, optional
+  manifest identities, and deterministic multi-shard summaries.
+- `shogiesa-core::quality_report` exposes the v1 report contract, parser, and streaming summary
+  builder. Canonical fixture tests reject unknown breaking report versions and keep JSONL/pack
+  semantic counts compatible.
+
 ## [0.11.6] — 2026-10-14
 
 ### Changed

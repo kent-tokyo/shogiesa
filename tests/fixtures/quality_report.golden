@@ -3,7 +3,7 @@
   "shogiesa_version": "0.11.6",
   "inputs": [
     {
-      "path": "crates/shogiesa-core/tests/fixtures/schema_contract_v11.jsonl",
+      "path": "input.jsonl",
       "format": "jsonl",
       "input_bytes": 1892,
       "input_sha256": "83e7460c8b3d106bfc2cfb6d99e31a36ac2e3f5ad0334e324fcc91a84ff9fba2",

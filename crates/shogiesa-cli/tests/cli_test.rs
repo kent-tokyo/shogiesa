@@ -4342,13 +4342,21 @@ fn report_skips_future_schema_through_typed_reader() {
 
 #[test]
 fn quality_report_matches_versioned_golden_fixture() {
+    let dir = TempDir::new().unwrap();
+    let input = dir.path().join("input.jsonl");
+    let canonical = std::fs::read_to_string(
+        workspace_root().join("crates/shogiesa-core/tests/fixtures/schema_contract_v11.jsonl"),
+    )
+    .unwrap()
+    .replace("\r\n", "\n");
+    std::fs::write(&input, canonical).unwrap();
     let out = closed_temp_file();
     shogiesa()
-        .current_dir(workspace_root())
+        .current_dir(dir.path())
         .args([
             "quality-report",
             "--input",
-            "crates/shogiesa-core/tests/fixtures/schema_contract_v11.jsonl",
+            "input.jsonl",
             "--out",
             out.path().to_str().unwrap(),
         ])

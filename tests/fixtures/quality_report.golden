@@ -1,0 +1,97 @@
+{
+  "quality_report_schema_version": 1,
+  "shogiesa_version": "0.11.6",
+  "inputs": [
+    {
+      "path": "input.jsonl",
+      "format": "jsonl",
+      "input_bytes": 1892,
+      "input_sha256": "83e7460c8b3d106bfc2cfb6d99e31a36ac2e3f5ad0334e324fcc91a84ff9fba2",
+      "decoded_bytes": 1892,
+      "decoded_sha256": "83e7460c8b3d106bfc2cfb6d99e31a36ac2e3f5ad0334e324fcc91a84ff9fba2",
+      "schema_versions": {
+        "11": 2
+      }
+    }
+  ],
+  "aggregate_decoded_sha256": "83e7460c8b3d106bfc2cfb6d99e31a36ac2e3f5ad0334e324fcc91a84ff9fba2",
+  "summary": {
+    "accepted_records": 2,
+    "rejected_records": 0,
+    "rejection_reasons": {},
+    "observations": 2,
+    "outcome_availability": {
+      "black_wins": 1,
+      "draw": 1
+    },
+    "score_kinds": {
+      "cp": 1,
+      "mate": 1
+    },
+    "score_perspectives": {
+      "black": 1,
+      "side_to_move": 1
+    },
+    "search_limit_kinds": {
+      "depth": 1,
+      "nodes": 1
+    },
+    "requested_depth_histogram": {
+      "8": 1
+    },
+    "achieved_depth_histogram": {
+      "8": 1,
+      "9": 1
+    },
+    "requested_nodes_histogram": {
+      "32768-65535": 1
+    },
+    "achieved_nodes_histogram": {
+      "32768-65535": 1
+    },
+    "requested_limit_coverage": {
+      "requested_present": 2,
+      "achieved_present": 2,
+      "reached_or_exceeded": 2,
+      "underreached": 0
+    },
+    "coverage": {
+      "source_sequences": 2,
+      "root_sequences": 2,
+      "mainline_records": 1,
+      "variation_records": 1,
+      "games": {
+        "value": 2,
+        "exact": true,
+        "algorithm": "exact"
+      },
+      "roots": {
+        "value": 2,
+        "exact": true,
+        "algorithm": "exact"
+      },
+      "variations": {
+        "value": 1,
+        "exact": true,
+        "algorithm": "exact"
+      },
+      "split_groups": {
+        "value": 2,
+        "exact": true,
+        "algorithm": "exact"
+      },
+      "unique_positions": {
+        "value": 2,
+        "exact": true,
+        "algorithm": "exact"
+      },
+      "unique_occurrences": {
+        "value": 2,
+        "exact": true,
+        "algorithm": "exact"
+      },
+      "duplicate_positions": 0,
+      "duplicate_occurrences": 0
+    }
+  }
+}

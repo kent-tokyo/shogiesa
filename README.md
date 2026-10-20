@@ -87,7 +87,7 @@ through `shogiesa_core::manifest` without copying the manifest layout.
 | Quality | `stability`, `filter`, `calibrate`, `audit`, `tune` | Attach, inspect, and calibrate quality signals. |
 | Select | `select`, `mine`, `balance`, `stratify`, `sample` | Select hard or underrepresented positions. |
 | Reproduce | `split`, `shuffle`, `recipe`, `dataset-diff` | Preserve roots, order, and artifact identity. |
-| Diagnose | `report`, `distribution`, `validate`, `conflict-report`, `block-report` | Report statistics and integrity problems. |
+| Diagnose | `report`, `quality-report`, `distribution`, `validate`, `conflict-report`, `block-report` | Report statistics and integrity problems. |
 | Exchange | `pack`, `unpack`, `lineprior export`, `make-gate-openings` | Convert data or prepare external-tool inputs. |
 
 `recipe` runs typed shogiesa stages only; it does not execute arbitrary shell commands.
@@ -116,12 +116,23 @@ iteration without collecting the input.
 Binary pack is a versioned transport format. Convert it back to JSONL for inspection or diffing.
 See [schema and pack compatibility](docs/design/schema_compatibility.md).
 
+For automated qualification, emit the same versioned semantic summary from JSONL or pack:
+
+```bash
+shogiesa quality-report --input train.jsonl --out quality.json
+shogiesa quality-report --input train.shgpk --out packed-quality.json
+```
+
+The report describes corpus identity, coverage, and parse failures; it does not claim training
+quality or engine strength. See [quality-report compatibility](docs/design/quality_report_compatibility.md).
+
 ## Documentation
 
 | Need | Document |
 |---|---|
 | Signal definitions and limits | [THEORY.md](docs/THEORY.md) |
 | JSONL and pack compatibility | [schema_compatibility.md](docs/design/schema_compatibility.md) |
+| Machine-readable quality report | [quality_report_compatibility.md](docs/design/quality_report_compatibility.md) |
 | Rust API boundary | [api_boundary.md](docs/api_boundary.md) |
 | Local interoperability evidence | [interop_evidence.md](docs/interop_evidence.md) |
 | Reproducible recipe record | [dataset_recipe_template.md](docs/design/dataset_recipe_template.md) |

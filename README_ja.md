@@ -76,7 +76,7 @@ report / distribution / validate / dataset-diff
 | 品質 | `stability`, `filter`, `calibrate`, `audit`, `tune` | 品質signalを付与・点検・較正する。 |
 | 選別 | `select`, `mine`, `balance`, `stratify`, `sample` | 難局面や不足bucketを選ぶ。 |
 | 再現性 | `split`, `shuffle`, `recipe`, `dataset-diff` | root、順序、成果物identityを管理する。 |
-| 診断 | `report`, `distribution`, `validate`, `conflict-report`, `block-report` | 統計と整合性問題を報告する。 |
+| 診断 | `report`, `quality-report`, `distribution`, `validate`, `conflict-report`, `block-report` | 統計と整合性問題を報告する。 |
 | 交換 | `pack`, `unpack`, `lineprior export`, `make-gate-openings` | 外部ツール向けに変換する。 |
 
 `recipe`が実行するのは型付きのshogiesa stageだけです。任意のshell commandは実行しません。
@@ -105,12 +105,23 @@ Rust consumerは`shogiesa-core`へ一方向に依存し、
 binary packはversion付きの転送形式です。点検やdiffではJSONLへ戻してください。
 詳細は[schema/pack互換性](docs/design/schema_compatibility.md)にあります。
 
+自動qualificationでは、JSONLとpackから同じversion付きsemantic summaryを生成できます。
+
+```bash
+shogiesa quality-report --input train.jsonl --out quality.json
+shogiesa quality-report --input train.shgpk --out packed-quality.json
+```
+
+このreportはcorpus identity、coverage、parse failureを記録します。学習品質や棋力の証明では
+ありません。詳細は[quality-report互換性](docs/design/quality_report_compatibility.md)にあります。
+
 ## 文書
 
 | 知りたいこと | 文書 |
 |---|---|
 | 診断値の定義と限界 | [THEORY.md](docs/THEORY.md) |
 | JSONL/packの互換性 | [schema_compatibility.md](docs/design/schema_compatibility.md) |
+| 機械可読quality report | [quality_report_compatibility.md](docs/design/quality_report_compatibility.md) |
 | Rust API境界 | [api_boundary.md](docs/api_boundary.md) |
 | 相互運用の確認範囲 | [interop_evidence.md](docs/interop_evidence.md) |
 | 再現可能なrecipe記録 | [dataset_recipe_template.md](docs/design/dataset_recipe_template.md) |

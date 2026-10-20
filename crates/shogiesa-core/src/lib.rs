@@ -896,6 +896,8 @@ pub mod schema;
 
 pub mod manifest;
 
+pub mod quality_report;
+
 pub mod sfen;
 
 /// Shared configuration for position extraction (used by shogiesa-csa and shogiesa-kif).

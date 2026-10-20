@@ -28,6 +28,10 @@ fn fixture(name: &str) -> std::path::PathBuf {
         .join(name)
 }
 
+fn workspace_root() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
 /// Golden reports are canonical LF text. Normalize fixture checkout line endings so tests compare
 /// CLI output, rather than the developer's Git `core.autocrlf` setting.
 fn golden(name: &str) -> String {
@@ -4337,6 +4341,164 @@ fn report_skips_future_schema_through_typed_reader() {
 }
 
 #[test]
+fn quality_report_matches_versioned_golden_fixture() {
+    let dir = TempDir::new().unwrap();
+    let input = dir.path().join("input.jsonl");
+    let canonical = std::fs::read_to_string(
+        workspace_root().join("crates/shogiesa-core/tests/fixtures/schema_contract_v11.jsonl"),
+    )
+    .unwrap()
+    .replace("\r\n", "\n");
+    std::fs::write(&input, canonical).unwrap();
+    let out = closed_temp_file();
+    shogiesa()
+        .current_dir(dir.path())
+        .args([
+            "quality-report",
+            "--input",
+            "input.jsonl",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    assert_eq!(
+        std::fs::read_to_string(out.path()).unwrap(),
+        golden("quality_report.golden")
+    );
+}
+
+#[test]
+fn quality_report_jsonl_and_pack_have_identical_semantic_counts() {
+    let packed = closed_temp_file();
+    shogiesa()
+        .args([
+            "pack",
+            "--input",
+            workspace_root()
+                .join("crates/shogiesa-core/tests/fixtures/schema_contract_v11.jsonl")
+                .to_str()
+                .unwrap(),
+            "--out",
+            packed.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let json_report = closed_temp_file();
+    shogiesa()
+        .args([
+            "quality-report",
+            "--input",
+            workspace_root()
+                .join("crates/shogiesa-core/tests/fixtures/schema_contract_v11.jsonl")
+                .to_str()
+                .unwrap(),
+            "--out",
+            json_report.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let pack_report = closed_temp_file();
+    shogiesa()
+        .args([
+            "quality-report",
+            "--input",
+            packed.path().to_str().unwrap(),
+            "--input-format",
+            "pack",
+            "--out",
+            pack_report.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(json_report.path()).unwrap()).unwrap();
+    let packed: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(pack_report.path()).unwrap()).unwrap();
+    assert_eq!(json["summary"], packed["summary"]);
+    assert_eq!(
+        json["aggregate_decoded_sha256"],
+        packed["aggregate_decoded_sha256"]
+    );
+    assert_eq!(packed["inputs"][0]["pack_format_version"], 11);
+}
+
+#[test]
+fn quality_report_categorizes_malformed_and_future_jsonl_records() {
+    let current = position("opening", serde_json::json!([]));
+    let mut future = current.clone();
+    future["schema_version"] = serde_json::json!(shogiesa_core::SCHEMA_VERSION + 1);
+    let mut input = NamedTempFile::new().unwrap();
+    writeln!(input, "{}", serde_json::to_string(&current).unwrap()).unwrap();
+    writeln!(input, "not json").unwrap();
+    writeln!(input, "{}", serde_json::to_string(&future).unwrap()).unwrap();
+    input.flush().unwrap();
+    let out = closed_temp_file();
+
+    shogiesa()
+        .args([
+            "quality-report",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(out.path()).unwrap()).unwrap();
+    assert_eq!(report["summary"]["accepted_records"], 1);
+    assert_eq!(report["summary"]["rejected_records"], 2);
+    assert_eq!(
+        report["summary"]["rejection_reasons"]["json_invalid_record"],
+        1
+    );
+    assert_eq!(
+        report["summary"]["rejection_reasons"]["json_unsupported_schema"],
+        1
+    );
+}
+
+#[test]
+fn quality_report_composes_shards_and_records_manifest_identity() {
+    let out = closed_temp_file();
+    shogiesa()
+        .args([
+            "quality-report",
+            "--input",
+            fixture("label_run_output_v1.jsonl").to_str().unwrap(),
+            "--input",
+            fixture("label_run_output_v1.jsonl").to_str().unwrap(),
+            "--manifest",
+            fixture("label_run_manifest_v1.json").to_str().unwrap(),
+            "--manifest",
+            fixture("label_run_manifest_v1.json").to_str().unwrap(),
+            "--include-shards",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(out.path()).unwrap()).unwrap();
+    assert_eq!(report["summary"]["accepted_records"], 2);
+    assert_eq!(report["shards"].as_array().unwrap().len(), 2);
+    assert_eq!(report["shards"][0]["summary"]["accepted_records"], 1);
+    assert_eq!(
+        report["inputs"][0]["manifest"]["manifest_schema_version"],
+        1
+    );
+    assert_eq!(
+        report["summary"]["coverage"]["unique_positions"]["value"],
+        1
+    );
+    assert_eq!(report["summary"]["coverage"]["duplicate_positions"], 1);
+}
+
+#[test]
 fn stability_skips_future_schema_through_typed_reader() {
     let current = position(
         "middlegame",
@@ -8479,6 +8641,32 @@ fn unpack_corrupt_pack_fixtures_fails_without_output_claim() {
             "corrupt fixture {name} must preserve the previous output"
         );
     }
+}
+
+#[test]
+fn quality_report_categorizes_pack_corruption_without_claiming_records() {
+    let corrupt = write_hex_fixture("pack_truncated_record.hex");
+    let out = closed_temp_file();
+    shogiesa()
+        .args([
+            "quality-report",
+            "--input",
+            corrupt.path().to_str().unwrap(),
+            "--input-format",
+            "pack",
+            "--out",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(out.path()).unwrap()).unwrap();
+    assert_eq!(report["summary"]["accepted_records"], 0);
+    assert_eq!(report["summary"]["rejected_records"], 1);
+    assert_eq!(
+        report["summary"]["rejection_reasons"]["pack_truncated_record"],
+        1
+    );
 }
 
 #[test]

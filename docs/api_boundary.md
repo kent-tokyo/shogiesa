@@ -4,7 +4,7 @@
 
 | crate | boundary | current version marker |
 |---|---|---|
-| `shogiesa-core` | `schema` module, typed records, SFEN/quality helpers | `SCHEMA_VERSION = 11` |
+| `shogiesa-core` | typed records, manifests, quality reports, SFEN/quality helpers | `SCHEMA_VERSION = 11`, `QUALITY_REPORT_SCHEMA_VERSION = 1` |
 | `shogiesa-csa` | CSA reader -> position records | workspace version |
 | `shogiesa-kif` | KIF/KI2 reader -> position records | workspace version |
 | `shogiesa-usi` | direct child-process USI protocol | workspace version |
@@ -40,6 +40,11 @@ item contains the one-based physical line number and a typed record. Blank lines
 still count toward line numbers; malformed JSON and unsupported schema versions are yielded as
 line-numbered errors, after which iteration may continue. A final line without a newline is read
 normally. The iterator does not collect, filter, or hash the dataset.
+
+Machine-readable qualification consumers use `quality_report::parse_quality_report_v1`. The
+report version is independent from position schema, pack format, and run-manifest versions.
+Unknown report versions fail closed; additive v1 fields remain compatible with Serde's default
+unknown-field behavior. See [quality-report compatibility](design/quality_report_compatibility.md).
 
 Pack is derived and returns to JSONL for inspection. USI is a child-process boundary; engine
 internals are not public API.

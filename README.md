@@ -6,10 +6,10 @@ shogiesa turns CSA, KIF, KI2, and match-runner records into inspectable training
 extracts SFEN positions, labels them with USI engines, filters unstable samples, and writes
 reproducible JSONL or binary-pack artifacts for downstream engines and trainers.
 
-The workspace version and latest verified published release are `0.11.6`. See the
-[GitHub Release](https://github.com/kent-tokyo/shogiesa/releases/tag/v0.11.6), the
+The workspace version and latest verified published release are `0.11.7`. See the
+[GitHub Release](https://github.com/kent-tokyo/shogiesa/releases/tag/v0.11.7), the
 [changelog](CHANGELOG.md), and
-[the v0.11.6 validation log](docs/release_validation_2026-10-14_v0.11.6.md).
+[the v0.11.7 validation log](docs/release_validation_2026-10-21_v0.11.7.md).
 
 ## Product direction and scope
 
@@ -139,7 +139,7 @@ quality or engine strength. See [quality-report compatibility](docs/design/quali
 | Measurement status and artifacts | [measurement_matrix.md](docs/design/measurement_matrix.md), [measurement index](docs/measurements/README.md) |
 | Training comparison protocol | [training_effect_measurement.md](docs/design/training_effect_measurement.md) |
 | External consumer and gate runbooks | [external_gate_evaluation.md](docs/external_gate_evaluation.md), [LINEPRIOR_DOGFOOD.md](docs/LINEPRIOR_DOGFOOD.md) |
-| Release checks and evidence | [release_checklist.md](docs/release_checklist.md), [v0.11.6 validation](docs/release_validation_2026-10-14_v0.11.6.md) |
+| Release checks and evidence | [release_checklist.md](docs/release_checklist.md), [v0.11.7 validation](docs/release_validation_2026-10-21_v0.11.7.md) |
 
 ## Evidence boundary
 

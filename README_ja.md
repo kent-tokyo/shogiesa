@@ -6,10 +6,10 @@ shogiesaはCSA、KIF、KI2、match-runner棋譜を点検可能な学習データ
 SFEN局面の抽出、USI教師によるラベル付け、不安定な局面の除外、JSONLまたはbinary packへの
 書き出しを担当します。特定のエンジンやtrainerに依存しない独立したproductです。
 
-workspaceと検証済みの最新公開版は`0.11.6`です。
-[GitHub Release](https://github.com/kent-tokyo/shogiesa/releases/tag/v0.11.6)、
+workspaceと検証済みの最新公開版は`0.11.7`です。
+[GitHub Release](https://github.com/kent-tokyo/shogiesa/releases/tag/v0.11.7)、
 [CHANGELOG](CHANGELOG.md)、
-[v0.11.6検証記録](docs/release_validation_2026-10-14_v0.11.6.md)を参照してください。
+[v0.11.7検証記録](docs/release_validation_2026-10-21_v0.11.7.md)を参照してください。
 
 ## 製品の方向性と範囲
 
@@ -76,7 +76,7 @@ report / distribution / validate / dataset-diff
 | 品質 | `stability`, `filter`, `calibrate`, `audit`, `tune` | 品質signalを付与・点検・較正する。 |
 | 選別 | `select`, `mine`, `balance`, `stratify`, `sample` | 難局面や不足bucketを選ぶ。 |
 | 再現性 | `split`, `shuffle`, `recipe`, `dataset-diff` | root、順序、成果物identityを管理する。 |
-| 診断 | `report`, `distribution`, `validate`, `conflict-report`, `block-report` | 統計と整合性問題を報告する。 |
+| 診断 | `report`, `quality-report`, `distribution`, `validate`, `conflict-report`, `block-report` | 統計と整合性問題を報告する。 |
 | 交換 | `pack`, `unpack`, `lineprior export`, `make-gate-openings` | 外部ツール向けに変換する。 |
 
 `recipe`が実行するのは型付きのshogiesa stageだけです。任意のshell commandは実行しません。
@@ -105,19 +105,30 @@ Rust consumerは`shogiesa-core`へ一方向に依存し、
 binary packはversion付きの転送形式です。点検やdiffではJSONLへ戻してください。
 詳細は[schema/pack互換性](docs/design/schema_compatibility.md)にあります。
 
+自動qualificationでは、JSONLとpackから同じversion付きsemantic summaryを生成できます。
+
+```bash
+shogiesa quality-report --input train.jsonl --out quality.json
+shogiesa quality-report --input train.shgpk --out packed-quality.json
+```
+
+このreportはcorpus identity、coverage、parse failureを記録します。学習品質や棋力の証明では
+ありません。詳細は[quality-report互換性](docs/design/quality_report_compatibility.md)にあります。
+
 ## 文書
 
 | 知りたいこと | 文書 |
 |---|---|
 | 診断値の定義と限界 | [THEORY.md](docs/THEORY.md) |
 | JSONL/packの互換性 | [schema_compatibility.md](docs/design/schema_compatibility.md) |
+| 機械可読quality report | [quality_report_compatibility.md](docs/design/quality_report_compatibility.md) |
 | Rust API境界 | [api_boundary.md](docs/api_boundary.md) |
 | 相互運用の確認範囲 | [interop_evidence.md](docs/interop_evidence.md) |
 | 再現可能なrecipe記録 | [dataset_recipe_template.md](docs/design/dataset_recipe_template.md) |
 | 測定状況とartifact | [measurement_matrix.md](docs/design/measurement_matrix.md)、[測定索引](docs/measurements/README.md) |
 | 学習比較の手順 | [training_effect_measurement.md](docs/design/training_effect_measurement.md) |
 | 外部consumer・gate runbook | [external_gate_evaluation.md](docs/external_gate_evaluation.md)、[LINEPRIOR_DOGFOOD.md](docs/LINEPRIOR_DOGFOOD.md) |
-| release確認と証跡 | [release_checklist.md](docs/release_checklist.md)、[v0.11.6検証](docs/release_validation_2026-10-14_v0.11.6.md) |
+| release確認と証跡 | [release_checklist.md](docs/release_checklist.md)、[v0.11.7検証](docs/release_validation_2026-10-21_v0.11.7.md) |
 
 ## 証拠の境界
 

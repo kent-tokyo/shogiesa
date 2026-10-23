@@ -6,10 +6,10 @@ shogiesa turns CSA, KIF, KI2, and match-runner records into inspectable training
 extracts SFEN positions, labels them with USI engines, filters unstable samples, and writes
 reproducible JSONL or binary-pack artifacts for downstream engines and trainers.
 
-The workspace version and latest verified published release are `0.11.6`. See the
-[GitHub Release](https://github.com/kent-tokyo/shogiesa/releases/tag/v0.11.6), the
+The workspace version and latest verified published release are `0.11.7`. See the
+[GitHub Release](https://github.com/kent-tokyo/shogiesa/releases/tag/v0.11.7), the
 [changelog](CHANGELOG.md), and
-[the v0.11.6 validation log](docs/release_validation_2026-10-14_v0.11.6.md).
+[the v0.11.7 validation log](docs/release_validation_2026-10-21_v0.11.7.md).
 
 ## Product direction and scope
 
@@ -87,7 +87,7 @@ through `shogiesa_core::manifest` without copying the manifest layout.
 | Quality | `stability`, `filter`, `calibrate`, `audit`, `tune` | Attach, inspect, and calibrate quality signals. |
 | Select | `select`, `mine`, `balance`, `stratify`, `sample` | Select hard or underrepresented positions. |
 | Reproduce | `split`, `shuffle`, `recipe`, `dataset-diff` | Preserve roots, order, and artifact identity. |
-| Diagnose | `report`, `distribution`, `validate`, `conflict-report`, `block-report` | Report statistics and integrity problems. |
+| Diagnose | `report`, `quality-report`, `distribution`, `validate`, `conflict-report`, `block-report` | Report statistics and integrity problems. |
 | Exchange | `pack`, `unpack`, `lineprior export`, `make-gate-openings` | Convert data or prepare external-tool inputs. |
 
 `recipe` runs typed shogiesa stages only; it does not execute arbitrary shell commands.
@@ -116,19 +116,30 @@ iteration without collecting the input.
 Binary pack is a versioned transport format. Convert it back to JSONL for inspection or diffing.
 See [schema and pack compatibility](docs/design/schema_compatibility.md).
 
+For automated qualification, emit the same versioned semantic summary from JSONL or pack:
+
+```bash
+shogiesa quality-report --input train.jsonl --out quality.json
+shogiesa quality-report --input train.shgpk --out packed-quality.json
+```
+
+The report describes corpus identity, coverage, and parse failures; it does not claim training
+quality or engine strength. See [quality-report compatibility](docs/design/quality_report_compatibility.md).
+
 ## Documentation
 
 | Need | Document |
 |---|---|
 | Signal definitions and limits | [THEORY.md](docs/THEORY.md) |
 | JSONL and pack compatibility | [schema_compatibility.md](docs/design/schema_compatibility.md) |
+| Machine-readable quality report | [quality_report_compatibility.md](docs/design/quality_report_compatibility.md) |
 | Rust API boundary | [api_boundary.md](docs/api_boundary.md) |
 | Local interoperability evidence | [interop_evidence.md](docs/interop_evidence.md) |
 | Reproducible recipe record | [dataset_recipe_template.md](docs/design/dataset_recipe_template.md) |
 | Measurement status and artifacts | [measurement_matrix.md](docs/design/measurement_matrix.md), [measurement index](docs/measurements/README.md) |
 | Training comparison protocol | [training_effect_measurement.md](docs/design/training_effect_measurement.md) |
 | External consumer and gate runbooks | [external_gate_evaluation.md](docs/external_gate_evaluation.md), [LINEPRIOR_DOGFOOD.md](docs/LINEPRIOR_DOGFOOD.md) |
-| Release checks and evidence | [release_checklist.md](docs/release_checklist.md), [v0.11.6 validation](docs/release_validation_2026-10-14_v0.11.6.md) |
+| Release checks and evidence | [release_checklist.md](docs/release_checklist.md), [v0.11.7 validation](docs/release_validation_2026-10-21_v0.11.7.md) |
 
 ## Evidence boundary
 

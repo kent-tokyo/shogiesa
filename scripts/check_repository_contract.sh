@@ -27,6 +27,7 @@ required_files=(
   docs/release_validation_2026-10-12_v0.11.4.md
   docs/release_validation_2026-10-13_v0.11.5.md
   docs/release_validation_2026-10-14_v0.11.6.md
+  docs/release_validation_2026-10-21_v0.11.7.md
   scripts/release_readiness.sh
   scripts/run_local_measurement_smoke.sh
   scripts/run_reproducibility_matrix.sh
@@ -137,9 +138,9 @@ check_marker() {
 
 # These are literal regular expressions; shell expansion is intentionally disabled.
 # shellcheck disable=SC2016
-check_marker README.md 'latest verified published release are `0\.11\.6`' 'English release version'
+check_marker README.md 'latest verified published release are `0\.11\.7`' 'English release version'
 # shellcheck disable=SC2016
-check_marker README_ja.md '最新公開版は`0\.11\.6`' 'Japanese release version'
+check_marker README_ja.md '最新公開版は`0\.11\.7`' 'Japanese release version'
 
 check_marker tests/fixtures/malformed.csa '^\+BAD$' 'malformed CSA token'
 check_marker tests/fixtures/malformed.kif 'これは指し手ではない' 'malformed KIF move'

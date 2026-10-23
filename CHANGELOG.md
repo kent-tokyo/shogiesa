@@ -5,6 +5,18 @@ Compare links at the end provide the complete commit history.
 
 ## [Unreleased]
 
+## [0.11.7] — 2026-10-21
+
+### Added
+
+- Added `quality-report`, a bounded-memory, versioned JSON evidence artifact for JSONL and pack
+  inputs. It records raw and decoded SHA-256 identities, stable rejection reasons, outcome/score/
+  search-limit histograms, root/variation/split coverage, bounded distinct counts, optional
+  manifest identities, and deterministic multi-shard summaries.
+- `shogiesa-core::quality_report` exposes the v1 report contract, parser, and streaming summary
+  builder. Canonical fixture tests reject unknown breaking report versions and keep JSONL/pack
+  semantic counts compatible.
+
 ## [0.11.6] — 2026-10-14
 
 ### Changed
@@ -355,7 +367,8 @@ Compare links at the end provide the complete commit history.
 - CSA extraction, USI labeling, validation/reporting, shared domain types, CI, fixtures, and dual
   MIT/Apache-2.0 licensing.
 
-[Unreleased]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.6...HEAD
+[Unreleased]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.7...HEAD
+[0.11.7]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.6...v0.11.7
 [0.11.6]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.5...v0.11.6
 [0.11.5]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.4...v0.11.5
 [0.11.4]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.3...v0.11.4

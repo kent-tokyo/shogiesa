@@ -15,11 +15,11 @@ representative-corpus performance, training generalization, or engine-strength i
 | dependency audit | PASS | `cargo audit` scanned 157 locked dependencies against 1,348 advisories and found no known vulnerabilities |
 | shell checks | PASS | ShellCheck, teacher-calibration self-test, and fixture-backed Python integration tests |
 | package verification | PASS | `cargo package --workspace --locked` from the clean release commit |
-| GitHub CI | PENDING | release commit not yet pushed |
-| annotated tag | PENDING | `v0.11.7` not yet created |
-| crates.io | PENDING | publication workflow not yet run |
-| GitHub Release | PENDING | publication workflow not yet run |
-| publication workflow | PENDING | workflow not yet run |
+| GitHub CI | PASS | commit `2c3f695f029074d406ace805ebfef72aecd355fc`; [CI run 39609039290](https://github.com/kent-tokyo/shogiesa/actions/runs/39609039290) and [CodeQL run 39609039000](https://github.com/kent-tokyo/shogiesa/actions/runs/39609039000) succeeded |
+| annotated tag | PASS | remote `v0.11.7^{}` resolves to `2c3f695f029074d406ace805ebfef72aecd355fc` |
+| crates.io | PASS | all nine publishable crates have version `0.11.7` and `yanked=false` |
+| GitHub Release | PASS | [shogiesa v0.11.7](https://github.com/kent-tokyo/shogiesa/releases/tag/v0.11.7) published, not draft or prerelease |
+| publication workflow | PASS | [Publish release run 39609742973](https://github.com/kent-tokyo/shogiesa/actions/runs/39609742973) completed successfully |
 
 Version 0.11.7 adds the versioned `quality-report` evidence artifact for JSONL and pack inputs. It
 records exact raw and decoded identities, stable rejection reasons, search-limit and score

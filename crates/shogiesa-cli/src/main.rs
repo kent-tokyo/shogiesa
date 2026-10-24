@@ -41,7 +41,13 @@ use stratifykit_core::{
 };
 use tracing::info;
 
+mod io_support;
 mod recipe;
+
+use io_support::{
+    AtomicWriter, Sha256Reader, Sha256Writer, atomic_write_bytes, finish_hashed_position_jsonl,
+    hash_file_sha256, open_hashed_position_jsonl, sha256_hex, validate_path_roles,
+};
 
 #[derive(Parser)]
 #[command(
@@ -1123,75 +1129,6 @@ struct CachePruneArgs {
     yes: bool,
 }
 
-/// Reject path aliases before any command opens an output with truncation enabled. Comparing
-/// `Path` values directly is insufficient: `data.jsonl`, `./data.jsonl`, a symlink, and a hard
-/// link can all name the same file. Existing paths use their OS file identity; paths that do not
-/// exist yet use a canonical parent plus file name so ordinary relative aliases are still caught.
-fn paths_collide(left: &Path, right: &Path) -> Result<bool> {
-    if left.exists() && right.exists() {
-        return same_file::is_same_file(left, right)
-            .with_context(|| format!("cannot compare path identity for {left:?} and {right:?}"));
-    }
-
-    fn future_path_key(path: &Path) -> Result<PathBuf> {
-        if path.exists() {
-            return fs::canonicalize(path)
-                .with_context(|| format!("cannot canonicalize existing path {path:?}"));
-        }
-        let parent = path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        let file_name = path
-            .file_name()
-            .ok_or_else(|| anyhow::anyhow!("output path has no file name: {path:?}"))?;
-        match fs::canonicalize(parent) {
-            Ok(parent) => Ok(parent.join(file_name)),
-            Err(_) => {
-                let absolute = if path.is_absolute() {
-                    path.to_path_buf()
-                } else {
-                    std::env::current_dir()?.join(path)
-                };
-                let mut normalized = PathBuf::new();
-                for component in absolute.components() {
-                    match component {
-                        std::path::Component::CurDir => {}
-                        std::path::Component::ParentDir => {
-                            normalized.pop();
-                        }
-                        other => normalized.push(other.as_os_str()),
-                    }
-                }
-                Ok(normalized)
-            }
-        }
-    }
-
-    Ok(future_path_key(left)? == future_path_key(right)?)
-}
-
-/// `read_paths` are never allowed to alias a write target, and write targets must be pairwise
-/// distinct. This protects both the source dataset and sidecars: e.g. `--manifest == --out`
-/// would otherwise replace a successfully written dataset with manifest JSON at the end.
-fn validate_path_roles(read_paths: &[(&str, &Path)], write_paths: &[(&str, &Path)]) -> Result<()> {
-    for &(read_name, read_path) in read_paths {
-        for &(write_name, write_path) in write_paths {
-            if paths_collide(read_path, write_path)? {
-                anyhow::bail!("{read_name} must not be the same path as {write_name}");
-            }
-        }
-    }
-    for (index, &(left_name, left_path)) in write_paths.iter().enumerate() {
-        for &(right_name, right_path) in &write_paths[index + 1..] {
-            if paths_collide(left_path, right_path)? {
-                anyhow::bail!("{left_name} must not be the same path as {right_name}");
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Central path-safety gate for every command that writes a caller-selected file. Keeping this
 /// next to dispatch makes it harder for a new command to accidentally truncate an input before
 /// its own parsing/validation has a chance to run.
@@ -1411,97 +1348,6 @@ fn validate_command_paths(command: &Commands) -> Result<()> {
         | Commands::Validate(_)
         | Commands::Cache(_) => Ok(()),
     }
-}
-
-/// A same-directory temporary output that replaces its destination only after every byte has
-/// been written and flushed successfully. Dropping it without `commit` removes the temporary
-/// file and leaves any pre-existing destination untouched.
-struct AtomicWriter {
-    destination: PathBuf,
-    temp: Option<tempfile::NamedTempFile>,
-    writer: Option<BufWriter<File>>,
-}
-
-impl AtomicWriter {
-    fn new(destination: &Path) -> Result<Self> {
-        // Renaming over a symlink would replace the link itself, unlike File::create's
-        // long-standing follow-the-link behavior. Resolve an existing link first so atomic
-        // output remains compatible with callers that keep a stable symlink to an artifact.
-        let destination = match fs::symlink_metadata(destination) {
-            Ok(metadata) if metadata.file_type().is_symlink() => fs::canonicalize(destination)
-                .with_context(|| format!("cannot resolve output symlink {destination:?}"))?,
-            Ok(_) => destination.to_path_buf(),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => destination.to_path_buf(),
-            Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("cannot inspect output path {destination:?}"));
-            }
-        };
-        let parent = destination
-            .parent()
-            .filter(|path| !path.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        let temp = tempfile::NamedTempFile::new_in(parent)
-            .with_context(|| format!("cannot create temporary output in {parent:?}"))?;
-        let file = temp
-            .reopen()
-            .with_context(|| format!("cannot reopen temporary output for {destination:?}"))?;
-        Ok(Self {
-            destination,
-            temp: Some(temp),
-            writer: Some(BufWriter::new(file)),
-        })
-    }
-
-    fn commit(mut self) -> Result<()> {
-        let mut writer = self
-            .writer
-            .take()
-            .expect("atomic writer always owns its buffer before commit");
-        writer
-            .flush()
-            .with_context(|| format!("cannot flush temporary output for {:?}", self.destination))?;
-        writer
-            .get_ref()
-            .sync_all()
-            .with_context(|| format!("cannot sync temporary output for {:?}", self.destination))?;
-        drop(writer);
-
-        let temp = self
-            .temp
-            .take()
-            .expect("atomic writer always owns its temporary file before commit");
-        temp.persist(&self.destination).map_err(|error| {
-            anyhow::anyhow!(
-                "cannot atomically replace {:?}: {}",
-                self.destination,
-                error.error
-            )
-        })?;
-        Ok(())
-    }
-}
-
-impl Write for AtomicWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.writer
-            .as_mut()
-            .expect("atomic writer buffer is present until commit")
-            .write(buf)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.writer
-            .as_mut()
-            .expect("atomic writer buffer is present until commit")
-            .flush()
-    }
-}
-
-fn atomic_write_bytes(path: &Path, contents: &[u8]) -> Result<()> {
-    let mut writer = AtomicWriter::new(path)?;
-    writer.write_all(contents)?;
-    writer.commit()
 }
 
 fn main() -> Result<()> {
@@ -2438,193 +2284,6 @@ fn engine_options_hash_hex(options: &[(String, String)]) -> String {
     hash_parts(&sorted_engine_option_bytes(options))
         .to_hex()
         .to_string()
-}
-
-/// SHA-256 hex digest of bytes already in memory. Unlike every other hash in this file, these
-/// manifest hashes are meant to be independently verifiable with plain `shasum -a 256` by sibling
-/// repositories, without requiring them to adopt shogiesa's manifest schema.
-fn sha256_hex(bytes: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(bytes);
-    digest.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// SHA-256 hex digest of a file's raw, unmodified bytes -- deliberately NOT `hash_file`'s
-/// line-by-line blake3 stream (which re-inserts a `\n` per line regardless of the file's actual
-/// trailing-newline/CRLF bytes): that normalization is fine for `hash_file`'s internal join-key
-/// role, but wrong here, where the whole point is that a sibling repo can verify the value with
-/// `shasum -a 256 file` against the exact bytes on disk.
-fn hash_file_sha256(path: &Path) -> Result<String> {
-    use sha2::{Digest, Sha256};
-    let mut file = File::open(path).with_context(|| format!("cannot open {path:?}"))?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let bytes_read = file
-            .read(&mut buffer)
-            .with_context(|| format!("cannot hash {path:?}"))?;
-        if bytes_read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..bytes_read]);
-    }
-    Ok(hasher
-        .finalize()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect())
-}
-
-/// Reader that hashes the exact bytes successfully returned to its consumer. Used by `label`
-/// so the manifest cannot describe bytes from a later re-open of the input path.
-struct Sha256Reader<R> {
-    inner: R,
-    hasher: sha2::Sha256,
-    bytes_read: u64,
-}
-
-impl<R> Sha256Reader<R> {
-    fn new(inner: R) -> Self {
-        use sha2::Digest;
-        Self {
-            inner,
-            hasher: sha2::Sha256::new(),
-            bytes_read: 0,
-        }
-    }
-
-    fn digest_hex(self) -> String {
-        use sha2::Digest;
-        self.hasher
-            .finalize()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect()
-    }
-
-    fn identity(self) -> (u64, String) {
-        let bytes_read = self.bytes_read;
-        (bytes_read, self.digest_hex())
-    }
-}
-
-impl<R: Read> Read for Sha256Reader<R> {
-    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-        use sha2::Digest;
-        let read = self.inner.read(buffer)?;
-        self.hasher.update(&buffer[..read]);
-        self.bytes_read = self.bytes_read.saturating_add(read as u64);
-        Ok(read)
-    }
-}
-
-/// Buffers position JSONL while reproducing the manifest's historical normalized-line blake3
-/// digest. The wrapped reader may independently hash exact bytes (as [`Sha256Reader`] does), so a
-/// single open stream can provide both identities without bypassing the typed schema reader.
-struct ManifestJsonlBufReader<R> {
-    inner: R,
-    normalized_hasher: blake3::Hasher,
-}
-
-impl<R> ManifestJsonlBufReader<R> {
-    fn new(inner: R) -> Self {
-        Self {
-            inner,
-            normalized_hasher: blake3::Hasher::new(),
-        }
-    }
-
-    fn identity(self) -> (R, String) {
-        (
-            self.inner,
-            self.normalized_hasher.finalize().to_hex().to_string(),
-        )
-    }
-}
-
-impl<R: BufRead> Read for ManifestJsonlBufReader<R> {
-    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-        self.inner.read(buffer)
-    }
-}
-
-impl<R: BufRead> BufRead for ManifestJsonlBufReader<R> {
-    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
-        self.inner.fill_buf()
-    }
-
-    fn consume(&mut self, amount: usize) {
-        self.inner.consume(amount);
-    }
-
-    fn read_line(&mut self, buffer: &mut String) -> std::io::Result<usize> {
-        let start = buffer.len();
-        let read = self.inner.read_line(buffer)?;
-        if read > 0 {
-            let line = &buffer[start..];
-            let normalized = line.strip_suffix('\n').unwrap_or(line);
-            let normalized = normalized.strip_suffix('\r').unwrap_or(normalized);
-            self.normalized_hasher.update(normalized.as_bytes());
-            self.normalized_hasher.update(b"\n");
-        }
-        Ok(read)
-    }
-}
-
-type HashedPositionJsonlReader =
-    PositionRecordJsonlReader<ManifestJsonlBufReader<BufReader<Sha256Reader<File>>>>;
-
-fn open_hashed_position_jsonl(path: &Path) -> Result<HashedPositionJsonlReader> {
-    let file = File::open(path).with_context(|| format!("cannot open {path:?}"))?;
-    Ok(PositionRecordJsonlReader::new(ManifestJsonlBufReader::new(
-        BufReader::new(Sha256Reader::new(file)),
-    )))
-}
-
-fn finish_hashed_position_jsonl(reader: HashedPositionJsonlReader) -> (String, String) {
-    let (reader, normalized_blake3) = reader.into_inner().identity();
-    let exact_sha256 = reader.into_inner().digest_hex();
-    (normalized_blake3, exact_sha256)
-}
-
-/// Writer that hashes the exact bytes accepted by its destination. The digest is taken only
-/// after the buffered output is flushed successfully.
-struct Sha256Writer<W> {
-    inner: W,
-    hasher: sha2::Sha256,
-}
-
-impl<W> Sha256Writer<W> {
-    fn new(inner: W) -> Self {
-        use sha2::Digest;
-        Self {
-            inner,
-            hasher: sha2::Sha256::new(),
-        }
-    }
-
-    fn digest_hex(&self) -> String {
-        use sha2::Digest;
-        self.hasher
-            .clone()
-            .finalize()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect()
-    }
-}
-
-impl<W: Write> Write for Sha256Writer<W> {
-    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
-        use sha2::Digest;
-        let written = self.inner.write(buffer)?;
-        self.hasher.update(&buffer[..written]);
-        Ok(written)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.inner.flush()
-    }
 }
 
 /// SHA-256 of `--weight-file`'s bytes, for `weight_sha256` -- errors clearly if given a
@@ -9745,7 +9404,6 @@ mod extract_zobrist_dedup_tests {
 #[cfg(test)]
 mod fingerprint_tests {
     use super::*;
-    use std::io::Cursor;
 
     // Why hard-coded expected values, not just "assert it matches itself": blake3's digest for a
     // fixed input is stable forever by spec (unlike the `DefaultHasher` this replaced, whose docs
@@ -9795,26 +9453,6 @@ mod fingerprint_tests {
         let key = path.file_stem().unwrap().to_str().unwrap();
         assert_eq!(key.len(), 64);
         assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
-    }
-
-    #[test]
-    fn manifest_jsonl_reader_keeps_normalized_and_exact_identities_distinct() {
-        let input = b"first\r\n\nlast-without-newline";
-        let inner = BufReader::new(Sha256Reader::new(Cursor::new(input)));
-        let mut reader = ManifestJsonlBufReader::new(inner);
-        let mut line = String::new();
-        while reader.read_line(&mut line).unwrap() != 0 {
-            line.clear();
-        }
-
-        let (reader, normalized) = reader.identity();
-        assert_eq!(
-            normalized,
-            blake3::hash(b"first\n\nlast-without-newline\n")
-                .to_hex()
-                .to_string()
-        );
-        assert_eq!(reader.into_inner().digest_hex(), sha256_hex(input));
     }
 }
 

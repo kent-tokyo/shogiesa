@@ -8,6 +8,8 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
+use crate::io_support::paths_collide;
+
 const RECIPE_VERSION: u32 = 1;
 const PLAN_VERSION: u32 = 1;
 
@@ -336,7 +338,7 @@ fn validate_recipe(spec: &RecipeSpec, recipe_dir: &Path) -> Result<BTreeMap<Path
             }
             let normalized = normalized_recipe_path(recipe_dir, output);
             for input in &inputs {
-                if super::paths_collide(input, &normalized)? {
+                if paths_collide(input, &normalized)? {
                     bail!(
                         "stage {:?} uses {:?} as both input and output",
                         stage.id,
@@ -345,7 +347,7 @@ fn validate_recipe(spec: &RecipeSpec, recipe_dir: &Path) -> Result<BTreeMap<Path
                 }
             }
             for (previous_output, &previous) in &output_producers {
-                if super::paths_collide(previous_output, &normalized)? {
+                if paths_collide(previous_output, &normalized)? {
                     bail!(
                         "output {:?} is produced by both {:?} and {:?}",
                         output,
@@ -394,7 +396,7 @@ fn build_plan(recipe_path: &Path, spec: RecipeSpec, recipe_hash: String) -> Resu
     let recipe_dir = recipe_path.parent().unwrap_or_else(|| Path::new("."));
     let output_producers = validate_recipe(&spec, recipe_dir)?;
     for output in output_producers.keys() {
-        if super::paths_collide(recipe_path, output)? {
+        if paths_collide(recipe_path, output)? {
             bail!("recipe output {output:?} must not overwrite the recipe file");
         }
     }

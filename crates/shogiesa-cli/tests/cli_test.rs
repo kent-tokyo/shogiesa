@@ -6562,6 +6562,71 @@ fn stratify_write_template_writes_observed_bucket_counts() {
 }
 
 #[test]
+fn stratify_typed_reader_reports_and_skips_broken_and_future_records() {
+    let valid = position("opening", serde_json::json!([]));
+    let mut future = valid.clone();
+    future["schema_version"] = serde_json::json!(shogiesa_core::SCHEMA_VERSION + 1);
+    let mut input = NamedTempFile::new().unwrap();
+    writeln!(input, "{valid}").unwrap();
+    writeln!(input).unwrap();
+    writeln!(input, "not json").unwrap();
+    writeln!(input, "{future}").unwrap();
+    input.flush().unwrap();
+
+    let template = closed_temp_file();
+    shogiesa()
+        .env("RUST_LOG", "warn")
+        .args([
+            "stratify",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--write-template",
+            template.path().to_str().unwrap(),
+            "--by",
+            "phase",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("line=3"))
+        .stderr(predicate::str::contains("line=4"))
+        .stderr(predicate::str::contains(
+            "unsupported shogiesa schema_version",
+        ));
+
+    let quota = stratify_quota_file(&["phase"], &[("opening:", 1)]);
+    let out = closed_temp_file();
+    let manifest = closed_temp_file();
+    shogiesa()
+        .env("RUST_LOG", "warn")
+        .args([
+            "stratify",
+            "--input",
+            input.path().to_str().unwrap(),
+            "--quota",
+            quota.path().to_str().unwrap(),
+            "--out",
+            out.path().to_str().unwrap(),
+            "--manifest",
+            manifest.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("line=3"))
+        .stderr(predicate::str::contains("line=4"));
+
+    assert_eq!(
+        std::fs::read_to_string(out.path()).unwrap().lines().count(),
+        1
+    );
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest.path()).unwrap()).unwrap();
+    assert_eq!(manifest["records_read"], 3);
+    assert_eq!(manifest["records_kept"], 1);
+    assert_eq!(manifest["records_dropped"], 2);
+    assert_eq!(manifest["drop_reasons"]["parse_error"], 2);
+}
+
+#[test]
 fn stratify_write_template_then_quota_unedited_keeps_everything() {
     // The write-template and --quota code paths independently derive bucket keys via
     // `bucket_key`, from the same `--by`/`by` dims -- if they ever drifted, an *unedited* template
@@ -7199,6 +7264,7 @@ fn split_by_source_rejects_future_schema_instead_of_emitting_it() {
     )
     .unwrap();
     assert_eq!(manifest["total_positions"], 1);
+    assert_eq!(manifest["skipped_records"], 1);
 }
 
 #[test]
@@ -7240,6 +7306,7 @@ fn split_train_valid_test_rejects_future_schema_instead_of_emitting_it() {
         serde_json::from_str(&std::fs::read_to_string(dir.path().join("manifest.json")).unwrap())
             .unwrap();
     assert_eq!(manifest["total_positions"], 1);
+    assert_eq!(manifest["skipped_records"], 1);
 }
 
 #[test]
@@ -7660,6 +7727,7 @@ fn sample_returns_exact_count() {
         ])
         .assert()
         .success();
+
     let content = std::fs::read_to_string(out.path()).unwrap();
     assert_eq!(content.lines().filter(|l| !l.trim().is_empty()).count(), 3);
 }
@@ -8737,6 +8805,21 @@ fn same_input_file_produces_same_manifest_input_hash_across_commands() {
         .assert()
         .success();
 
+    let pack_out = closed_temp_file();
+    let pack_manifest = closed_temp_file();
+    shogiesa()
+        .args([
+            "pack",
+            "--input",
+            f.path().to_str().unwrap(),
+            "--out",
+            pack_out.path().to_str().unwrap(),
+            "--manifest",
+            pack_manifest.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
     let label_out = closed_temp_file();
     let label_manifest = closed_temp_file();
     shogiesa()
@@ -8760,9 +8843,12 @@ fn same_input_file_produces_same_manifest_input_hash_across_commands() {
         serde_json::from_str(&std::fs::read_to_string(filter_manifest.path()).unwrap()).unwrap();
     let sample_json: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(sample_manifest.path()).unwrap()).unwrap();
+    let pack_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(pack_manifest.path()).unwrap()).unwrap();
     let label_json: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(label_manifest.path()).unwrap()).unwrap();
     assert_eq!(filter_json["input_hash"], sample_json["input_hash"]);
+    assert_eq!(filter_json["input_hash"], pack_json["input_hash"]);
     assert_eq!(filter_json["input_hash"], label_json["input_hash"]);
 }
 

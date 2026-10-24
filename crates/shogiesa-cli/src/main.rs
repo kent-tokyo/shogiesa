@@ -2199,8 +2199,7 @@ fn read_resume_observations_at(file: &mut File, offset: u64) -> Result<Vec<Obser
     BufReader::new(file)
         .read_line(&mut line)
         .context("cannot read resume-from file")?;
-    let record: PositionRecord =
-        serde_json::from_str(line.trim()).context("cannot parse resume-from record")?;
+    let record = parse_json_line(line.trim()).context("cannot parse resume-from record")?;
     Ok(record.observations)
 }
 
@@ -2517,6 +2516,75 @@ impl<R: Read> Read for Sha256Reader<R> {
         self.bytes_read = self.bytes_read.saturating_add(read as u64);
         Ok(read)
     }
+}
+
+/// Buffers position JSONL while reproducing the manifest's historical normalized-line blake3
+/// digest. The wrapped reader may independently hash exact bytes (as [`Sha256Reader`] does), so a
+/// single open stream can provide both identities without bypassing the typed schema reader.
+struct ManifestJsonlBufReader<R> {
+    inner: R,
+    normalized_hasher: blake3::Hasher,
+}
+
+impl<R> ManifestJsonlBufReader<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            normalized_hasher: blake3::Hasher::new(),
+        }
+    }
+
+    fn identity(self) -> (R, String) {
+        (
+            self.inner,
+            self.normalized_hasher.finalize().to_hex().to_string(),
+        )
+    }
+}
+
+impl<R: BufRead> Read for ManifestJsonlBufReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        self.inner.read(buffer)
+    }
+}
+
+impl<R: BufRead> BufRead for ManifestJsonlBufReader<R> {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        self.inner.fill_buf()
+    }
+
+    fn consume(&mut self, amount: usize) {
+        self.inner.consume(amount);
+    }
+
+    fn read_line(&mut self, buffer: &mut String) -> std::io::Result<usize> {
+        let start = buffer.len();
+        let read = self.inner.read_line(buffer)?;
+        if read > 0 {
+            let line = &buffer[start..];
+            let normalized = line.strip_suffix('\n').unwrap_or(line);
+            let normalized = normalized.strip_suffix('\r').unwrap_or(normalized);
+            self.normalized_hasher.update(normalized.as_bytes());
+            self.normalized_hasher.update(b"\n");
+        }
+        Ok(read)
+    }
+}
+
+type HashedPositionJsonlReader =
+    PositionRecordJsonlReader<ManifestJsonlBufReader<BufReader<Sha256Reader<File>>>>;
+
+fn open_hashed_position_jsonl(path: &Path) -> Result<HashedPositionJsonlReader> {
+    let file = File::open(path).with_context(|| format!("cannot open {path:?}"))?;
+    Ok(PositionRecordJsonlReader::new(ManifestJsonlBufReader::new(
+        BufReader::new(Sha256Reader::new(file)),
+    )))
+}
+
+fn finish_hashed_position_jsonl(reader: HashedPositionJsonlReader) -> (String, String) {
+    let (reader, normalized_blake3) = reader.into_inner().identity();
+    let exact_sha256 = reader.into_inner().digest_hex();
+    (normalized_blake3, exact_sha256)
 }
 
 /// Writer that hashes the exact bytes accepted by its destination. The digest is taken only
@@ -3365,44 +3433,17 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
     // re-opening and re-reading the whole input a second time purely to hash it, defeating the
     // point of streaming in the first place.
     let input_path = args.input.clone();
-    let track_input_hash = args.manifest.is_some();
     let reader_handle = std::thread::spawn(move || -> Result<(u64, usize, u64, String, String)> {
-        let mut input_hasher = blake3::Hasher::new();
-        let file =
-            File::open(&input_path).with_context(|| format!("cannot open {input_path:?}"))?;
-        let mut reader = BufReader::new(Sha256Reader::new(file));
+        let mut reader = open_hashed_position_jsonl(&input_path)?;
         let mut job_id = 0u64;
         let mut skipped = 0usize;
         let mut resumed_count = 0u64;
-        let mut line = String::new();
-        let mut line_number = 0usize;
-        loop {
-            line.clear();
-            if reader
-                .read_line(&mut line)
-                .with_context(|| format!("cannot read {input_path:?}"))?
-                == 0
-            {
-                break;
-            }
-            line_number += 1;
-            // `BufRead::lines` removed both the newline and a preceding CR. Preserve that old
-            // normalized blake3 behavior while the wrapping reader independently hashes the
-            // exact bytes returned from the same open file.
-            let normalized = line.strip_suffix('\n').unwrap_or(&line);
-            let normalized = normalized.strip_suffix('\r').unwrap_or(normalized);
-            if track_input_hash {
-                // Hash every line, including blanks, before the empty-line skip below -- this has
-                // to match `hash_file`'s behavior exactly so the same input produces the same
-                // `input_hash` whether `label` or `sample`/`balance`/`pack`/`filter` computed it.
-                input_hasher.update(normalized.as_bytes());
-                input_hasher.update(b"\n");
-            }
-            if normalized.trim().is_empty() {
-                continue;
-            }
-            match parse_json_line(normalized) {
-                Ok(mut record) if Sfen::parse(&record.sfen).is_ok() => {
+        for item in &mut reader {
+            match item {
+                Ok(PositionRecordLine {
+                    line_number: _,
+                    mut record,
+                }) if Sfen::parse(&record.sfen).is_ok() => {
                     if let Some((index, file)) = resume_source.as_mut()
                         && let Some(&offset) = index.get(&merge_alignment_key(&record))
                     {
@@ -3433,24 +3474,24 @@ fn cmd_label(args: LabelArgs) -> Result<()> {
                     }
                     job_id += 1;
                 }
-                Ok(_) => {
+                Ok(PositionRecordLine { line_number, .. }) => {
                     tracing::warn!(line = line_number, "invalid SFEN, skipping");
                     skipped += 1;
                 }
-                Err(e) => {
-                    tracing::warn!(line = line_number, "JSON parse error: {e}");
+                Err(PositionRecordLineError::Parse {
+                    line_number,
+                    source,
+                }) => {
+                    tracing::warn!(line = line_number, "JSON parse error: {source}");
                     skipped += 1;
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| format!("cannot read {input_path:?}"));
                 }
             }
         }
-        let dataset_sha256 = reader.into_inner().digest_hex();
-        Ok((
-            job_id,
-            skipped,
-            resumed_count,
-            input_hasher.finalize().to_hex().to_string(),
-            dataset_sha256,
-        ))
+        let (input_hash, dataset_sha256) = finish_hashed_position_jsonl(reader);
+        Ok((job_id, skipped, resumed_count, input_hash, dataset_sha256))
     });
 
     // Workers: each owns one long-lived USI engine for its whole lifetime, launched lazily on
@@ -4075,28 +4116,17 @@ fn cmd_split(args: SplitArgs) -> Result<()> {
         .with_context(|| format!("cannot create split staging directory in {out_dir:?}"))?;
     let staging_dir = staging.path();
 
-    let reader = BufReader::new(
-        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
-    );
-
     // Group records by source path, writing into per-source output files via a bounded LRU pool
     let mut pool = WriterPool::new(args.max_open_writers.max(1));
     let mut file_names: HashMap<String, String> = HashMap::new();
     let mut file_name_owners: HashMap<String, String> = HashMap::new();
     let mut file_counts: BTreeMap<String, usize> = BTreeMap::new();
     let mut total = 0usize;
+    let mut broken = 0usize;
 
-    for (i, line) in reader.lines().enumerate() {
-        let line = line?;
-        if line.trim().is_empty() {
+    for item in open_position_jsonl(&args.input)? {
+        let Some(rec) = permissive_position_record(item, &args.input, &mut broken)? else {
             continue;
-        }
-        let rec = match parse_json_line(&line) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(line = i + 1, "JSON parse error: {e}");
-                continue;
-            }
         };
 
         let key = rec.source.path.clone();
@@ -4136,6 +4166,7 @@ fn cmd_split(args: SplitArgs) -> Result<()> {
         "input_hash": hash_file(&args.input)?,
         "by_source": args.by_source,
         "total_positions": total,
+        "skipped_records": broken,
         "files": file_counts,
         "output_hashes": output_hashes,
     });
@@ -4156,7 +4187,7 @@ fn cmd_split(args: SplitArgs) -> Result<()> {
     commit_split_bundle(&staged_files)?;
 
     eprintln!(
-        "done: {total} positions split into {} files → {:?}",
+        "done: {total} positions split, {broken} skipped, into {} files → {:?}",
         file_counts.len(),
         out_dir
     );
@@ -4215,10 +4246,6 @@ fn cmd_split_train_valid_test(args: SplitArgs) -> Result<()> {
         anyhow::bail!("--valid-frac + --test-frac must be < 1.0");
     }
 
-    let reader = BufReader::new(
-        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
-    );
-
     let mut train_writer = AtomicWriter::new(train_path)?;
     let mut valid_writer = AtomicWriter::new(valid_path)?;
     let mut test_writer = AtomicWriter::new(test_path)?;
@@ -4227,18 +4254,11 @@ fn cmd_split_train_valid_test(args: SplitArgs) -> Result<()> {
     let mut sources: HashMap<&'static str, HashSet<String>> = HashMap::new();
     let mut roots: HashMap<&'static str, HashSet<String>> = HashMap::new();
     let mut total = 0usize;
+    let mut broken = 0usize;
 
-    for (i, line) in reader.lines().enumerate() {
-        let line = line?;
-        if line.trim().is_empty() {
+    for item in open_position_jsonl(&args.input)? {
+        let Some(rec) = permissive_position_record(item, &args.input, &mut broken)? else {
             continue;
-        }
-        let rec = match parse_json_line(&line) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(line = i + 1, "JSON parse error: {e}");
-                continue;
-            }
         };
 
         let bucket = assign_split_bucket(
@@ -4292,6 +4312,7 @@ fn cmd_split_train_valid_test(args: SplitArgs) -> Result<()> {
         "seed": args.seed,
         "requested": { "valid_frac": args.valid_frac, "test_frac": args.test_frac },
         "total_positions": total,
+        "skipped_records": broken,
         "splits": {
             "train": split_manifest("train", train_path, &train_hash),
             "valid": split_manifest("valid", valid_path, &valid_hash),
@@ -4309,7 +4330,7 @@ fn cmd_split_train_valid_test(args: SplitArgs) -> Result<()> {
     .with_context(|| format!("cannot write {manifest_path:?}"))?;
 
     eprintln!(
-        "done: {total} positions split (seed={}) → train={}, valid={}, test={}",
+        "done: {total} positions split, {broken} skipped (seed={}) → train={}, valid={}, test={}",
         args.seed,
         counts.get("train").copied().unwrap_or(0),
         counts.get("valid").copied().unwrap_or(0),
@@ -4925,19 +4946,14 @@ fn cmd_stratify_write_template(args: &StratifyArgs, template_path: &Path) -> Res
     // Same tally `balance`'s pass 1 already does -- observed counts become the template's starting
     // point, which the user then hand-edits down to their desired per-bucket targets.
     let mut bucket_sizes: HashMap<String, usize> = HashMap::new();
-    let reader = BufReader::new(
-        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
-    );
-    for line in reader.lines() {
-        let line = line?;
-        if line.trim().is_empty() {
+    let mut broken = 0usize;
+    for item in open_position_jsonl(&args.input)? {
+        let Some(record) = permissive_position_record(item, &args.input, &mut broken)? else {
             continue;
-        }
-        if let Ok(record) = parse_json_line(&line) {
-            *bucket_sizes
-                .entry(bucket_key(&record, by_phase, by_side, by_eval, by_wdl))
-                .or_default() += 1;
-        }
+        };
+        *bucket_sizes
+            .entry(bucket_key(&record, by_phase, by_side, by_eval, by_wdl))
+            .or_default() += 1;
     }
 
     let file = QuotaSpec {
@@ -4952,7 +4968,7 @@ fn cmd_stratify_write_template(args: &StratifyArgs, template_path: &Path) -> Res
     )
     .with_context(|| format!("cannot write {template_path:?}"))?;
     eprintln!(
-        "done: {} bucket(s) observed → {:?} (edit \"quotas\" counts down, then run `stratify --quota`)",
+        "done: {} bucket(s) observed, {broken} record(s) skipped → {:?} (edit \"quotas\" counts down, then run `stratify --quota`)",
         file.quotas.len(),
         template_path
     );
@@ -4967,27 +4983,17 @@ fn cmd_stratify_apply(args: &StratifyArgs, quota_path: &Path, out: &Path) -> Res
     let by_wdl = quota_file.by.iter().any(|s| s == "wdl");
     let seed = args.seed;
 
-    let reader = BufReader::new(
-        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
-    );
-    let mut io_error: Option<std::io::Error> = None;
-    let records = reader
-        .lines()
-        .enumerate()
-        .filter_map(|(i, line)| match line {
-            Ok(line) if line.trim().is_empty() => None,
-            Ok(line) => match parse_json_line(&line) {
-                Ok(r) => Some(r),
-                Err(e) => {
-                    tracing::warn!(line = i + 1, "parse error: {e}");
-                    None
-                }
-            },
-            Err(e) => {
-                io_error.get_or_insert(e);
+    let mut broken = 0usize;
+    let mut read_error: Option<anyhow::Error> = None;
+    let records = open_position_jsonl(&args.input)?.filter_map(|item| {
+        match permissive_position_record(item, &args.input, &mut broken) {
+            Ok(record) => record,
+            Err(error) => {
+                read_error.get_or_insert(error);
                 None
             }
-        });
+        }
+    });
     let result = group_aware_fill(
         records,
         &quota_file.quotas,
@@ -4995,8 +5001,8 @@ fn cmd_stratify_apply(args: &StratifyArgs, quota_path: &Path, out: &Path) -> Res
         |r| bucket_key(r, by_phase, by_side, by_eval, by_wdl),
         |r| shogiesa_stratify::group_key(&r.source),
     );
-    if let Some(e) = io_error {
-        return Err(e.into());
+    if let Some(error) = read_error {
+        return Err(error);
     }
 
     let mut writer = AtomicWriter::new(out)?;
@@ -5008,7 +5014,7 @@ fn cmd_stratify_apply(args: &StratifyArgs, quota_path: &Path, out: &Path) -> Res
 
     let over_quota = result.quota_candidates - result.kept.len();
     eprintln!(
-        "done: {}/{} kept ({} bucket(s) in quota file) → {out:?}",
+        "done: {}/{} valid record(s) kept, {broken} malformed/unsupported record(s) skipped ({} bucket(s) in quota file) → {out:?}",
         result.kept.len(),
         result.total,
         quota_file.quotas.len()
@@ -5020,9 +5026,9 @@ fn cmd_stratify_apply(args: &StratifyArgs, quota_path: &Path, out: &Path) -> Res
     if let Some(manifest_path) = &args.manifest {
         let mut manifest = new_run_manifest("stratify", &args.input);
         manifest.input_hash = hash_file(&args.input)?;
-        manifest.records_read = result.total;
+        manifest.records_read = result.total + broken;
         manifest.records_kept = result.kept.len();
-        manifest.records_dropped = result.total - result.kept.len();
+        manifest.records_dropped = result.total - result.kept.len() + broken;
         manifest.drop_reasons.insert(
             "bucket_not_in_quota".to_string(),
             result.bucket_not_in_quota,
@@ -5030,6 +5036,11 @@ fn cmd_stratify_apply(args: &StratifyArgs, quota_path: &Path, out: &Path) -> Res
         manifest
             .drop_reasons
             .insert("over_quota".to_string(), over_quota);
+        if broken > 0 {
+            manifest
+                .drop_reasons
+                .insert("parse_error".to_string(), broken);
+        }
         accumulate_coverage(&mut manifest, &result.kept);
         manifest.max_root_share_in_any_bucket = result.max_group_share_in_any_bucket;
         manifest.distinct_roots_kept = Some(result.distinct_groups_kept);
@@ -5869,9 +5880,7 @@ fn cmd_select(args: SelectArgs) -> Result<()> {
 }
 
 fn cmd_pack(args: PackArgs) -> Result<()> {
-    let reader = BufReader::new(
-        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
-    );
+    let mut reader = open_hashed_position_jsonl(&args.input)?;
     let mut writer = AtomicWriter::new(&args.out)?;
 
     pack::write_header(&mut writer)?;
@@ -5882,34 +5891,21 @@ fn cmd_pack(args: PackArgs) -> Result<()> {
         .manifest
         .is_some()
         .then(|| new_run_manifest("pack", &args.input));
-    let mut input_hasher = blake3::Hasher::new();
-    for (i, line) in reader.lines().enumerate() {
-        let line = line?;
-        if manifest.is_some() {
-            input_hasher.update(line.as_bytes());
-            input_hasher.update(b"\n");
-        }
-        if line.trim().is_empty() {
+    for item in &mut reader {
+        let Some(rec) = permissive_position_record(item, &args.input, &mut skipped)? else {
             continue;
-        }
-        match parse_json_line(&line) {
-            Ok(rec) => {
-                pack::encode_record(&rec, &mut writer)?;
-                total += 1;
-                if let Some(m) = &mut manifest {
-                    accumulate_coverage(m, std::slice::from_ref(&rec));
-                }
-            }
-            Err(e) => {
-                tracing::warn!(line = i + 1, "JSON parse error: {e}");
-                skipped += 1;
-            }
+        };
+        pack::encode_record(&rec, &mut writer)?;
+        total += 1;
+        if let Some(m) = &mut manifest {
+            accumulate_coverage(m, std::slice::from_ref(&rec));
         }
     }
+    let (input_hash, _exact_sha256) = finish_hashed_position_jsonl(reader);
     writer.commit()?;
     eprintln!("done: {total} packed, {skipped} skipped → {:?}", args.out);
     if let (Some(mut m), Some(manifest_path)) = (manifest, &args.manifest) {
-        m.input_hash = input_hasher.finalize().to_hex().to_string();
+        m.input_hash = input_hash;
         m.output_sha256 = Some(hash_file_sha256(&args.out)?);
         m.records_read = total + skipped;
         m.records_kept = total;
@@ -6352,9 +6348,7 @@ fn cmd_filter(args: FilterArgs) -> Result<()> {
     };
     validate_quality_config(&config)?;
 
-    let reader = BufReader::new(
-        File::open(&args.input).with_context(|| format!("cannot open {:?}", args.input))?,
-    );
+    let mut reader = open_hashed_position_jsonl(&args.input)?;
     let mut writer = args.out.as_deref().map(AtomicWriter::new).transpose()?;
     let mut explain_writer = args
         .explain_out
@@ -6370,27 +6364,12 @@ fn cmd_filter(args: FilterArgs) -> Result<()> {
         .manifest
         .is_some()
         .then(|| new_run_manifest("filter", &args.input));
-    let mut input_hasher = blake3::Hasher::new();
 
-    for (i, line) in reader.lines().enumerate() {
-        let line = line?;
-        if manifest.is_some() {
-            input_hasher.update(line.as_bytes());
-            input_hasher.update(b"\n");
-        }
-        if line.trim().is_empty() {
-            continue;
-        }
+    for item in &mut reader {
         total += 1;
-
-        let rec = match parse_json_line(&line) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(line = i + 1, "JSON parse error: {e}");
-                skipped += 1;
-                *drop_reasons.entry("parse_error").or_default() += 1;
-                continue;
-            }
+        let Some(rec) = permissive_position_record(item, &args.input, &mut skipped)? else {
+            *drop_reasons.entry("parse_error").or_default() += 1;
+            continue;
         };
 
         let decision = evaluate_quality(&rec, &config);
@@ -6418,6 +6397,7 @@ fn cmd_filter(args: FilterArgs) -> Result<()> {
             }
         }
     }
+    let (input_hash, _exact_sha256) = finish_hashed_position_jsonl(reader);
 
     if let Some(w) = writer {
         w.commit()?;
@@ -6436,7 +6416,7 @@ fn cmd_filter(args: FilterArgs) -> Result<()> {
         }
     }
     if let (Some(mut m), Some(manifest_path)) = (manifest, &args.manifest) {
-        m.input_hash = input_hasher.finalize().to_hex().to_string();
+        m.input_hash = input_hash;
         m.records_read = total;
         m.records_kept = passed;
         m.records_dropped = skipped;
@@ -9765,6 +9745,7 @@ mod extract_zobrist_dedup_tests {
 #[cfg(test)]
 mod fingerprint_tests {
     use super::*;
+    use std::io::Cursor;
 
     // Why hard-coded expected values, not just "assert it matches itself": blake3's digest for a
     // fixed input is stable forever by spec (unlike the `DefaultHasher` this replaced, whose docs
@@ -9814,6 +9795,26 @@ mod fingerprint_tests {
         let key = path.file_stem().unwrap().to_str().unwrap();
         assert_eq!(key.len(), 64);
         assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn manifest_jsonl_reader_keeps_normalized_and_exact_identities_distinct() {
+        let input = b"first\r\n\nlast-without-newline";
+        let inner = BufReader::new(Sha256Reader::new(Cursor::new(input)));
+        let mut reader = ManifestJsonlBufReader::new(inner);
+        let mut line = String::new();
+        while reader.read_line(&mut line).unwrap() != 0 {
+            line.clear();
+        }
+
+        let (reader, normalized) = reader.identity();
+        assert_eq!(
+            normalized,
+            blake3::hash(b"first\n\nlast-without-newline\n")
+                .to_hex()
+                .to_string()
+        );
+        assert_eq!(reader.into_inner().digest_hex(), sha256_hex(input));
     }
 }
 

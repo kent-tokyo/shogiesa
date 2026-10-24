@@ -10,6 +10,7 @@ explain contracts, interpretation, and evidence limits.
 | Interpret scores, stability, and quality gates | [THEORY.md](THEORY.md) |
 | Consume the Rust API | [api_boundary.md](api_boundary.md) |
 | Read or write position JSONL and pack files | [schema_compatibility.md](design/schema_compatibility.md) |
+| Implement a streaming position JSONL consumer | [jsonl_reader_contract.md](design/jsonl_reader_contract.md) |
 | Verify run manifests | [run_manifest_compatibility.md](design/run_manifest_compatibility.md) |
 | Consume `quality-report` JSON | [quality_report_compatibility.md](design/quality_report_compatibility.md) |
 

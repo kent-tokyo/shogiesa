@@ -9,6 +9,7 @@ required_files=(
   README_ja.md
   docs/README.md
   docs/design/schema_compatibility.md
+  docs/design/jsonl_reader_contract.md
   docs/design/run_manifest_compatibility.md
   docs/THEORY.md
   docs/design/dataset_recipe_template.md

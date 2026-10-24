@@ -1,4 +1,5 @@
 use super::super::*;
+use super::label::{CacheRead, parse_cache_entry};
 
 /// Every `.json` file under a `label --cache-dir`'s two-level shard layout
 /// (`cache_dir/xx/<64-hex-hash>.json`, see `label_cache_path`). Filtering strictly on the `.json`

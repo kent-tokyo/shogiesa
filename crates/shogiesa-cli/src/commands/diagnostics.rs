@@ -68,7 +68,7 @@ fn accumulate_dataset_deltas(
         deltas.observations += direction * record.observations.len() as i64;
         add_dataset_delta(
             &mut deltas.source_roots,
-            split_root_key(&record.source).to_string(),
+            super::transforms::split_root_key(&record.source).to_string(),
             direction,
         );
         add_dataset_delta(&mut deltas.phases, record.tags.phase.to_string(), direction);
@@ -1025,7 +1025,7 @@ pub(crate) fn cmd_block_report(args: BlockReportArgs) -> Result<()> {
         let Some(record) = permissive_position_record(item, &args.input, &mut parse_errors)? else {
             continue;
         };
-        let root = split_root_key(&record.source).to_string();
+        let root = super::transforms::split_root_key(&record.source).to_string();
         let root_changed = current.as_ref().is_some_and(|block| block.root != root);
         if (root_changed
             || current

@@ -1,4 +1,6 @@
 use super::super::*;
+use super::label::hash_parts;
+use super::transforms::split_root_key;
 
 pub(crate) fn cmd_sample(args: SampleArgs) -> Result<()> {
     let seed = args.seed;

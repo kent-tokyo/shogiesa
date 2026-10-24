@@ -1,8 +1,10 @@
 pub(super) mod cache;
 pub(super) mod diagnostics;
 pub(super) mod ingest;
+pub(super) mod label;
 pub(super) mod quality;
 pub(super) mod selection;
+pub(super) mod transforms;
 pub(super) mod transport;
 
 pub(super) use cache::{cmd_cache_prune, cmd_cache_stats, cmd_cache_verify};
@@ -14,9 +16,11 @@ pub(super) use ingest::{
     ResumeIndex, build_resume_index, cmd_extract, cmd_from_match, cmd_merge_observations,
     merge_alignment_key, merge_resume_observations, read_resume_observations_at,
 };
+pub(super) use label::cmd_label;
 pub(super) use quality::{cmd_audit, cmd_calibrate, cmd_filter, cmd_tune};
 pub(super) use selection::{
     cmd_balance, cmd_lineprior_export, cmd_make_gate_openings, cmd_mine, cmd_sample, cmd_select,
     cmd_shuffle, cmd_stratify, is_legal_bestmove_lite,
 };
+pub(super) use transforms::{cmd_split, cmd_stability, split_root_key};
 pub(super) use transport::{cmd_pack, cmd_quality_report, cmd_unpack};

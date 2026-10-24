@@ -5,6 +5,8 @@ Compare links at the end provide the complete commit history.
 
 ## [Unreleased]
 
+## [0.11.8] — 2026-10-24
+
 ### Changed
 
 - Updated `serde_json` to 1.0.154 and `sha2` to 0.11.1.
@@ -21,6 +23,18 @@ Compare links at the end provide the complete commit history.
   helpers into internal modules while preserving the crate-root API through re-exports.
 - Added a CI-enforced refactoring contract for module presence, source-size budgets, test layout,
   and the typed position-JSONL boundary.
+
+### Fixed
+
+- Pack encoding now rejects unsupported record schemas and oversized strings or collections before
+  writing partial records; decoding rejects noncanonical binary flag values instead of accepting
+  every nonzero byte.
+- Train/valid/test splitting now validates finite, non-negative ratios and commits all three files
+  plus their manifest as one recoverable bundle.
+- Recipe stages now give each declared output a unique staging path, so outputs in different
+  directories may safely share a basename.
+- Extreme `label --jobs` and `cache prune --older-than-days` values now fail with actionable errors
+  instead of overflowing; distribution ratio controls also reject non-finite or invalid ranges.
 
 ## [0.11.7] — 2026-10-21
 
@@ -384,7 +398,8 @@ Compare links at the end provide the complete commit history.
 - CSA extraction, USI labeling, validation/reporting, shared domain types, CI, fixtures, and dual
   MIT/Apache-2.0 licensing.
 
-[Unreleased]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.7...HEAD
+[Unreleased]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.8...HEAD
+[0.11.8]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.7...v0.11.8
 [0.11.7]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.6...v0.11.7
 [0.11.6]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.5...v0.11.6
 [0.11.5]: https://github.com/kent-tokyo/shogiesa/compare/v0.11.4...v0.11.5

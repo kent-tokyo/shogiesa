@@ -833,6 +833,7 @@ fn parse_engine_options(values: &[String]) -> Result<Vec<(String, String)>> {
 }
 
 pub(crate) fn cmd_label(args: LabelArgs) -> Result<()> {
+    const MAX_LABEL_JOBS: usize = 1024;
     // Bounded-pipeline changes (worker count, cache usage, ordering) can't be judged without
     // measuring their actual effect on throughput -- this run's wall-clock start, used for
     // `records_per_sec` below.
@@ -856,6 +857,9 @@ pub(crate) fn cmd_label(args: LabelArgs) -> Result<()> {
     }
     if args.jobs == 0 {
         anyhow::bail!("--jobs must be greater than zero");
+    }
+    if args.jobs > MAX_LABEL_JOBS {
+        anyhow::bail!("--jobs must be at most {MAX_LABEL_JOBS}");
     }
     if args.multipv == 0 {
         anyhow::bail!("--multipv must be greater than zero");
@@ -951,7 +955,9 @@ pub(crate) fn cmd_label(args: LabelArgs) -> Result<()> {
     // durably outputs a job, bounds "dispatched but not yet written" to a constant regardless of
     // which job finishes last -- a slow job 0 now stalls the *reader* (out of permits), not the
     // writer's memory.
-    let queue_depth = jobs * 4;
+    let queue_depth = jobs
+        .checked_mul(4)
+        .context("--jobs is too large to size the label queue")?;
     let (permit_tx, permit_rx) = mpsc::sync_channel::<()>(queue_depth);
     for _ in 0..queue_depth {
         permit_tx.send(()).expect("permit channel just created");

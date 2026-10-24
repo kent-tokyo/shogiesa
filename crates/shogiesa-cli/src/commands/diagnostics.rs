@@ -1070,6 +1070,17 @@ pub(crate) fn cmd_distribution(args: DistributionArgs) -> Result<()> {
     if args.ply_bucket_size == 0 {
         anyhow::bail!("--ply-bucket-size must be > 0");
     }
+    for (name, value) in [
+        ("--under-ratio", args.under_ratio),
+        ("--over-ratio", args.over_ratio),
+    ] {
+        if !value.is_finite() || value < 0.0 {
+            anyhow::bail!("{name} must be finite and non-negative");
+        }
+    }
+    if args.under_ratio > args.over_ratio {
+        anyhow::bail!("--under-ratio must be <= --over-ratio");
+    }
 
     let reader = open_position_jsonl(&args.input)?;
 

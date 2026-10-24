@@ -38,6 +38,7 @@ required_files=(
   crates/shogiesa-cli/tests/cli/extract.rs
   crates/shogiesa-cli/tests/cli/ingest_extra.rs
   crates/shogiesa-cli/tests/cli/label.rs
+  crates/shogiesa-cli/tests/cli/regressions.rs
   crates/shogiesa-cli/tests/cli/workflows.rs
   crates/shogiesa-core/src/extraction.rs
   crates/shogiesa-core/src/model.rs

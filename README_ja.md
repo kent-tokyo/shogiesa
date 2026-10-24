@@ -6,10 +6,11 @@ shogiesaはCSA、KIF、KI2、match-runner棋譜を点検可能な学習データ
 SFEN局面の抽出、USI教師によるラベル付け、不安定な局面の除外、JSONLまたはbinary packへの
 書き出しを担当します。特定のエンジンやtrainerに依存しない独立したproductです。
 
-workspaceと検証済みの最新公開版は`0.11.7`です。
-[GitHub Release](https://github.com/kent-tokyo/shogiesa/releases/tag/v0.11.7)、
+workspaceのreleaseは`0.11.8`です。
+[GitHub Release](https://github.com/kent-tokyo/shogiesa/releases/tag/v0.11.8)、
 [CHANGELOG](CHANGELOG.md)、
-[v0.11.7検証記録](docs/release_validation_2026-10-21_v0.11.7.md)を参照してください。
+[v0.11.8検証記録](docs/release_validation_2026-10-24_v0.11.8.md)を参照してください。検証記録では
+release候補と公開後の証拠を分けています。
 
 ## 対象範囲
 

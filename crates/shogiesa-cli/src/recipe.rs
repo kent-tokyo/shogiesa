@@ -603,24 +603,20 @@ fn stage_reusable(previous: Option<&RunStage>, planned: &PlannedStage) -> Result
     Ok(true)
 }
 
+fn staged_output_path(staging: &Path, index: usize, output: &Path) -> PathBuf {
+    let file_name = output.file_name().unwrap_or_default().to_string_lossy();
+    staging.join(format!("{index:04}-{file_name}"))
+}
+
 fn rewritten_args(stage: &RecipeStage, recipe_dir: &Path, staging: &Path) -> Vec<String> {
-    let outputs: BTreeMap<String, String> = stage
-        .outputs
-        .iter()
-        .map(|raw| {
-            let final_path = normalized_recipe_path(recipe_dir, raw);
-            let temp_path = staging.join(final_path.file_name().unwrap_or_default());
-            (raw.clone(), temp_path.display().to_string())
-        })
-        .chain(stage.outputs.iter().map(|raw| {
-            let final_path = normalized_recipe_path(recipe_dir, raw);
-            let temp_path = staging.join(final_path.file_name().unwrap_or_default());
-            (
-                final_path.display().to_string(),
-                temp_path.display().to_string(),
-            )
-        }))
-        .collect();
+    let mut outputs = BTreeMap::new();
+    for (index, raw) in stage.outputs.iter().enumerate() {
+        let final_path = normalized_recipe_path(recipe_dir, raw);
+        let temp_path = staged_output_path(staging, index, &final_path);
+        let temp = temp_path.display().to_string();
+        outputs.insert(raw.clone(), temp.clone());
+        outputs.insert(final_path.display().to_string(), temp);
+    }
     let inputs: BTreeMap<String, String> = stage
         .inputs
         .iter()
@@ -659,8 +655,8 @@ fn commit_stage_outputs(
     staging: &Path,
 ) -> Result<Vec<RunOutput>> {
     let mut prepared = Vec::with_capacity(output_paths.len());
-    for output in output_paths {
-        let temp = staging.join(output.file_name().unwrap_or_default());
+    for (index, output) in output_paths.iter().enumerate() {
+        let temp = staged_output_path(staging, index, output);
         if !temp.is_file() {
             bail!(
                 "stage {:?} did not produce declared output {:?}",

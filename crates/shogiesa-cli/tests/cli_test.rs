@@ -83,6 +83,8 @@ mod extract;
 mod ingest_extra;
 #[path = "cli/label.rs"]
 mod label;
+#[path = "cli/regressions.rs"]
+mod regressions;
 #[path = "cli/workflows.rs"]
 mod workflows;
 

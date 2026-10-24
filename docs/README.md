@@ -1,7 +1,7 @@
 # Documentation
 
-The current published release is `0.11.7`. CLI help is the option-level authority; these documents
-explain contracts, interpretation, and evidence limits.
+The current release documentation targets `0.11.8`. CLI help is the option-level authority; these
+documents explain contracts, interpretation, and evidence limits.
 
 ## Start here
 
@@ -39,7 +39,7 @@ explain contracts, interpretation, and evidence limits.
 ## Releases
 
 Use the [release checklist](release_checklist.md) for a new candidate. The current publication
-evidence is [v0.11.7 release validation](release_validation_2026-10-21_v0.11.7.md).
+evidence is [v0.11.8 release validation](release_validation_2026-10-24_v0.11.8.md).
 
 Files named `release_validation_*.md` are historical evidence for their stated tags. Keep their
 commands, hashes, failures, and claim limits unchanged; update current guidance in the documents

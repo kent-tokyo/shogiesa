@@ -183,9 +183,10 @@ where
     let mut entries = Vec::with_capacity(staged_files.len());
     let mut destinations = HashSet::with_capacity(staged_files.len());
 
-    // Complete every fallible preparation step before moving an existing destination. A symlink
-    // target may live on another filesystem, so copy that staged file to a temporary neighbor;
-    // the final replacement can then use a same-filesystem rename.
+    // Complete every fallible preparation step before moving an existing destination. Staged
+    // files and outputs may live on different filesystems, so always copy each staged file to a
+    // temporary neighbor of its resolved destination. The final replacement then uses a
+    // same-filesystem rename for ordinary paths and symlink targets alike.
     for (staged, requested_destination) in staged_files {
         let destination = match fs::symlink_metadata(requested_destination) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
@@ -210,40 +211,21 @@ where
             anyhow::bail!("split outputs resolve to the same destination: {destination:?}");
         }
 
-        let mut prepared_temp = None;
-        let prepared_staged = if destination != *requested_destination {
-            let parent = destination.parent().unwrap_or(Path::new("."));
-            let temp = tempfile::NamedTempFile::new_in(parent).with_context(|| {
-                format!("cannot stage split output beside symlink target {destination:?}")
-            })?;
-            fs::copy(staged, temp.path()).with_context(|| {
-                format!("cannot stage split output for symlink target {destination:?}")
-            })?;
-            temp.as_file()
-                .sync_all()
-                .with_context(|| format!("cannot sync staged split output for {destination:?}"))?;
-            let temp = temp.into_temp_path();
-            let path = temp.to_path_buf();
-            prepared_temp = Some(temp);
-            path
-        } else {
-            // Windows requires a writable handle for `sync_all`/`FlushFileBuffers` even when
-            // the file contents are already complete. Opening read-only made bundle commits
-            // fail during preparation before rollback behavior could run.
-            OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(staged)
-                .with_context(|| format!("cannot open staged split output {staged:?}"))?
-                .sync_all()
-                .with_context(|| format!("cannot sync staged split output {staged:?}"))?;
-            staged.clone()
-        };
+        let parent = destination.parent().unwrap_or(Path::new("."));
+        let temp = tempfile::NamedTempFile::new_in(parent)
+            .with_context(|| format!("cannot stage split output beside {destination:?}"))?;
+        fs::copy(staged, temp.path())
+            .with_context(|| format!("cannot stage split output for {destination:?}"))?;
+        temp.as_file()
+            .sync_all()
+            .with_context(|| format!("cannot sync staged split output for {destination:?}"))?;
+        let prepared_temp = temp.into_temp_path();
+        let prepared_staged = prepared_temp.to_path_buf();
 
         entries.push(SplitBundleEntry {
             staged: prepared_staged,
             destination,
-            prepared_temp,
+            prepared_temp: Some(prepared_temp),
             backup: None,
             committed: false,
         });
@@ -504,13 +486,26 @@ fn cmd_split_train_valid_test(args: SplitArgs) -> Result<()> {
     else {
         anyhow::bail!("--train, --valid, and --test must all be provided together");
     };
+    for (name, value) in [
+        ("--valid-frac", args.valid_frac),
+        ("--test-frac", args.test_frac),
+    ] {
+        if !value.is_finite() || !(0.0..1.0).contains(&value) {
+            anyhow::bail!("{name} must be finite and in [0.0, 1.0)");
+        }
+    }
     if args.valid_frac + args.test_frac >= 1.0 {
         anyhow::bail!("--valid-frac + --test-frac must be < 1.0");
     }
 
-    let mut train_writer = AtomicWriter::new(train_path)?;
-    let mut valid_writer = AtomicWriter::new(valid_path)?;
-    let mut test_writer = AtomicWriter::new(test_path)?;
+    let staging = tempfile::tempdir().context("cannot create split staging directory")?;
+    let staged_train = staging.path().join("train.jsonl");
+    let staged_valid = staging.path().join("valid.jsonl");
+    let staged_test = staging.path().join("test.jsonl");
+    let staged_manifest = staging.path().join("manifest.json");
+    let mut train_writer = AtomicWriter::new(&staged_train)?;
+    let mut valid_writer = AtomicWriter::new(&staged_valid)?;
+    let mut test_writer = AtomicWriter::new(&staged_test)?;
 
     let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
     let mut sources: HashMap<&'static str, HashSet<String>> = HashMap::new();
@@ -562,9 +557,9 @@ fn cmd_split_train_valid_test(args: SplitArgs) -> Result<()> {
             "source_root_ids": source_root_ids,
         })
     };
-    let train_hash = hash_file(train_path)?;
-    let valid_hash = hash_file(valid_path)?;
-    let test_hash = hash_file(test_path)?;
+    let train_hash = hash_file(&staged_train)?;
+    let valid_hash = hash_file(&staged_valid)?;
+    let test_hash = hash_file(&staged_test)?;
     let manifest = serde_json::json!({
         "shogiesa_version": env!("CARGO_PKG_VERSION"),
         "schema_version": SCHEMA_VERSION,
@@ -586,10 +581,16 @@ fn cmd_split_train_valid_test(args: SplitArgs) -> Result<()> {
         .unwrap_or(Path::new("."))
         .join("manifest.json");
     atomic_write_bytes(
-        &manifest_path,
+        &staged_manifest,
         serde_json::to_string_pretty(&manifest)?.as_bytes(),
     )
-    .with_context(|| format!("cannot write {manifest_path:?}"))?;
+    .with_context(|| format!("cannot stage {manifest_path:?}"))?;
+    commit_split_bundle(&[
+        (staged_train, train_path.clone()),
+        (staged_valid, valid_path.clone()),
+        (staged_test, test_path.clone()),
+        (staged_manifest, manifest_path),
+    ])?;
 
     eprintln!(
         "done: {total} positions split, {broken} skipped (seed={}) → train={}, valid={}, test={}",
@@ -687,6 +688,36 @@ mod atomic_writer_tests {
         assert!(error.to_string().contains("injected failure"));
         assert_eq!(fs::read(destination_a).unwrap(), b"old-a");
         assert_eq!(fs::read(destination_b).unwrap(), b"old-b");
+    }
+
+    #[test]
+    fn split_bundle_rolls_back_all_four_standard_outputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let names = ["train", "valid", "test", "manifest"];
+        let mut files = Vec::new();
+        for name in names {
+            let staged = dir.path().join(format!("staged-{name}"));
+            let destination = dir.path().join(name);
+            fs::write(&staged, format!("new-{name}")).unwrap();
+            fs::write(&destination, format!("old-{name}")).unwrap();
+            files.push((staged, destination));
+        }
+
+        let error = commit_split_bundle_with(&files, |index| {
+            if index == 3 {
+                anyhow::bail!("injected manifest failure");
+            }
+            Ok(())
+        })
+        .unwrap_err();
+
+        assert!(error.to_string().contains("injected manifest failure"));
+        for name in names {
+            assert_eq!(
+                fs::read(dir.path().join(name)).unwrap(),
+                format!("old-{name}").as_bytes()
+            );
+        }
     }
 
     #[test]

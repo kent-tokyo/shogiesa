@@ -1,6 +1,6 @@
 # Capability evidence
 
-This file records evidence boundaries for the current `0.11.7` release. The filename is retained
+This file records evidence boundaries for the current `0.11.8` release. The filename is retained
 for stable links; this is not a competitor ranking.
 
 | Area | Available evidence | Remaining limit |

@@ -206,7 +206,12 @@ pub(crate) fn cmd_cache_prune(args: CachePruneArgs) -> Result<()> {
     let now = std::time::SystemTime::now();
     let max_age = args
         .older_than_days
-        .map(|days| std::time::Duration::from_secs(days * 86400));
+        .map(|days| {
+            days.checked_mul(86_400)
+                .map(std::time::Duration::from_secs)
+                .context("--older-than-days is too large")
+        })
+        .transpose()?;
 
     let mut to_delete = Vec::new();
     for path in &entries {

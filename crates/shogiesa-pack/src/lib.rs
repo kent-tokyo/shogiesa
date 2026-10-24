@@ -108,14 +108,28 @@ fn wi32(w: &mut impl Write, v: i32) -> io::Result<()> {
     w.write_all(&v.to_le_bytes())
 }
 
+fn invalid_input(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, message.into())
+}
+
+fn checked_u8_len(field: &str, len: usize) -> io::Result<u8> {
+    u8::try_from(len)
+        .map_err(|_| invalid_input(format!("{field} length {len} exceeds {}", u8::MAX)))
+}
+
+fn checked_u16_len(field: &str, len: usize) -> io::Result<u16> {
+    u16::try_from(len)
+        .map_err(|_| invalid_input(format!("{field} length {len} exceeds {}", u16::MAX)))
+}
+
 fn ws8(w: &mut impl Write, s: &str) -> io::Result<()> {
     let b = s.as_bytes();
-    wu8(w, b.len() as u8)?;
+    wu8(w, checked_u8_len("u8 string", b.len())?)?;
     w.write_all(b)
 }
 fn ws16(w: &mut impl Write, s: &str) -> io::Result<()> {
     let b = s.as_bytes();
-    wu16(w, b.len() as u16)?;
+    wu16(w, checked_u16_len("u16 string", b.len())?)?;
     w.write_all(b)
 }
 
@@ -147,6 +161,17 @@ fn ri32(r: &mut impl Read) -> io::Result<i32> {
     Ok(i32::from_le_bytes(b))
 }
 
+fn rflag(r: &mut impl Read, field: &str) -> io::Result<bool> {
+    match ru8(r)? {
+        0 => Ok(false),
+        1 => Ok(true),
+        value => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid {field} tag {value}; expected 0 or 1"),
+        )),
+    }
+}
+
 fn rs8(r: &mut impl Read) -> io::Result<String> {
     let len = ru8(r)? as usize;
     let mut b = vec![0u8; len];
@@ -162,6 +187,101 @@ fn rs16(r: &mut impl Read) -> io::Result<String> {
 
 fn bad(msg: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg)
+}
+
+fn validate_u8_string(field: &str, value: &str) -> io::Result<()> {
+    checked_u8_len(field, value.len()).map(|_| ())
+}
+
+fn validate_u16_string(field: &str, value: &str) -> io::Result<()> {
+    checked_u16_len(field, value.len()).map(|_| ())
+}
+
+fn validate_record_encodable(rec: &PositionRecord) -> io::Result<()> {
+    // Historical JSONL schemas are intentionally accepted and normalized to the pack format's
+    // current typed shape. Reject versions outside the core compatibility window so a future
+    // record cannot be silently downgraded by a format that has no per-record schema field.
+    rec.validate_schema_version()
+        .map_err(|error| invalid_input(error.to_string()))?;
+
+    validate_u16_string("sfen", &rec.sfen)?;
+    validate_u8_string("source.kind", &rec.source.kind)?;
+    validate_u16_string("source.path", &rec.source.path)?;
+    if let Some(value) = &rec.source.root_id {
+        validate_u16_string("source.root_id", value)?;
+    }
+    if let Some(value) = &rec.source.variation_id {
+        validate_u8_string("source.variation_id", value)?;
+    }
+    if let Some(result) = &rec.game_result {
+        validate_u8_string("game_result.result_source", &result.result_source)?;
+    }
+
+    checked_u16_len("observations", rec.observations.len())?;
+    for (observation_index, observation) in rec.observations.iter().enumerate() {
+        validate_u8_string(
+            &format!("observations[{observation_index}].engine"),
+            &observation.engine,
+        )?;
+        if let Some(value) = &observation.engine_version {
+            validate_u8_string(
+                &format!("observations[{observation_index}].engine_version"),
+                value,
+            )?;
+        }
+        validate_u8_string(
+            &format!("observations[{observation_index}].bestmove"),
+            &observation.bestmove,
+        )?;
+        if let Some(pv) = &observation.pv {
+            checked_u16_len(&format!("observations[{observation_index}].pv"), pv.len())?;
+            for (move_index, mv) in pv.iter().enumerate() {
+                validate_u8_string(
+                    &format!("observations[{observation_index}].pv[{move_index}]"),
+                    mv,
+                )?;
+            }
+        }
+        checked_u16_len(
+            &format!("observations[{observation_index}].candidates"),
+            observation.candidates.len(),
+        )?;
+        for (candidate_index, candidate) in observation.candidates.iter().enumerate() {
+            validate_u8_string(
+                &format!(
+                    "observations[{observation_index}].candidates[{candidate_index}].bestmove"
+                ),
+                &candidate.bestmove,
+            )?;
+            if let Some(pv) = &candidate.pv {
+                checked_u16_len(
+                    &format!("observations[{observation_index}].candidates[{candidate_index}].pv"),
+                    pv.len(),
+                )?;
+                for (move_index, mv) in pv.iter().enumerate() {
+                    validate_u8_string(
+                        &format!(
+                            "observations[{observation_index}].candidates[{candidate_index}].pv[{move_index}]"
+                        ),
+                        mv,
+                    )?;
+                }
+            }
+        }
+        if let Some(value) = &observation.engine_options_hash {
+            validate_u8_string(
+                &format!("observations[{observation_index}].engine_options_hash"),
+                value,
+            )?;
+        }
+        if let Some(value) = &observation.weight_sha256 {
+            validate_u8_string(
+                &format!("observations[{observation_index}].weight_sha256"),
+                value,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 // ── public API ────────────────────────────────────────────────────────────────
@@ -191,6 +311,9 @@ pub fn read_header(r: &mut impl Read) -> io::Result<()> {
 
 /// Encode one record. Precede the file with `write_header`.
 pub fn encode_record(rec: &PositionRecord, w: &mut impl Write) -> io::Result<()> {
+    // Validate the complete record before writing any bytes so a range error cannot leave a
+    // syntactically plausible but truncated record in the output stream.
+    validate_record_encodable(rec)?;
     ws16(w, &rec.sfen)?;
 
     ws8(w, &rec.source.kind)?;
@@ -282,7 +405,7 @@ pub fn encode_record(rec: &PositionRecord, w: &mut impl Write) -> io::Result<()>
         }
     }
 
-    wu16(w, rec.observations.len() as u16)?;
+    wu16(w, checked_u16_len("observations", rec.observations.len())?)?;
     for obs in &rec.observations {
         ws8(w, &obs.engine)?;
         match &obs.engine_version {
@@ -388,7 +511,7 @@ pub fn encode_record(rec: &PositionRecord, w: &mut impl Write) -> io::Result<()>
             None => wu8(w, 0)?,
             Some(pv) => {
                 wu8(w, 1)?;
-                wu16(w, pv.len() as u16)?;
+                wu16(w, checked_u16_len("observation pv", pv.len())?)?;
                 for mv in pv {
                     ws8(w, mv)?;
                 }
@@ -401,7 +524,10 @@ pub fn encode_record(rec: &PositionRecord, w: &mut impl Write) -> io::Result<()>
                 wi32(w, v)?;
             }
         }
-        wu16(w, obs.candidates.len() as u16)?;
+        wu16(
+            w,
+            checked_u16_len("observation candidates", obs.candidates.len())?,
+        )?;
         for c in &obs.candidates {
             wu32(w, c.multipv)?;
             ws8(w, &c.bestmove)?;
@@ -427,7 +553,7 @@ pub fn encode_record(rec: &PositionRecord, w: &mut impl Write) -> io::Result<()>
                 None => wu8(w, 0)?,
                 Some(pv) => {
                     wu8(w, 1)?;
-                    wu16(w, pv.len() as u16)?;
+                    wu16(w, checked_u16_len("candidate pv", pv.len())?)?;
                     for mv in pv {
                         ws8(w, mv)?;
                     }
@@ -462,9 +588,21 @@ pub fn decode_record(r: &mut impl Read) -> io::Result<PositionRecord> {
         kind: rs8(r)?,
         path: rs16(r)?,
         ply: ru32(r)?,
-        root_id: if ru8(r)? == 0 { None } else { Some(rs16(r)?) },
-        variation_id: if ru8(r)? == 0 { None } else { Some(rs8(r)?) },
-        branch_from_ply: if ru8(r)? == 0 { None } else { Some(ru32(r)?) },
+        root_id: if rflag(r, "root_id")? {
+            Some(rs16(r)?)
+        } else {
+            None
+        },
+        variation_id: if rflag(r, "variation_id")? {
+            Some(rs8(r)?)
+        } else {
+            None
+        },
+        branch_from_ply: if rflag(r, "branch_from_ply")? {
+            Some(ru32(r)?)
+        } else {
+            None
+        },
     };
 
     let phase = match ru8(r)? {
@@ -478,8 +616,8 @@ pub fn decode_record(r: &mut impl Read) -> io::Result<PositionRecord> {
         1 => SideToMove::White,
         _ => return Err(bad("bad side")),
     };
-    let in_check = ru8(r)? != 0;
-    let has_capture = ru8(r)? != 0;
+    let in_check = rflag(r, "in_check")?;
+    let has_capture = rflag(r, "has_capture")?;
     let tags = PositionTags {
         phase,
         side_to_move,
@@ -487,28 +625,34 @@ pub fn decode_record(r: &mut impl Read) -> io::Result<PositionRecord> {
         has_capture,
     };
 
-    let stability = if ru8(r)? == 0 {
-        None
-    } else {
-        let score_swing_cp = if ru8(r)? == 0 { None } else { Some(ri32(r)?) };
-        let bestmove_agreement = ru8(r)? != 0;
-        let engine_bestmove_agreement = if ru8(r)? == 0 {
-            None
+    let stability = if rflag(r, "stability")? {
+        let score_swing_cp = if rflag(r, "score_swing_cp")? {
+            Some(ri32(r)?)
         } else {
-            Some(ru8(r)? != 0)
+            None
         };
-        let engine_score_swing_cp = if ru8(r)? == 0 { None } else { Some(ri32(r)?) };
+        let bestmove_agreement = rflag(r, "bestmove_agreement")?;
+        let engine_bestmove_agreement = if rflag(r, "engine_bestmove_agreement")? {
+            Some(rflag(r, "engine_bestmove_agreement.value")?)
+        } else {
+            None
+        };
+        let engine_score_swing_cp = if rflag(r, "engine_score_swing_cp")? {
+            Some(ri32(r)?)
+        } else {
+            None
+        };
         Some(StabilityInfo {
             score_swing_cp,
             bestmove_agreement,
             engine_bestmove_agreement,
             engine_score_swing_cp,
         })
+    } else {
+        None
     };
 
-    let game_result = if ru8(r)? == 0 {
-        None
-    } else {
+    let game_result = if rflag(r, "game_result")? {
         let outcome = match ru8(r)? {
             0 => GameOutcome::BlackWins,
             1 => GameOutcome::WhiteWins,
@@ -521,21 +665,35 @@ pub fn decode_record(r: &mut impl Read) -> io::Result<PositionRecord> {
             outcome,
             result_source,
         })
+    } else {
+        None
     };
 
     let obs_count = ru16(r)? as usize;
     let mut observations = Vec::with_capacity(obs_count);
     for _ in 0..obs_count {
         let engine = rs8(r)?;
-        let engine_version = if ru8(r)? == 0 { None } else { Some(rs8(r)?) };
+        let engine_version = if rflag(r, "engine_version")? {
+            Some(rs8(r)?)
+        } else {
+            None
+        };
         let depth = ru32(r)?;
-        let requested_depth = if ru8(r)? == 0 { None } else { Some(ru32(r)?) };
+        let requested_depth = if rflag(r, "requested_depth")? {
+            Some(ru32(r)?)
+        } else {
+            None
+        };
         let search_limit_kind = match ru8(r)? {
             0 => SearchLimitKind::Depth,
             1 => SearchLimitKind::Nodes,
             _ => return Err(bad("bad search limit kind")),
         };
-        let requested_nodes = if ru8(r)? == 0 { None } else { Some(ru64(r)?) };
+        let requested_nodes = if rflag(r, "requested_nodes")? {
+            Some(ru64(r)?)
+        } else {
+            None
+        };
         let score = match ru8(r)? {
             0 => Score::Cp { value: ri32(r)? },
             1 => Score::Mate { moves: ri32(r)? },
@@ -560,22 +718,46 @@ pub fn decode_record(r: &mut impl Read) -> io::Result<PositionRecord> {
             3 => Some(BestMoveKind::NoMove),
             _ => return Err(bad("bad bestmove kind")),
         };
-        let nodes = if ru8(r)? == 0 { None } else { Some(ru64(r)?) };
-        let time_ms = if ru8(r)? == 0 { None } else { Some(ru64(r)?) };
-        let seldepth = if ru8(r)? == 0 { None } else { Some(ru32(r)?) };
-        let nps = if ru8(r)? == 0 { None } else { Some(ru64(r)?) };
-        let hashfull = if ru8(r)? == 0 { None } else { Some(ru32(r)?) };
-        let pv = if ru8(r)? == 0 {
-            None
+        let nodes = if rflag(r, "nodes")? {
+            Some(ru64(r)?)
         } else {
+            None
+        };
+        let time_ms = if rflag(r, "time_ms")? {
+            Some(ru64(r)?)
+        } else {
+            None
+        };
+        let seldepth = if rflag(r, "seldepth")? {
+            Some(ru32(r)?)
+        } else {
+            None
+        };
+        let nps = if rflag(r, "nps")? {
+            Some(ru64(r)?)
+        } else {
+            None
+        };
+        let hashfull = if rflag(r, "hashfull")? {
+            Some(ru32(r)?)
+        } else {
+            None
+        };
+        let pv = if rflag(r, "pv")? {
             let n = ru16(r)? as usize;
             let mut moves = Vec::with_capacity(n);
             for _ in 0..n {
                 moves.push(rs8(r)?);
             }
             Some(moves)
+        } else {
+            None
         };
-        let policy_margin_cp = if ru8(r)? == 0 { None } else { Some(ri32(r)?) };
+        let policy_margin_cp = if rflag(r, "policy_margin_cp")? {
+            Some(ri32(r)?)
+        } else {
+            None
+        };
         let candidate_count = ru16(r)? as usize;
         let mut candidates = Vec::with_capacity(candidate_count);
         for _ in 0..candidate_count {
@@ -592,15 +774,15 @@ pub fn decode_record(r: &mut impl Read) -> io::Result<PositionRecord> {
                 2 => ScoreBound::Upperbound,
                 _ => return Err(bad("bad score bound")),
             };
-            let c_pv = if ru8(r)? == 0 {
-                None
-            } else {
+            let c_pv = if rflag(r, "candidate.pv")? {
                 let n = ru16(r)? as usize;
                 let mut moves = Vec::with_capacity(n);
                 for _ in 0..n {
                     moves.push(rs8(r)?);
                 }
                 Some(moves)
+            } else {
+                None
             };
             candidates.push(CandidateMove {
                 multipv,
@@ -610,9 +792,17 @@ pub fn decode_record(r: &mut impl Read) -> io::Result<PositionRecord> {
                 pv: c_pv,
             });
         }
-        let was_timeout_salvaged = ru8(r)? != 0;
-        let engine_options_hash = if ru8(r)? == 0 { None } else { Some(rs8(r)?) };
-        let weight_sha256 = if ru8(r)? == 0 { None } else { Some(rs8(r)?) };
+        let was_timeout_salvaged = rflag(r, "was_timeout_salvaged")?;
+        let engine_options_hash = if rflag(r, "engine_options_hash")? {
+            Some(rs8(r)?)
+        } else {
+            None
+        };
+        let weight_sha256 = if rflag(r, "weight_sha256")? {
+            Some(rs8(r)?)
+        } else {
+            None
+        };
         observations.push(Observation {
             engine,
             engine_version,
@@ -652,6 +842,9 @@ pub fn decode_record(r: &mut impl Read) -> io::Result<PositionRecord> {
 
 /// Encode all records with a header (batch convenience).
 pub fn encode(records: &[PositionRecord], w: &mut impl Write) -> io::Result<()> {
+    for rec in records {
+        validate_record_encodable(rec)?;
+    }
     write_header(w)?;
     for rec in records {
         encode_record(rec, w)?;
@@ -1011,5 +1204,65 @@ mod tests {
         assert_eq!(got.source.root_id, None);
         assert_eq!(got.source.variation_id, None);
         assert_eq!(got.source.branch_from_ply, None);
+    }
+
+    #[test]
+    fn oversized_u8_string_is_rejected_before_writing() {
+        let mut rec = sample();
+        rec.observations[0].engine = "x".repeat(usize::from(u8::MAX) + 1);
+        let mut bytes = Vec::new();
+
+        let err = encode_record(&rec, &mut bytes).unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("observations[0].engine"));
+        assert!(bytes.is_empty());
+    }
+
+    #[test]
+    fn oversized_u16_collection_is_rejected_before_writing() {
+        let mut rec = sample();
+        rec.observations[0].pv = Some(vec!["7g7f".to_string(); usize::from(u16::MAX) + 1]);
+        let mut bytes = Vec::new();
+
+        let err = encode_record(&rec, &mut bytes).unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("observations[0].pv"));
+        assert!(bytes.is_empty());
+    }
+
+    #[test]
+    fn unsupported_schema_is_rejected_before_writing() {
+        let mut rec = sample();
+        rec.schema_version = SCHEMA_VERSION + 1;
+        let mut bytes = Vec::new();
+
+        let err = encode_record(&rec, &mut bytes).unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("schema_version"));
+        assert!(bytes.is_empty());
+    }
+
+    #[test]
+    fn batch_is_fully_validated_before_header_is_written() {
+        let valid = sample();
+        let mut invalid = sample();
+        invalid.schema_version = SCHEMA_VERSION + 1;
+        let mut bytes = Vec::new();
+
+        let err = encode(&[valid, invalid], &mut bytes).unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(bytes.is_empty());
+    }
+
+    #[test]
+    fn noncanonical_binary_tag_is_rejected() {
+        let err = rflag(&mut [2_u8].as_slice(), "fixture").unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(err.to_string(), "invalid fixture tag 2; expected 0 or 1");
     }
 }

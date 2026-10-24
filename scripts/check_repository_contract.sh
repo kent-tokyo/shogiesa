@@ -10,6 +10,7 @@ required_files=(
   docs/README.md
   docs/design/schema_compatibility.md
   docs/design/jsonl_reader_contract.md
+  docs/design/refactoring_contract.md
   docs/design/run_manifest_compatibility.md
   docs/THEORY.md
   docs/design/dataset_recipe_template.md
@@ -31,6 +32,7 @@ required_files=(
   docs/release_validation_2026-10-14_v0.11.6.md
   docs/release_validation_2026-10-21_v0.11.7.md
   scripts/release_readiness.sh
+  scripts/check_refactor_contract.sh
   scripts/run_local_measurement_smoke.sh
   scripts/run_reproducibility_matrix.sh
   scripts/check_sekirei_compat.sh
@@ -183,8 +185,8 @@ check_marker tests/fixtures/recipe_plan.golden '^executed           : no$' 'reci
 check_marker tests/fixtures/recipe_run_manifest.golden '"run_version": 1' 'recipe run manifest golden version'
 check_marker tests/fixtures/recipe_forward_dependency.json '"id": "consume"' 'recipe forward dependency rejection input'
 check_marker tests/fixtures/recipe_output_escape.json '"../outside.shgpk"' 'recipe output escape rejection input'
-check_marker crates/shogiesa-cli/tests/cli_test.rs 'fn recipe_run_verify_and_reuse_stage_outputs' 'recipe run verify reuse regression'
-check_marker crates/shogiesa-cli/tests/cli_test.rs 'fn validate_strict_rejects_future_schema_and_reports_version' 'strict validate future-schema regression'
+check_marker crates/shogiesa-cli/tests/cli/diagnostics.rs 'fn recipe_run_verify_and_reuse_stage_outputs' 'recipe run verify reuse regression'
+check_marker crates/shogiesa-cli/tests/cli/diagnostics.rs 'fn validate_strict_rejects_future_schema_and_reports_version' 'strict validate future-schema regression'
 check_marker scripts/check_sekirei_compat.sh 'shogiesa\.sekirei-compat\.v1' 'Sekirei compatibility artifact schema'
 check_marker scripts/check_sekirei_compat.sh 'SEKIREI_REF="v0\.3\.68"' 'current Sekirei compatibility ref'
 check_marker scripts/check_sekirei_compat.sh 'EXPECTED_SHOGIESA_CORE="0\.11\.1"' 'current Sekirei shogiesa-core dependency'
@@ -221,7 +223,7 @@ else
   missing=1
 fi
 
-if rg -q 'SCHEMA_VERSION = 11|FORMAT_VERSION: u16 = 11' crates/shogiesa-core/src/lib.rs crates/shogiesa-pack/src/lib.rs; then
+if rg -q 'SCHEMA_VERSION = 11|FORMAT_VERSION: u16 = 11' crates/shogiesa-core/src/model.rs crates/shogiesa-pack/src/lib.rs; then
   printf 'PASS schema/pack version markers\n'
 else
   printf 'FAIL schema/pack version markers missing\n'
@@ -232,6 +234,13 @@ if rg -q '未測定|unmeasured|unverified|not.*measured' README.md docs/release_
   printf 'PASS unmeasured-claims boundary\n'
 else
   printf 'FAIL unmeasured-claims boundary missing\n'
+  missing=1
+fi
+
+if bash scripts/check_refactor_contract.sh; then
+  printf 'PASS refactor contract\n'
+else
+  printf 'FAIL refactor contract\n'
   missing=1
 fi
 

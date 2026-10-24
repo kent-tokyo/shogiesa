@@ -11,6 +11,15 @@ Compare links at the end provide the complete commit history.
 - Added a documentation index, shortened agent and measurement guidance, synchronized the English
   and Japanese READMEs, and corrected CLI help for executable recipes and generic match-runner
   boundaries.
+- Unified position JSONL ingestion behind typed, hashing, and explicitly documented validation or
+  resume-index readers. CLI I/O primitives now have dedicated atomic-output, hashing, path-role,
+  and position-JSONL modules.
+- Split the CLI implementation into ingest, selection, quality, diagnostics, transport, and cache
+  command modules; split its integration suite by workflow while retaining one test binary.
+- Split `shogiesa-core` domain models, score calculations, quality evaluation, and extraction
+  helpers into internal modules while preserving the crate-root API through re-exports.
+- Added a CI-enforced refactoring contract for module presence, source-size budgets, test layout,
+  and the typed position-JSONL boundary.
 
 ## [0.11.7] — 2026-10-21
 

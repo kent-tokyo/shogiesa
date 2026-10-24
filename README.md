@@ -11,24 +11,15 @@ The workspace version and latest verified published release are `0.11.7`. See th
 [changelog](CHANGELOG.md), and
 [the v0.11.7 validation log](docs/release_validation_2026-10-21_v0.11.7.md).
 
-## Product direction and scope
+## Scope
 
-shogiesa is an independent product for turning game records and external USI observations into
-inspectable, reproducible, quality-controlled datasets. Its success is measured by whether those
-datasets are useful to downstream engines and trainers, but shogiesa does not depend on any one
-engine, trainer, weight file, or search implementation.
+shogiesa owns the data pipeline: ingestion, extraction and conservative validation, deduplication,
+external-USI labeling, quality signals, selection, reproducible manifests, JSONL/pack export, and
+diagnostics. Its public boundaries are CSA/KIF/KI2, SFEN, USI, versioned JSONL, and versioned pack.
 
-Its public contract is built on standard boundaries: CSA/KIF/KI2, SFEN, USI, JSONL, and versioned
-pack files. A specific engine or trainer may be used in an external measurement, but it is not a
-product dependency and must not be required by the core pipeline or public examples.
-
-In scope: ingestion, position extraction and validation, deduplication, external-USI labeling,
-stability and quality signals, filtering/mining/balancing/splitting, reproducible manifests,
-JSONL/pack export, and dataset diagnostics.
-
-Out of scope: an engine, search implementation, NNUE trainer, GUI, tournament manager, cloud
-training service, or distributed-training platform. Dataset diagnostics alone do not establish
-training gain or Elo.
+It is not an engine, search implementation, NNUE trainer, GUI, tournament manager, or cloud
+training service. No specific engine, trainer, or weight file is a core dependency, and dataset
+diagnostics alone do not establish training gain or Elo.
 
 ## Install
 
@@ -70,13 +61,9 @@ filter / select / mine / balance / stratify → split / shuffle → pack
 report / distribution / validate / dataset-diff
 ```
 
-For reproducible runs, retain input hashes, commands, seeds, engine/weight identities, options,
-and generated manifests. Missing identities remain `unknown`.
-Run manifests have their own `manifest_schema_version`, independent from the
-position-record `schema_version`; see
-[`docs/design/run_manifest_compatibility.md`](docs/design/run_manifest_compatibility.md).
-Rust consumers can parse `RunManifestV1` and verify a label input/output pair
-through `shogiesa_core::manifest` without copying the manifest layout.
+For reproducible runs, retain hashes, commands, seeds, engine/weight identities, options, and
+manifests. Missing identities remain `unknown`. Record, pack, manifest, and report versions are
+independent; use the typed `shogiesa-core` parsers instead of copying their layouts.
 
 ## Commands
 
@@ -128,18 +115,8 @@ quality or engine strength. See [quality-report compatibility](docs/design/quali
 
 ## Documentation
 
-| Need | Document |
-|---|---|
-| Signal definitions and limits | [THEORY.md](docs/THEORY.md) |
-| JSONL and pack compatibility | [schema_compatibility.md](docs/design/schema_compatibility.md) |
-| Machine-readable quality report | [quality_report_compatibility.md](docs/design/quality_report_compatibility.md) |
-| Rust API boundary | [api_boundary.md](docs/api_boundary.md) |
-| Local interoperability evidence | [interop_evidence.md](docs/interop_evidence.md) |
-| Reproducible recipe record | [dataset_recipe_template.md](docs/design/dataset_recipe_template.md) |
-| Measurement status and artifacts | [measurement_matrix.md](docs/design/measurement_matrix.md), [measurement index](docs/measurements/README.md) |
-| Training comparison protocol | [training_effect_measurement.md](docs/design/training_effect_measurement.md) |
-| External consumer and gate runbooks | [external_gate_evaluation.md](docs/external_gate_evaluation.md), [LINEPRIOR_DOGFOOD.md](docs/LINEPRIOR_DOGFOOD.md) |
-| Release checks and evidence | [release_checklist.md](docs/release_checklist.md), [v0.11.7 validation](docs/release_validation_2026-10-21_v0.11.7.md) |
+Start with the [documentation index](docs/README.md). It separates current user guides, public
+contracts, measurement protocols, and historical release evidence.
 
 ## Evidence boundary
 
@@ -148,8 +125,7 @@ quality or engine strength. See [quality-report compatibility](docs/design/quali
   representative-corpus or cross-platform performance.
 - The three-seed training run is a 48-position, one-epoch pilot. Its small loss differences do not
   establish generalization or playing strength.
-- Native GenSfen/rshogi/cshogi/rsshogi/python-shogi adapters, 10M scale, match transfer, and Elo are
-  unmeasured.
+- Native external-format adapters, 10M scale, match transfer, and Elo are unmeasured.
 - Provenance manifests remain producer-owned. Cross-tool chains use explicit hashes and adapters;
   shogiesa does not publish a shared cross-repository envelope.
 

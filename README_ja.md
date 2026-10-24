@@ -11,19 +11,14 @@ workspaceと検証済みの最新公開版は`0.11.7`です。
 [CHANGELOG](CHANGELOG.md)、
 [v0.11.7検証記録](docs/release_validation_2026-10-21_v0.11.7.md)を参照してください。
 
-## 製品の方向性と範囲
+## 対象範囲
 
-shogiesaは棋譜と外部USI観測を、点検可能で再現可能な品質管理付きdatasetへ変換する
-独立したproductです。成果物が下流のエンジンやtrainerに役立つことを重視しますが、
-特定のエンジン、trainer、weight、探索実装には依存しません。
+shogiesaが担当するのは、棋譜の取り込み、局面の抽出と保守的な検証、重複排除、外部USIに
+よるラベル付け、品質指標、選別、manifest、JSONL/pack出力、診断です。公開境界には
+CSA/KIF/KI2、SFEN、USI、version付きJSONLとpackを使います。
 
-公開契約の中心はCSA/KIF/KI2、SFEN、USI、JSONL、version付きpackです。特定のエンジンや
-trainerを使う測定は外部検証として扱い、core pipelineや公開例の必須条件にはしません。
-
-範囲に含めるのは、棋譜取り込み、局面抽出・検証、重複排除、外部USIによるlabel付与、
-安定性・品質signal、filter・mine・balance・split、再現可能なmanifest、JSONL/pack出力、
-dataset診断です。将棋エンジン、探索実装、NNUE trainer、GUI、対局管理、cloud training、
-分散学習基盤は対象外です。診断値だけで学習効果やEloを主張することもありません。
+将棋エンジン、探索実装、NNUE trainer、GUI、対局管理、cloud trainingは対象外です。
+特定のエンジン、trainer、weightを必須依存にせず、診断値だけで学習効果やEloを主張しません。
 
 ## インストール
 
@@ -64,8 +59,9 @@ filter / select / mine / balance / stratify → split / shuffle → pack
 report / distribution / validate / dataset-diff
 ```
 
-再現するrunでは、入力hash、コマンド、seed、engine/weight identity、option、manifestを
-保存してください。取得できないidentityは推測せず`unknown`とします。
+再現するrunでは、hash、コマンド、seed、engine/weight identity、option、manifestを保存します。
+取得できないidentityは推測せず`unknown`とします。record、pack、manifest、reportのversionは
+独立しているため、layoutを複製せず`shogiesa-core`の型付きparserを使ってください。
 
 ## コマンド
 
@@ -117,18 +113,8 @@ shogiesa quality-report --input train.shgpk --out packed-quality.json
 
 ## 文書
 
-| 知りたいこと | 文書 |
-|---|---|
-| 診断値の定義と限界 | [THEORY.md](docs/THEORY.md) |
-| JSONL/packの互換性 | [schema_compatibility.md](docs/design/schema_compatibility.md) |
-| 機械可読quality report | [quality_report_compatibility.md](docs/design/quality_report_compatibility.md) |
-| Rust API境界 | [api_boundary.md](docs/api_boundary.md) |
-| 相互運用の確認範囲 | [interop_evidence.md](docs/interop_evidence.md) |
-| 再現可能なrecipe記録 | [dataset_recipe_template.md](docs/design/dataset_recipe_template.md) |
-| 測定状況とartifact | [measurement_matrix.md](docs/design/measurement_matrix.md)、[測定索引](docs/measurements/README.md) |
-| 学習比較の手順 | [training_effect_measurement.md](docs/design/training_effect_measurement.md) |
-| 外部consumer・gate runbook | [external_gate_evaluation.md](docs/external_gate_evaluation.md)、[LINEPRIOR_DOGFOOD.md](docs/LINEPRIOR_DOGFOOD.md) |
-| release確認と証跡 | [release_checklist.md](docs/release_checklist.md)、[v0.11.7検証](docs/release_validation_2026-10-21_v0.11.7.md) |
+[文書索引](docs/README.md)から、利用ガイド、公開契約、測定手順、過去releaseの検証記録へ
+移動できます。
 
 ## 証拠の境界
 
@@ -136,8 +122,7 @@ shogiesa quality-report --input train.shgpk --out packed-quality.json
 - 100k/1M測定は単一macOS環境のsynthetic recordによる結果です。代表corpusや他OSの性能を
   保証しません。
 - 3-seed学習比較は48局面、1 epochのpilotです。一般化性能や棋力を証明しません。
-- native GenSfen/rshogi/cshogi/rsshogi/python-shogi adapter、10M規模、match transfer、Eloは
-  未測定です。
+- 外部native format adapter、10M規模、match transfer、Eloは未測定です。
 - provenance manifestはproducerごとに管理します。cross-tool chainは明示的なhashとadapterで
   接続し、shogiesaは共有cross-repository envelopeを公開しません。
 

@@ -70,39 +70,10 @@ Training data pipelines are easy to corrupt silently.
 
 Prefer explicit structs, versioned schemas, and readable intermediate formats.
 
-Recommended intermediate format:
+JSONL is the canonical inspectable format. Its current shape and compatibility policy live in
+`docs/design/schema_compatibility.md`; do not duplicate an older schema example here.
 
-```json
-{
-  "schema_version": 1,
-  "sfen": "lnsgkgsnl/1r5b1/p1ppppppp/1p7/9/2P6/PP1PPPPPP/1B5R1/LNSGKGSNL b - 2",
-  "source": {
-    "kind": "csa",
-    "path": "games/example.csa",
-    "ply": 24
-  },
-  "tags": {
-    "phase": "middlegame",
-    "side_to_move": "black",
-    "in_check": false,
-    "has_capture": true
-  },
-  "observations": [
-    {
-      "engine": "external-usi-engine",
-      "engine_version": "0.1.0",
-      "depth": 8,
-      "score_cp": 43,
-      "bestmove": "7g7f",
-      "nodes": 123456
-    }
-  ]
-}
-```
-
-JSONL is preferred for early-stage development because it is easy to inspect, diff, stream, and debug.
-
-Binary packed formats may be added later, but they must have:
+Binary packed formats must have:
 
 * schema version
 * magic header
@@ -211,35 +182,6 @@ Useful balancing dimensions include:
 
 Balancing should be configurable, not magical.
 
-## Expected Repository Structure
-
-A good initial structure:
-
-```text
-shogiesa/
-  Cargo.toml
-  README.md
-  AGENTS.md
-  crates/
-    shogiesa-core/
-    shogiesa-csa/
-    shogiesa-usi/
-    shogiesa-cli/
-```
-
-Possible future crates:
-
-```text
-crates/
-  shogiesa-kif/
-  shogiesa-pack/
-  shogiesa-report/
-  shogiesa-mine/
-```
-
-Start small.
-Do not create many empty crates before the core workflow works.
-
 ## Core Crates
 
 ### shogiesa-core
@@ -259,11 +201,9 @@ Examples:
 
 This crate should avoid heavy dependencies.
 
-### shogiesa-csa
+### shogiesa-csa / shogiesa-kif
 
-Responsible for CSA ingestion.
-
-It should parse game records, replay moves if needed, and emit extracted positions with source metadata.
+Responsible for game-record ingestion and source provenance.
 
 Malformed records should produce structured errors.
 
@@ -289,109 +229,11 @@ Engine processes can hang, crash, or emit unexpected output.
 
 ### shogiesa-cli
 
-Responsible for the user-facing command line.
+Responsible for the user-facing workflow. `shogiesa <command> --help` is the option-level
+authority; keep README examples and help text synchronized with the implementation.
 
-Initial commands:
-
-```bash
-shogiesa extract
-shogiesa label
-shogiesa filter
-shogiesa report
-```
-
-Future commands:
-
-```bash
-shogiesa mine
-shogiesa pack
-shogiesa split
-shogiesa sample
-```
-
-## Suggested CLI Design
-
-### Extract Positions
-
-```bash
-shogiesa extract \
-  --input ./games \
-  --format csa \
-  --out positions.jsonl
-```
-
-Useful options:
-
-```bash
---min-ply 20
---max-ply 180
---every-n-plies 2
---skip-in-check
---dedup zobrist
---strict
-```
-
-### Label Positions
-
-```bash
-shogiesa label \
-  --input positions.jsonl \
-  --engine ./target/release/your-usi-engine \
-  --depths 4,6,8,10 \
-  --out observations.jsonl
-```
-
-Useful options:
-
-```bash
---engine-name external-usi-engine
---engine-option Threads=1
---engine-option Hash=128
---timeout-ms 10000
---multipv 3
---jobs 4
-```
-
-### Filter Positions
-
-```bash
-shogiesa filter \
-  --input observations.jsonl \
-  --min-stability 0.85 \
-  --exclude-in-check \
-  --out filtered.jsonl
-```
-
-Useful options:
-
-```bash
---eval-min -1200
---eval-max 1200
---max-depth-swing 150
---require-bestmove-agreement
---phase opening,middlegame,endgame
-```
-
-### Report Dataset
-
-```bash
-shogiesa report \
-  --input filtered.jsonl
-```
-
-Report should include:
-
-* number of positions
-* duplicate rate
-* phase distribution
-* ply distribution
-* evaluation distribution
-* in-check ratio
-* capture ratio
-* average stability
-* depth disagreement
-* source file counts
-* skipped / invalid record counts
+`shogiesa-pack`, `shogiesa-stratify`, and `stratifykit-core` own binary transport and reusable
+selection primitives. Keep Shogi-specific concepts out of `stratifykit-core`.
 
 ## Coding Style
 
@@ -495,72 +337,25 @@ Verbose mode should expose:
 
 Avoid noisy per-position logs unless `--trace` is enabled.
 
-## Compatibility with downstream trainers
+## Compatibility with downstream consumers
 
-shogiesa should integrate naturally with downstream trainers through stable formats.
-
-Primary output target:
-
-```text
-downstream-trainer-compatible JSONL or dataset format
-```
-
-Expected flow:
-
-```bash
-shogiesa extract --input ./games --out positions.jsonl
-
-shogiesa label \
-  --input positions.jsonl \
-  --engine ./target/release/your-usi-engine \
-  --depths 4,6,8,10 \
-  --out observations.jsonl
-
-shogiesa filter \
-  --input observations.jsonl \
-  --min-stability 0.85 \
-  --out train.jsonl
-
-cargo run --release -p downstream-trainer -- \
-  --scored train.jsonl \
-  --stability-weighted
-```
-
-Do not make shogiesa depend tightly on any downstream product's internals.
-Prefer stable formats such as SFEN, JSONL, and USI.
+Integrate through stable boundaries such as SFEN, JSONL, versioned pack files, and USI. Consumers
+depend one-way on `shogiesa-core` or use an explicit adapter; shogiesa must not depend on their
+internals. Producer-owned manifests are connected through exact hashes, not a nominal shared
+envelope.
 
 ## Public API Guidelines
 
-The Rust API should be usable without the CLI.
-
-Good API shape:
-
-```rust
-let records = Extractor::new(config).extract_from_reader(reader)?;
-let labeled = Labeler::new(engine_config).label(records)?;
-```
-
-Avoid exposing internal implementation details that would make future schema changes painful.
-
-Version public data structures carefully.
+The Rust API should be usable without the CLI. Expose domain types and versioned parsers rather
+than internal layouts. Position JSONL consumers should use `schema::parse_json_line` or
+`schema::PositionRecordJsonlReader`; machine-readable qualification consumers should use the
+typed manifest and quality-report parsers. Version public structures carefully.
 
 ## Documentation Requirements
 
-README should explain:
-
-* what shogiesa is
-* what it is not
-* basic pipeline
-* installation
-* quick start
-* JSONL schema
-* relationship with downstream trainers
-* relationship with quietset
-* limitations
-
-Each CLI command should have examples.
-
-Every non-obvious filter should explain why it exists.
+Keep `README.md`, `README_ja.md`, `docs/README.md`, compatibility documents, CLI help, and the
+changelog synchronized. Preserve dated release and measurement evidence. Every user-facing command
+needs useful help; every non-obvious filter should explain why it exists and what it cannot prove.
 
 ## Security and Safety
 
@@ -579,52 +374,8 @@ Do not read or write outside requested paths.
 
 ## Dependency Policy
 
-Keep dependencies modest.
-
-Good candidates:
-
-* `clap`
-* `serde`
-* `serde_json`
-* `thiserror`
-* `anyhow`
-* `tracing`
-* `tracing-subscriber`
-* `rayon`
-* `tempfile`
-
-Avoid heavy dependencies unless they clearly improve the project.
-
-Before adding a dependency, ask:
-
-1. Is this needed now?
-2. Can this be implemented simply?
-3. Does the dependency increase compile time significantly?
-4. Is the dependency actively maintained?
-5. Does it complicate portability?
-
-## Initial Milestone
-
-The first useful version should do this:
-
-```bash
-shogiesa extract --input ./sample.csa --out positions.jsonl
-shogiesa report --input positions.jsonl
-```
-
-Then:
-
-```bash
-shogiesa label --input positions.jsonl --engine ./your-usi-engine --depths 4,6 --out observations.jsonl
-```
-
-Then:
-
-```bash
-shogiesa filter --input observations.jsonl --out filtered.jsonl
-```
-
-Do not build advanced packing, mining, or balancing before this basic loop works.
+Keep dependencies modest. Before adding one, justify the current need, maintenance state, compile
+cost, portability, and why a small local implementation is not clearer.
 
 ## Definition of Done
 
@@ -653,19 +404,6 @@ When working on shogiesa:
 8. Keep USI integration robust against engine failures.
 9. Keep README examples in sync with CLI behavior.
 10. Preserve the core identity: **将棋の餌**.
-
-## Non-Goals
-
-shogiesa should not become:
-
-* a full Shogi engine
-* a GUI
-* a cloud training service
-* a general-purpose database
-* a replacement for a downstream engine or trainer
-* a replacement for quietset
-* a complete tournament platform
-* a general chess/shogi variant framework
 
 ## Tagline
 

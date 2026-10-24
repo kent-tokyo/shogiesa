@@ -104,7 +104,7 @@ enum Commands {
     QualityReport(QualityReportArgs),
     /// Compare two datasets semantically, independent of JSONL input order
     DatasetDiff(DatasetDiffArgs),
-    /// Validate and plan a typed multi-stage dataset recipe without executing it
+    /// Plan, run, resume, or verify a typed multi-stage dataset recipe
     Recipe(recipe::RecipeArgs),
     /// Report phase/side/eval-bucket/ply/source-root distribution, explicitly flagging bucket
     /// combinations that have zero records within the observed range -- distinct from `select
@@ -117,17 +117,15 @@ enum Commands {
     Validate(ValidateArgs),
     /// Inspect/maintain a `label --cache-dir` cache
     Cache(CacheArgs),
-    /// Extract positions from a Sekirei match-runner's per-game kifu .txt files. A pure
-    /// extractor -- does not label. Feed the output through the existing `label`/`select`/
-    /// `filter` commands, same as any other extracted dataset.
+    /// Extract positions from a match runner's per-game USI kifu text files. This command only
+    /// extracts; feed its output through `label`, `select`, or `filter` as needed.
     FromMatch(FromMatchArgs),
     /// Merge two labeled positions JSONL files' observations (e.g. a shallow pass and a deeper
     /// relabel pass), with configurable duplicate-observation resolution
     MergeObservations(MergeObservationsArgs),
     /// Build a diverse, root-aware opening suite (plain SFEN-per-line, no schema wrapper) from a
-    /// positions dataset, for feeding an external match-runner's own opening-book flag (e.g.
-    /// Sekirei's `--positions FILE`) -- input need not be labeled, since only `sfen`/`source` are
-    /// read
+    /// positions dataset for an external match runner. Input need not be labeled because only
+    /// `sfen` and `source` are read
     MakeGateOpenings(MakeGateOpeningsArgs),
     /// Deterministically shuffle a positions dataset into training order, optionally writing a
     /// sidecar `--order-manifest` (training_position -> sample_id/game_id/outcome/teacher_cp/

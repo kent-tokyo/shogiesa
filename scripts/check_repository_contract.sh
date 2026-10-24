@@ -7,6 +7,7 @@ cd "$ROOT_DIR"
 required_files=(
   README.md
   README_ja.md
+  docs/README.md
   docs/design/schema_compatibility.md
   docs/design/run_manifest_compatibility.md
   docs/THEORY.md

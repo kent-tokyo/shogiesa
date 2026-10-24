@@ -5,6 +5,13 @@ Compare links at the end provide the complete commit history.
 
 ## [Unreleased]
 
+### Changed
+
+- Updated `serde_json` to 1.0.154 and `sha2` to 0.11.1.
+- Added a documentation index, shortened agent and measurement guidance, synchronized the English
+  and Japanese READMEs, and corrected CLI help for executable recipes and generic match-runner
+  boundaries.
+
 ## [0.11.7] — 2026-10-21
 
 ### Added

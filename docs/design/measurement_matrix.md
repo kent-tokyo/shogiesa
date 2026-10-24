@@ -24,7 +24,7 @@ complete scale, training, or external-interoperability gates.
 | open | external native formats | named tool/version with round-trip and loss report |
 | deferred | 10M and cross-platform resources | run only with adequate disk and matched hosts |
 
-Run the resource baseline against a prebuilt release binary:
+Rerun the local resource baseline against a clean, prebuilt release binary:
 
 ```bash
 cargo build --release -p shogiesa-cli
@@ -33,44 +33,21 @@ python3 scripts/run_resource_baseline.py \
   --out docs/measurements/resource_baseline_100k.json
 ```
 
-The harness records wall time, sampled peak RSS/FD count, disk headroom, hashes, and output sizes.
-It rejects dirty trees. At 1M it removes the hashed synthetic input after `pack` to bound disk use;
-the deletion is outside every measured command.
+The harness records wall time, sampled RSS/FD peaks, disk headroom, hashes, and output sizes. It
+rejects dirty trees. The 1M mode deletes its already-hashed synthetic input after `pack` to bound
+disk use; deletion is outside the measured commands.
 
-The version-delta harness compares immutable external-engine builds with one sampled corpus,
-fixed nodes, `Threads=1`, and `SpecTopN=0`. It records selected-input hashes, search disagreement,
-cp deltas, and optional mined JSONL. This measures output differences, not strength.
+For external comparisons, pin the engine source/version, binary and weight hashes, corpus hash,
+nodes, `Threads=1`, and any engine-specific options. The version-delta harness measures output
+differences, not strength. The learning-ablation harness compares equal-size recipe arms with
+paired seeds; the checked-in one-epoch result is only pipeline evidence.
 
-The learning-ablation harness creates equal-size baseline, filtered, uncertain-mined,
-and phase-balanced arms from one source split. It runs three paired seeds against frozen
-validation using a completed fixed-depth teacher search. The checked-in one-epoch result is
-pipeline evidence, not a generalization or playing-strength result.
+Teacher calibration uses one deterministic sample across declared teachers, depth/node limits,
+and MultiPV values. Use `--require-weight-ack` for recorded NNUE runs so every teacher must confirm
+the configured weight. Run `python3 scripts/run_teacher_calibration.py --help` for the full command.
 
-`scripts/run_teacher_calibration.py` labels one deterministic sample across depth/node limits,
-MultiPV values, and an ordered list of teachers. It records per-case coverage, score bounds,
-timeouts, depth underreach, policy-margin coverage, teacher-prefix agreement and CP spread, plus
-drop reasons for four fixed quality profiles. Optional `--weight NAME=PATH` arguments bind weight
-hashes to teachers. With `--require-weight-ack`, it also fails unless every teacher reports a
-successful NNUE load and the configured EvalFile bytes match every declared weight. Before
-sampling, it runs strict validation over the complete input and rejects
-pre-labeled records, so malformed or stale observations cannot disappear outside the selected
-sample. The final JSON artifact is replaced atomically. A representative run still needs real
-teachers and a fixed corpus; the harness alone does not complete the calibration gate.
-
-```bash
-python3 scripts/run_teacher_calibration.py \
-  --input positions.jsonl \
-  --teacher external-engine=/path/to/engine \
-  --weight external-engine=/path/to/weights.bin \
-  --depths 4,8 --nodes 1000,10000 --multipv 1,3 \
-  --engine-option EvalFile=/path/to/weights.bin \
-  --engine-option Threads=1 --engine-option SpecTopN=0 \
-  --require-weight-ack --out teacher-calibration.json
-```
-
-The gate reporter consumes an external `ab_gate_result.v1`. It validates
-terminal state, W/D/L totals, process completion, clean runner identity, binary/weight/opening
-hashes, and then passes through the upstream status without deriving its own verdict.
+The gate reporter consumes `ab_gate_result.v1`, validates terminal/process/count and artifact
+identity fields, and passes through the upstream status without inventing a verdict.
 
 Every run must retain commands, commits, input/output hashes, engine/weight identity, options,
 seeds, hardware/OS, and failure reasons. Missing measurements remain `unverified`.

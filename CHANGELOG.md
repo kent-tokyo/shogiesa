@@ -35,6 +35,8 @@ Compare links at the end provide the complete commit history.
   directories may safely share a basename.
 - Extreme `label --jobs` and `cache prune --older-than-days` values now fail with actionable errors
   instead of overflowing; distribution ratio controls also reject non-finite or invalid ranges.
+- Non-interactive CLI diagnostics no longer contain ANSI control sequences, and repository contract
+  checks now work on clean CI runners where `rg` is not installed.
 
 ## [0.11.7] — 2026-10-21
 

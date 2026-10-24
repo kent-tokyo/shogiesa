@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
 use std::fmt::{Display, Write as _}; // writeln! into a String, for cmd_tune's Markdown report
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, BufWriter, IsTerminal, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
@@ -1352,9 +1352,11 @@ fn validate_command_paths(command: &Commands) -> Result<()> {
 }
 
 fn main() -> Result<()> {
+    let stderr_is_terminal = std::io::stderr().is_terminal();
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
+        .with_ansi(stderr_is_terminal)
         .init();
 
     let cli = Cli::parse();

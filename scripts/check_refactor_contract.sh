@@ -4,6 +4,14 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+search_with_lines() {
+  if command -v rg >/dev/null 2>&1; then
+    rg -n -- "$@"
+  else
+    grep -ERn -- "$@"
+  fi
+}
+
 failed=0
 
 check_max_lines() {
@@ -73,14 +81,14 @@ for path in \
   check_max_lines "$path" 500
 done
 
-if rg -n 'include!\s*\(' crates/shogiesa-cli/src/main.rs crates/shogiesa-cli/tests/cli_test.rs; then
+if search_with_lines 'include!\s*\(' crates/shogiesa-cli/src/main.rs crates/shogiesa-cli/tests/cli_test.rs; then
   printf 'FAIL include!-based module splitting is not allowed\n'
   failed=1
 else
   printf 'PASS no include!-based module splitting\n'
 fi
 
-if rg -n 'serde_json::from_(str|slice|value)::<PositionRecord>' crates/shogiesa-cli/src; then
+if search_with_lines 'serde_json::from_(str|slice|value)::<PositionRecord>' crates/shogiesa-cli/src; then
   printf 'FAIL direct PositionRecord JSON deserialization bypasses the typed reader\n'
   failed=1
 else

@@ -4,6 +4,16 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# GitHub-hosted runners do not guarantee that ripgrep is installed. Keep the
+# contract check self-contained while still using ripgrep when it is available.
+matches() {
+  if command -v rg >/dev/null 2>&1; then
+    rg -q -- "$@"
+  else
+    grep -Eq -- "$@"
+  fi
+}
+
 required_files=(
   README.md
   README_ja.md
@@ -119,9 +129,9 @@ for path in "${required_files[@]}"; do
 done
 
 for readme in README.md README_ja.md; do
-  if rg -q 'shogiesa extract' "$readme" \
-    && rg -q 'shogiesa label' "$readme" \
-    && rg -q 'shogiesa filter' "$readme"; then
+  if matches 'shogiesa extract' "$readme" \
+    && matches 'shogiesa label' "$readme" \
+    && matches 'shogiesa filter' "$readme"; then
     printf 'PASS quick-start commands %s\n' "$readme"
   else
     printf 'FAIL quick-start commands missing %s\n' "$readme"
@@ -133,7 +143,7 @@ check_marker() {
   local path="$1"
   local pattern="$2"
   local label="$3"
-  if rg -q -- "$pattern" "$path"; then
+  if matches "$pattern" "$path"; then
     printf 'PASS fixture marker %s\n' "$label"
   else
     printf 'FAIL fixture marker %s\n' "$label"
@@ -217,21 +227,21 @@ check_marker tests/fixtures/pack_trailing_bytes.hex '^53484f47494553410b00ff$' '
 check_marker tests/fixtures/pack_wrong_endian_version.hex '^53484f4749455341000b$' 'pack wrong-endian version bytes'
 check_marker tests/fixtures/pack_truncated_record.hex '^53484f47494553410b000b00$' 'pack truncated record bytes'
 
-if rg -q 'fn trailing_byte_after_valid_pack_is_not_treated_as_clean_eof' crates/shogiesa-pack/src/lib.rs; then
+if matches 'fn trailing_byte_after_valid_pack_is_not_treated_as_clean_eof' crates/shogiesa-pack/src/lib.rs; then
   printf 'PASS pack trailing-byte library regression marker\n'
 else
   printf 'FAIL pack trailing-byte library regression marker missing\n'
   missing=1
 fi
 
-if rg -q 'SCHEMA_VERSION = 11|FORMAT_VERSION: u16 = 11' crates/shogiesa-core/src/model.rs crates/shogiesa-pack/src/lib.rs; then
+if matches 'SCHEMA_VERSION = 11|FORMAT_VERSION: u16 = 11' crates/shogiesa-core/src/model.rs crates/shogiesa-pack/src/lib.rs; then
   printf 'PASS schema/pack version markers\n'
 else
   printf 'FAIL schema/pack version markers missing\n'
   missing=1
 fi
 
-if rg -q '未測定|unmeasured|unverified|not.*measured' README.md docs/release_checklist.md; then
+if matches '未測定|unmeasured|unverified|not.*measured' README.md docs/release_checklist.md; then
   printf 'PASS unmeasured-claims boundary\n'
 else
   printf 'FAIL unmeasured-claims boundary missing\n'

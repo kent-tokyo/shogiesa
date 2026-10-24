@@ -897,7 +897,7 @@ impl BlockReportStats {
 
     fn add(&mut self, record: &PositionRecord) {
         self.records += 1;
-        if let Some(cp) = eval_black(record) {
+        if let Some(cp) = super::selection::eval_black(record) {
             let cp = cp as f64;
             self.cp_count += 1;
             self.cp_sum += cp;

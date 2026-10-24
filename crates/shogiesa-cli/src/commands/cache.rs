@@ -1,5 +1,10 @@
 use super::super::*;
 
+/// Every `.json` file under a `label --cache-dir`'s two-level shard layout
+/// (`cache_dir/xx/<64-hex-hash>.json`, see `label_cache_path`). Filtering strictly on the `.json`
+/// extension skips `write_cache_entry_atomically`'s in-flight temp files
+/// (`<hash>.json.tmp.<pid>.<tid>`) by construction, so a walk never races a concurrent `label`
+/// process sharing the same cache dir.
 fn walk_cache_entries(cache_dir: &Path) -> Result<Vec<PathBuf>> {
     let mut entries = Vec::new();
     for shard in fs::read_dir(cache_dir).with_context(|| format!("cannot read {cache_dir:?}"))? {

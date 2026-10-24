@@ -23,8 +23,10 @@ required_files=(
   crates/shogiesa-cli/src/commands/cache.rs
   crates/shogiesa-cli/src/commands/diagnostics.rs
   crates/shogiesa-cli/src/commands/ingest.rs
+  crates/shogiesa-cli/src/commands/label.rs
   crates/shogiesa-cli/src/commands/quality.rs
   crates/shogiesa-cli/src/commands/selection.rs
+  crates/shogiesa-cli/src/commands/transforms.rs
   crates/shogiesa-cli/src/commands/transport.rs
   crates/shogiesa-cli/src/io_support/atomic_output.rs
   crates/shogiesa-cli/src/io_support/hashing.rs
@@ -52,7 +54,7 @@ for path in "${required_files[@]}"; do
   fi
 done
 
-check_max_lines crates/shogiesa-cli/src/main.rs 4200
+check_max_lines crates/shogiesa-cli/src/main.rs 1900
 check_max_lines crates/shogiesa-cli/tests/cli_test.rs 150
 check_max_lines crates/shogiesa-core/src/lib.rs 900
 
